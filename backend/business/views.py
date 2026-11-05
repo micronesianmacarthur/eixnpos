@@ -9,7 +9,7 @@ from .models import BusinessInfo
 class BusinessInfoSerializer(serializers.ModelSerializer):
     class Meta:
         model = BusinessInfo
-        fields = ['company_name', 'phone', 'email', 'address', 'website']
+        fields = ['company_name', 'phone', 'email', 'address', 'website', 'backup_path']
 
 
 @api_view(['GET', 'POST', 'PATCH'])
