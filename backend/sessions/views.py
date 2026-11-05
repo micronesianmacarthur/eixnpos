@@ -27,14 +27,16 @@ class SessionViewSet(viewsets.ModelViewSet):
         totals = calculate_totals(counts)
         counted = totals['grand_total']
         # cash sales
-        cash_sales = Payment.objects.filter(sale__cashier=session.cashier, method='cash', sale__status='completed', sale__created_at__gte=session.opened_at).aggregate(s=Sum('amount'))['s'] or Decimal('0')
+        upper = session.closed_at or timezone.now()
+        cash_sales = Payment.objects.filter(method='cash', sale__status='completed', sale__created_at__gte=session.opened_at, sale__created_at__lte=upper).aggregate(s=Sum('amount'))['s'] or Decimal('0')
         expected = session.starting_cash + cash_sales
         variance = expected - counted
         session.cash_counts = counts
         session.counted_cash = counted
         session.expected_cash = expected
         session.variance = variance
-        session.sales_total = Sale.objects.filter(cashier=session.cashier, status='completed', created_at__gte=session.opened_at).aggregate(s=Sum('total'))['s'] or Decimal('0')
+        upper = session.closed_at or timezone.now()
+        session.sales_total = Sale.objects.filter(status='completed', created_at__gte=session.opened_at, created_at__lte=upper).aggregate(s=Sum('total'))['s'] or Decimal('0')
         session.status = Session.STATUS_CLOSED
         session.closed_at = timezone.now()
         if 'cash_removed' in request.data:
@@ -47,8 +49,9 @@ class SessionViewSet(viewsets.ModelViewSet):
             if bp:
                 from backups.utils import run_backup
                 run_backup(bp)
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).exception('auto-backup failed: %s', e)
         return Response(SessionSerializer(session).data)
 
     @action(detail=True, methods=['get'])

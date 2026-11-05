@@ -24,6 +24,18 @@ class CustomerViewSet(viewsets.ModelViewSet):
     serializer_class = CustomerSerializer
     permission_classes = [IsAuthenticated]
 
+    @action(detail=True, methods=['get'], url_path='transactions')
+    def transactions(self, request, pk=None):
+        customer = self.get_object()
+        from sales.models import Sale
+        sales = Sale.objects.filter(customer=customer).order_by('-created_at')
+        from django.utils import timezone
+        data = {
+            'sales': [{'id': s.id, 'number': s.number, 'total': str(s.total), 'status': s.status, 'created_at': s.created_at} for s in sales],
+            'pay_on_account': PayOnAccountSerializer(customer.payments.all(), many=True).data,
+        }
+        return Response(data)
+
     @action(detail=True, methods=['post'])
     def pay_on_account(self, request, pk=None):
         customer = self.get_object()
