@@ -40,6 +40,15 @@ class SessionViewSet(viewsets.ModelViewSet):
         if 'cash_removed' in request.data:
             session.cash_removed = request.data['cash_removed']
         session.save()
+        # auto-backup on session close
+        try:
+            from business.models import BusinessInfo
+            bp = BusinessInfo.get().backup_path
+            if bp:
+                from backups.utils import run_backup
+                run_backup(bp)
+        except Exception:
+            pass
         return Response(SessionSerializer(session).data)
 
     @action(detail=True, methods=['get'])

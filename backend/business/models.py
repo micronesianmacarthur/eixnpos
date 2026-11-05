@@ -7,6 +7,7 @@ class BusinessInfo(models.Model):
     email = models.EmailField(blank=True, default='')
     address = models.TextField(blank=True, default='')
     website = models.URLField(blank=True, default='')
+    backup_path = models.CharField(max_length=500, blank=True, default='')
     singleton = models.BooleanField(default=True, unique=True)
 
     @classmethod
