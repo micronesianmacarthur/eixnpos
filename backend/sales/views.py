@@ -8,6 +8,7 @@ from .models import Sale, SaleLine, Payment
 from .serializers import SaleSerializer, SaleLineSerializer, PaymentSerializer
 from products.models import Product
 from customers.models import Customer
+from accounts.utils import is_manager
 
 
 class SaleViewSet(viewsets.ModelViewSet):
@@ -54,12 +55,15 @@ class SaleViewSet(viewsets.ModelViewSet):
         # manager gating
         manager_username = request.data.get('manager_username')
         manager_password = request.data.get('manager_password')
-        user = authenticate(username=manager_username, password=manager_password)
-        if not user or not (user.is_staff or getattr(user, 'role', '') in ('manager', 'admin')):
-            # allow current user if manager
-            if not (request.user.is_staff or getattr(request.user, 'role', '') in ('manager', 'admin')):
-                return Response({'detail': 'manager required'}, status=403)
+        user = None
+        if manager_username and manager_password:
+            cand = authenticate(username=manager_username, password=manager_password)
+            if cand and is_manager(cand):
+                user = cand
+        if user is None and is_manager(request.user):
             user = request.user
+        if user is None:
+            return Response({'detail': 'manager required'}, status=403)
         dtype = request.data.get('discount_type', 'none')
         value = Decimal(str(request.data.get('discount_value', 0)))
         line.discount_type = dtype
@@ -85,7 +89,16 @@ class SaleViewSet(viewsets.ModelViewSet):
         amount = Decimal(str(request.data.get('amount', 0)))
         tendered = request.data.get('tendered')
         tendered = Decimal(str(tendered)) if tendered is not None else None
-        manager_approved = bool(request.data.get('manager_approved', False))
+        manager_approved = False
+        if is_manager(request.user):
+            manager_approved = True
+        # allow manager creds override
+        mu = request.data.get('manager_username')
+        mp = request.data.get('manager_password')
+        if mu and mp:
+            cand = authenticate(username=mu, password=mp)
+            if cand and is_manager(cand):
+                manager_approved = True
         # invoice gating
         if method == 'invoice':
             customer = sale.customer or (Customer.objects.filter(pk=request.data.get('customer')).first())
@@ -93,7 +106,7 @@ class SaleViewSet(viewsets.ModelViewSet):
                 return Response({'detail': 'customer required'}, status=400)
             sale.customer = customer
             sale.save(update_fields=['customer'])
-            if not manager_approved and not (request.user.is_staff or getattr(request.user, 'role', '') in ('manager', 'admin')):
+            if not is_manager(request.user) and not (mu and mp and authenticate(username=mu, password=mp) and is_manager(authenticate(username=mu, password=mp))):
                 return Response({'detail': 'manager required'}, status=403)
             new_balance = customer.balance + amount
             if new_balance > customer.credit_limit and not manager_approved:
