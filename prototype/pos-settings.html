@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>POS Settings — UI Prototype (THROWAWAY)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; }
+  .variant { display: none; } .variant.active { display: block; }
+  .switcher { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 9999; }
+  .switcher button { background: #111; color: #fff; border: 1px solid #333; }
+  .switcher button:hover { background: #333; }
+</style>
+</head>
+<body class="bg-gray-100 text-gray-900">
+
+<script>
+let theme = "light", storeName = "Corner Cafe", storeAddr = "12 Main St", backupPath = "/backup", lowStockDefault = 5;
+const users = [
+  {name:"Alex", role:"admin", active:true},
+  {name:"Sam", role:"manager", active:true},
+  {name:"Jordan", role:"cashier", active:true},
+  {name:"Riley", role:"cashier", active:false},
+];
+const variants = ["A","B","C"], names = {A:"Tabbed sections", B:"Single long form", C:"Sidebar nav"};
+
+function getVariant(){ const p=new URLSearchParams(location.search); return variants.includes(p.get("variant"))?p.get("variant"):"A"; }
+function setVariant(v){ const u=new URL(location.href); u.searchParams.set("variant",v); history.replaceState(null,"",u); render(); }
+function cycle(d){ const i=variants.indexOf(getVariant()); setVariant(variants[(i+d+variants.length)%variants.length]); }
+
+function toggleTheme(){ theme = theme==="light"?"dark":"light"; document.body.classList.toggle("bg-gray-900", theme==="dark"); document.body.classList.toggle("text-white", theme==="dark"); document.body.classList.toggle("bg-gray-100", theme==="light"); document.body.classList.toggle("text-gray-900", theme==="light"); render(); }
+function save(){ alert("Settings saved."); }
+
+function renderUserRows(container){
+  container.innerHTML = users.map(u=>`
+    <tr class="border-b">
+      <td class="px-3 py-2 text-sm">${u.name}</td>
+      <td class="px-3 py-2 text-xs capitalize">${u.role}</td>
+      <td class="px-3 py-2">${u.active?`<span class="text-xs text-green-600">Active</span>`:`<span class="text-xs text-gray-400">Inactive</span>`}</td>
+      <td class="px-3 py-2 text-right"><button class="text-xs px-2 py-1 bg-gray-200 rounded">Edit</button></td>
+    </tr>`).join("");
+}
+function render(){
+  const v=getVariant();
+  document.querySelectorAll(".variant").forEach(el=>el.classList.toggle("active", el.dataset.variant===v));
+  document.getElementById("vlabel").textContent = v+" ("+names[v]+")";
+  document.querySelectorAll(".store-name").forEach(e=>e.value=storeName);
+  document.querySelectorAll(".store-addr").forEach(e=>e.value=storeAddr);
+  document.querySelectorAll(".backup-path").forEach(e=>e.value=backupPath);
+  document.querySelectorAll(".lowstock-default").forEach(e=>e.value=lowStockDefault);
+  document.querySelectorAll(".theme-label").forEach(e=>e.textContent=theme);
+  document.querySelectorAll(".user-rows").forEach(renderUserRows);
+}
+function init(){ document.addEventListener("keydown",(e)=>{const t=e.target;if(t&&(t.tagName==="INPUT"||t.tagName==="TEXTAREA"||t.isContentEditable))return;if(e.key==="ArrowLeft"){cycle(-1);e.preventDefault();}if(e.key==="ArrowRight"){cycle(1);e.preventDefault();}}); }
+window.toggleTheme=toggleTheme; window.save=save; window.setVariant=setVariant; window.cycle=cycle;
+</script>
+
+<!-- VARIANT A: Tabbed sections -->
+<div class="variant" data-variant="A">
+  <div class="min-h-screen max-w-3xl mx-auto p-4">
+    <h1 class="text-xl font-bold mb-4">Settings</h1>
+    <div class="flex gap-2 mb-4 border-b">
+      <button class="px-3 py-2 border-b-2 border-blue-600 text-blue-600 text-sm font-semibold">Store</button>
+      <button class="px-3 py-2 text-sm text-gray-500">Users</button>
+      <button class="px-3 py-2 text-sm text-gray-500">Backup</button>
+      <button class="px-3 py-2 text-sm text-gray-500">Appearance</button>
+    </div>
+    <div class="bg-white rounded-xl shadow p-4 space-y-3">
+      <div><label class="text-xs text-gray-500">Store name</label><input class="store-name w-full px-3 py-2 border rounded" /></div>
+      <div><label class="text-xs text-gray-500">Address</label><input class="store-addr w-full px-3 py-2 border rounded" /></div>
+      <div><label class="text-xs text-gray-500">Default low-stock threshold</label><input type="number" class="lowstock-default w-full px-3 py-2 border rounded" /></div>
+      <button onclick="save()" class="px-4 py-2 bg-blue-600 text-white rounded">Save</button>
+    </div>
+    <div class="bg-white rounded-xl shadow p-4 mt-4">
+      <h3 class="font-semibold mb-2">Appearance</h3>
+      <div class="flex items-center justify-between">
+        <span class="text-sm">Theme: <span class="theme-label font-semibold"></span></span>
+        <button onclick="toggleTheme()" class="px-3 py-1 bg-gray-800 text-white rounded text-sm">Toggle</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- VARIANT B: Single long form -->
+<div class="variant" data-variant="B">
+  <div class="min-h-screen max-w-2xl mx-auto p-4">
+    <h1 class="text-xl font-bold mb-4">Settings</h1>
+    <div class="bg-white rounded-xl shadow p-5 space-y-5">
+      <section>
+        <h2 class="font-semibold mb-2">Store</h2>
+        <input class="store-name w-full px-3 py-2 border rounded mb-2" placeholder="Store name" />
+        <input class="store-addr w-full px-3 py-2 border rounded" placeholder="Address" />
+      </section>
+      <section>
+        <h2 class="font-semibold mb-2">Users</h2>
+        <table class="w-full text-sm"><tbody class="user-rows"></tbody></table>
+        <button class="mt-2 text-sm text-blue-600">+ Add user</button>
+      </section>
+      <section>
+        <h2 class="font-semibold mb-2">Backup</h2>
+        <input class="backup-path w-full px-3 py-2 border rounded" placeholder="/backup" />
+        <p class="text-xs text-gray-500 mt-1">Manual trigger + auto at session close. Keeps last 7.</p>
+      </section>
+      <section>
+        <h2 class="font-semibold mb-2">Appearance</h2>
+        <button onclick="toggleTheme()" class="px-3 py-2 bg-gray-800 text-white rounded text-sm">Theme: <span class="theme-label"></span></button>
+      </section>
+      <section>
+        <h2 class="font-semibold mb-2">Inventory</h2>
+        <label class="text-xs text-gray-500">Default low-stock threshold</label>
+        <input type="number" class="lowstock-default w-full px-3 py-2 border rounded" />
+      </section>
+      <button onclick="save()" class="w-full py-2 bg-blue-600 text-white rounded font-semibold">Save all</button>
+    </div>
+  </div>
+</div>
+
+<!-- VARIANT C: Sidebar nav -->
+<div class="variant" data-variant="C">
+  <div class="h-screen flex">
+    <aside class="w-48 bg-gray-900 text-white p-3 space-y-1">
+      <div class="font-bold mb-3">Settings</div>
+      <button class="w-full text-left px-3 py-2 rounded bg-gray-700 text-sm">Store</button>
+      <button class="w-full text-left px-3 py-2 rounded hover:bg-gray-700 text-sm">Users</button>
+      <button class="w-full text-left px-3 py-2 rounded hover:bg-gray-700 text-sm">Backup</button>
+      <button class="w-full text-left px-3 py-2 rounded hover:bg-gray-700 text-sm">Appearance</button>
+    </aside>
+    <main class="flex-1 p-6 overflow-y-auto bg-gray-50">
+      <h2 class="text-lg font-bold mb-3">Store</h2>
+      <div class="bg-white rounded-xl shadow p-4 space-y-3 max-w-lg">
+        <input class="store-name w-full px-3 py-2 border rounded" />
+        <input class="store-addr w-full px-3 py-2 border rounded" />
+        <input type="number" class="lowstock-default w-full px-3 py-2 border rounded" />
+        <div class="flex items-center justify-between pt-2">
+          <span class="text-sm">Theme: <span class="theme-label font-semibold"></span></span>
+          <button onclick="toggleTheme()" class="px-3 py-1 bg-gray-800 text-white rounded text-sm">Toggle</button>
+        </div>
+        <button onclick="save()" class="px-4 py-2 bg-blue-600 text-white rounded">Save</button>
+      </div>
+      <div class="bg-white rounded-xl shadow p-4 mt-4 max-w-lg">
+        <h3 class="font-semibold mb-2">Users</h3>
+        <table class="w-full text-sm"><tbody class="user-rows"></tbody></table>
+      </div>
+    </main>
+  </div>
+</div>
+
+<div class="switcher flex items-center gap-2 bg-black/90 text-white rounded-full px-3 py-2 shadow-lg">
+  <button onclick="cycle(-1)" class="rounded-full w-8 h-8 flex items-center justify-center">◀</button>
+  <span id="vlabel" class="text-sm font-medium min-w-[180px] text-center">A (Tabbed sections)</span>
+  <button onclick="cycle(1)" class="rounded-full w-8 h-8 flex items-center justify-center">▶</button>
+</div>
+
+<script>init(); render();</script>
+</body>
+</html>

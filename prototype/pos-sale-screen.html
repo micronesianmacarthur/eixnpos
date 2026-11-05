@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>POS Sale Screen — UI Prototype (THROWAWAY)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; }
+  .variant { display: none; }
+  .variant.active { display: block; }
+  .switcher { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 9999; }
+  .switcher button { background: #111; color: #fff; border: 1px solid #333; }
+  .switcher button:hover { background: #333; }
+  .product-card { cursor: pointer; }
+  .product-card:active { transform: scale(0.97); }
+  .cart-line { border-bottom: 1px solid #e5e7eb; }
+  .receipt { font-family: "Courier New", monospace; }
+</style>
+</head>
+<body class="bg-gray-100 text-gray-900">
+
+<!-- Mock data + state -->
+<script>
+const PRODUCTS = [
+  { id: 1, name: "Coffee (Regular)", price: 2.50, category: "Drinks", stock: 40 },
+  { id: 2, name: "Coffee (Large)", price: 3.20, category: "Drinks", stock: 35 },
+  { id: 3, name: "Latte", price: 4.00, category: "Drinks", stock: 20 },
+  { id: 4, name: "Croissant", price: 2.80, category: "Food", stock: 15 },
+  { id: 5, name: "Sandwich", price: 6.50, category: "Food", stock: 12 },
+  { id: 6, name: "Muffin", price: 2.20, category: "Food", stock: 18 },
+  { id: 7, name: "Water Bottle", price: 1.00, category: "Drinks", stock: 50 },
+  { id: 8, name: "Juice", price: 2.00, category: "Drinks", stock: 25 },
+  { id: 9, name: "Chips", price: 1.50, category: "Snacks", stock: 30 },
+  { id: 10, name: "Chocolate Bar", price: 1.80, category: "Snacks", stock: 22 },
+];
+
+const STORE = { name: "Corner Cafe", address: "12 Main St" };
+const CASHIER = "Alex";
+let saleNo = 1042;
+
+// State
+let cart = []; // {productId, name, price, qty, discount}
+let paymentMethod = "cash";
+let cashTendered = 0;
+let showReceipt = false;
+let lastSale = null;
+
+function addToCart(p) {
+  const existing = cart.find(l => l.productId === p.id && l.discount === 0);
+  if (existing) existing.qty += 1;
+  else cart.push({ productId: p.id, name: p.name, price: p.price, qty: 1, discount: 0 });
+  render();
+}
+function setQty(idx, qty) {
+  if (qty <= 0) cart.splice(idx, 1);
+  else cart[idx].qty = qty;
+  render();
+}
+function removeLine(idx) { cart.splice(idx, 1); render(); }
+function applyLineDiscount(idx) {
+  const amt = prompt("Discount amount for this line (manager PIN required in real app):", "0.50");
+  if (amt === null) return;
+  cart[idx].discount = parseFloat(amt) || 0;
+  render();
+}
+function cartSubtotal() { return cart.reduce((s,l) => s + l.price*l.qty, 0); }
+function cartDiscount() { return cart.reduce((s,l) => s + l.discount, 0); }
+function cartTotal() { return Math.max(0, cartSubtotal() - cartDiscount()); }
+function changeDue() {
+  if (paymentMethod !== "cash") return 0;
+  return Math.max(0, cashTendered - cartTotal());
+}
+function completeSale() {
+  if (cart.length === 0) return;
+  lastSale = {
+    no: saleNo++, store: STORE, cashier: CASHIER,
+    date: new Date().toLocaleString(),
+    lines: cart.map(l => ({...l})),
+    subtotal: cartSubtotal(), discount: cartDiscount(), total: cartTotal(),
+    payment: paymentMethod, tendered: paymentMethod === "cash" ? cashTendered : cartTotal(),
+    change: changeDue(),
+  };
+  showReceipt = true;
+  cart = []; cashTendered = 0; paymentMethod = "cash";
+  render();
+}
+function closeReceipt() { showReceipt = false; lastSale = null; render(); }
+
+// Variant switching
+const variants = ["A","B","C"];
+const names = { A: "Classic two-pane", B: "Cart-first list", C: "Touch grid" };
+function getVariant() {
+  const p = new URLSearchParams(location.search);
+  return variants.includes(p.get("variant")) ? p.get("variant") : "A";
+}
+function setVariant(v) {
+  const url = new URL(location.href);
+  url.searchParams.set("variant", v);
+  history.replaceState(null, "", url);
+  render();
+}
+function cycle(dir) {
+  const i = variants.indexOf(getVariant());
+  setVariant(variants[(i + dir + variants.length) % variants.length]);
+}
+
+// Keyboard
+document.addEventListener("keydown", (e) => {
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+  if (e.key === "ArrowLeft") { cycle(-1); e.preventDefault(); }
+  if (e.key === "ArrowRight") { cycle(1); e.preventDefault(); }
+});
+
+// Render
+function render() {
+  const v = getVariant();
+  document.querySelectorAll(".variant").forEach(el => el.classList.toggle("active", el.dataset.variant === v));
+  document.getElementById("vlabel").textContent = v + " (" + names[v] + ")";
+  // render each variant's cart/products
+  renderProducts();
+  renderCart();
+  renderReceipt();
+}
+
+function renderProducts() {
+  const v = getVariant();
+  // product grid containers
+  document.querySelectorAll(".product-grid").forEach(g => {
+    g.innerHTML = PRODUCTS.map(p => `
+      <button class="product-card bg-white rounded-lg shadow-sm p-3 text-left hover:shadow-md transition border border-gray-200" onclick="addToCart(PRODUCTS.find(x=>x.id===${p.id}))">
+        <div class="font-semibold text-sm">${p.name}</div>
+        <div class="text-xs text-gray-500">${p.category} · stock ${p.stock}</div>
+        <div class="mt-1 font-bold text-blue-600">$${p.price.toFixed(2)}</div>
+      </button>
+    `).join("");
+  });
+}
+
+function renderCart() {
+  const html = cart.length === 0
+    ? `<div class="text-gray-400 text-sm py-6 text-center">Cart is empty</div>`
+    : cart.map((l, i) => `
+      <div class="cart-line py-2 flex items-center gap-2">
+        <div class="flex-1">
+          <div class="font-medium text-sm">${l.name}</div>
+          <div class="text-xs text-gray-500">$${l.price.toFixed(2)} each${l.discount>0 ? " · disc $" + l.discount.toFixed(2) : ""}</div>
+        </div>
+        <div class="flex items-center gap-1">
+          <button class="px-2 py-1 bg-gray-200 rounded text-xs" onclick="setQty(${i}, ${l.qty-1})">-</button>
+          <span class="w-6 text-center text-sm">${l.qty}</span>
+          <button class="px-2 py-1 bg-gray-200 rounded text-xs" onclick="setQty(${i}, ${l.qty+1})">+</button>
+        </div>
+        <div class="w-16 text-right text-sm font-semibold">$${(l.price*l.qty - l.discount).toFixed(2)}</div>
+        <button class="text-xs text-red-500 ml-1" onclick="removeLine(${i})">✕</button>
+        <button class="text-xs text-amber-600 ml-1" onclick="applyLineDiscount(${i})">%</button>
+      </div>
+    `).join("");
+
+  document.querySelectorAll(".cart-lines").forEach(el => el.innerHTML = html);
+
+  const sub = cartSubtotal(), disc = cartDiscount(), tot = cartTotal();
+  document.querySelectorAll(".cart-subtotal").forEach(el => el.textContent = "$" + sub.toFixed(2));
+  document.querySelectorAll(".cart-discount").forEach(el => el.textContent = "-$" + disc.toFixed(2));
+  document.querySelectorAll(".cart-total").forEach(el => el.textContent = "$" + tot.toFixed(2));
+  document.querySelectorAll(".cart-count").forEach(el => el.textContent = cart.reduce((s,l)=>s+l.qty,0));
+
+  // payment controls
+  document.querySelectorAll(".pay-method").forEach(sel => {
+    sel.value = paymentMethod;
+    sel.onchange = (e) => { paymentMethod = e.target.value; render(); };
+  });
+  document.querySelectorAll(".cash-input").forEach(inp => {
+    inp.value = cashTendered ? cashTendered.toFixed(2) : "";
+    inp.oninput = (e) => { cashTendered = parseFloat(e.target.value) || 0; render(); };
+    inp.style.display = paymentMethod === "cash" ? "" : "none";
+  });
+  document.querySelectorAll(".change-due").forEach(el => el.textContent = "$" + changeDue().toFixed(2));
+  document.querySelectorAll(".complete-btn").forEach(b => {
+    b.disabled = cart.length === 0;
+    b.onclick = completeSale;
+  });
+}
+
+function renderReceipt() {
+  const modal = document.getElementById("receipt-modal");
+  if (!showReceipt || !lastSale) { modal.classList.add("hidden"); return; }
+  modal.classList.remove("hidden");
+  const s = lastSale;
+  const lines = s.lines.map(l => `${l.name.padEnd(20)} ${String(l.qty).padStart(2)}  $${(l.price*l.qty - l.discount).toFixed(2).padStart(7)}`).join("\n");
+  const text = `${s.store.name}\n${s.store.address}\n${"=".repeat(32)}\n${s.date}\nCashier: ${s.cashier}   Sale #${s.no}\n${"=".repeat(32)}\n${lines}\n${"=".repeat(32)}\nSubtotal: $${s.subtotal.toFixed(2).padStart(20)}\nDiscount: -$${s.discount.toFixed(2).padStart(19)}\nTOTAL:    $${s.total.toFixed(2).padStart(20)}\n${"=".repeat(32)}\nPayment: ${s.payment.toUpperCase()} $${s.tendered.toFixed(2)}\n${s.payment==="cash" ? "Change:   $" + s.change.toFixed(2) : ""}\n${"=".repeat(32)}\nThank you for your visit!\n`;
+  document.getElementById("receipt-text").textContent = text;
+}
+
+window.PRODUCTS = PRODUCTS;
+window.addToCart = addToCart;
+window.setQty = setQty;
+window.removeLine = removeLine;
+window.applyLineDiscount = applyLineDiscount;
+window.completeSale = completeSale;
+window.closeReceipt = closeReceipt;
+window.setVariant = setVariant;
+window.cycle = cycle;
+</script>
+
+<!-- ================= VARIANT A: Classic two-pane ================= -->
+<div class="variant" data-variant="A">
+  <div class="h-screen flex flex-col">
+    <header class="bg-blue-700 text-white px-4 py-2 flex items-center justify-between">
+      <div class="font-bold">Corner Cafe POS</div>
+      <div class="text-sm">Cashier: Alex · Sale #1042</div>
+    </header>
+    <div class="flex-1 flex overflow-hidden">
+      <!-- products -->
+      <div class="w-2/3 p-3 overflow-y-auto">
+        <div class="mb-2 flex gap-2">
+          <input placeholder="Search products..." class="flex-1 px-3 py-2 border rounded" />
+          <div class="flex gap-1">
+            <button class="px-3 py-2 bg-white border rounded text-sm">All</button>
+            <button class="px-3 py-2 bg-white border rounded text-sm">Drinks</button>
+            <button class="px-3 py-2 bg-white border rounded text-sm">Food</button>
+            <button class="px-3 py-2 bg-white border rounded text-sm">Snacks</button>
+          </div>
+        </div>
+        <div class="product-grid grid grid-cols-4 gap-2"></div>
+      </div>
+      <!-- cart -->
+      <div class="w-1/3 bg-white border-l flex flex-col">
+        <div class="p-3 border-b font-semibold flex justify-between">
+          <span>Cart</span><span class="text-gray-500 text-sm"><span class="cart-count">0</span> items</span>
+        </div>
+        <div class="cart-lines flex-1 overflow-y-auto px-3"></div>
+        <div class="p-3 border-t bg-gray-50 space-y-1 text-sm">
+          <div class="flex justify-between"><span>Subtotal</span><span class="cart-subtotal">$0.00</span></div>
+          <div class="flex justify-between"><span>Discount</span><span class="cart-discount">-$0.00</span></div>
+          <div class="flex justify-between font-bold text-lg"><span>Total</span><span class="cart-total">$0.00</span></div>
+          <select class="pay-method w-full mt-2 px-2 py-1 border rounded"></select>
+          <input class="cash-input w-full px-2 py-1 border rounded" placeholder="Cash tendered" />
+          <div class="flex justify-between text-xs text-gray-500"><span>Change due</span><span class="change-due">$0.00</span></div>
+          <button class="complete-btn w-full mt-2 py-2 bg-blue-600 text-white rounded font-semibold disabled:opacity-40">Complete Sale</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= VARIANT B: Cart-first list ================= -->
+<div class="variant" data-variant="B">
+  <div class="min-h-screen max-w-3xl mx-auto p-4">
+    <header class="flex items-center justify-between mb-4">
+      <h1 class="text-xl font-bold">Corner Cafe · Sale #1042</h1>
+      <span class="text-sm text-gray-500">Cashier: Alex</span>
+    </header>
+    <div class="bg-white rounded-xl shadow p-4 mb-4">
+      <input placeholder="Search or scan product..." class="w-full px-3 py-2 border rounded mb-3" />
+      <div class="flex flex-wrap gap-2 mb-3">
+        <button class="px-3 py-1 bg-gray-100 rounded-full text-sm">All</button>
+        <button class="px-3 py-1 bg-gray-100 rounded-full text-sm">Drinks</button>
+        <button class="px-3 py-1 bg-gray-100 rounded-full text-sm">Food</button>
+        <button class="px-3 py-1 bg-gray-100 rounded-full text-sm">Snacks</button>
+      </div>
+      <div class="product-grid grid grid-cols-5 gap-2"></div>
+    </div>
+    <div class="bg-white rounded-xl shadow p-4">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="font-semibold">Cart (<span class="cart-count">0</span>)</h2>
+        <span class="text-2xl font-bold cart-total">$0.00</span>
+      </div>
+      <div class="cart-lines"></div>
+      <div class="mt-3 pt-3 border-t flex items-center gap-3">
+        <select class="pay-method px-2 py-2 border rounded"></select>
+        <input class="cash-input px-2 py-2 border rounded w-28" placeholder="Tendered" />
+        <span class="text-sm text-gray-500">Change: <span class="change-due">$0.00</span></span>
+        <button class="complete-btn ml-auto px-6 py-2 bg-green-600 text-white rounded font-semibold disabled:opacity-40">Charge</button>
+      </div>
+      <div class="mt-2 text-xs text-gray-500 flex justify-between">
+        <span>Subtotal <span class="cart-subtotal">$0.00</span></span>
+        <span>Discount <span class="cart-discount">-$0.00</span></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= VARIANT C: Touch grid ================= -->
+<div class="variant" data-variant="C">
+  <div class="h-screen flex flex-col bg-gray-900 text-white">
+    <header class="bg-gray-800 px-4 py-3 flex items-center justify-between">
+      <div class="text-lg font-bold">Corner Cafe</div>
+      <div class="text-sm opacity-70">Alex · #1042 · <span class="cart-count">0</span> items</div>
+    </header>
+    <div class="flex-1 grid grid-cols-3 gap-0 overflow-hidden">
+      <div class="col-span-2 p-3 overflow-y-auto bg-gray-900">
+        <div class="product-grid grid grid-cols-3 gap-3"></div>
+      </div>
+      <div class="col-span-1 bg-gray-800 flex flex-col">
+        <div class="p-3 text-lg font-bold border-b border-gray-700">Cart</div>
+        <div class="cart-lines flex-1 overflow-y-auto px-3 py-2 text-sm"></div>
+        <div class="p-3 border-t border-gray-700 space-y-2">
+          <div class="flex justify-between text-sm"><span>Subtotal</span><span class="cart-subtotal">$0.00</span></div>
+          <div class="flex justify-between text-sm"><span>Discount</span><span class="cart-discount">-$0.00</span></div>
+          <div class="flex justify-between text-2xl font-bold"><span>Total</span><span class="cart-total">$0.00</span></div>
+          <select class="pay-method w-full px-2 py-2 bg-gray-700 rounded border-0"></select>
+          <input class="cash-input w-full px-2 py-2 bg-gray-700 rounded border-0" placeholder="Tendered" />
+          <div class="text-xs opacity-70">Change: <span class="change-due">$0.00</span></div>
+          <button class="complete-btn w-full py-3 bg-emerald-500 text-black rounded-lg font-bold text-lg disabled:opacity-40">CHARGE</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Receipt modal -->
+<div id="receipt-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+  <div class="bg-white rounded-lg p-6 max-w-sm w-full">
+    <pre id="receipt-text" class="receipt text-xs whitespace-pre leading-tight"></pre>
+    <button onclick="closeReceipt()" class="mt-4 w-full py-2 bg-gray-800 text-white rounded">Close</button>
+  </div>
+</div>
+
+<!-- Floating switcher -->
+<div class="switcher flex items-center gap-2 bg-black/90 text-white rounded-full px-3 py-2 shadow-lg">
+  <button onclick="cycle(-1)" class="rounded-full w-8 h-8 flex items-center justify-center">◀</button>
+  <span id="vlabel" class="text-sm font-medium min-w-[160px] text-center">A (Classic two-pane)</span>
+  <button onclick="cycle(1)" class="rounded-full w-8 h-8 flex items-center justify-center">▶</button>
+</div>
+
+<script>
+  // populate payment method options
+  document.querySelectorAll(".pay-method").forEach(sel => {
+    sel.innerHTML = `<option value="cash">Cash</option><option value="card">Card</option><option value="split">Split</option><option value="invoice">Invoice (account)</option>`;
+  });
+  render();
+</script>
+</body>
+</html>

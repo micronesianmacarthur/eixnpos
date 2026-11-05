@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>POS Customers — UI Prototype (THROWAWAY)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; }
+  .variant { display: none; } .variant.active { display: block; }
+  .switcher { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 9999; }
+  .switcher button { background: #111; color: #fff; border: 1px solid #333; }
+  .switcher button:hover { background: #333; }
+</style>
+</head>
+<body class="bg-gray-100 text-gray-900">
+
+<script>
+const CUSTOMERS = [
+  {id:1,name:"Jane Doe",phone:"555-0101",balance:0,limit:200,notes:"VIP"},
+  {id:2,name:"John Smith",phone:"555-0102",balance:33.00,limit:100,notes:""},
+  {id:3,name:"Acme Corp",phone:"555-0103",balance:120.50,limit:500,notes:"Net 30"},
+  {id:4,name:"Mary Lee",phone:"555-0104",balance:0,limit:50,notes:""},
+  {id:5,name:"Bob Ray",phone:"555-0105",balance:8.20,limit:50,notes:"Don't extend credit"},
+];
+let search="", selected=null, payAmount=0;
+const variants=["A","B","C"], names={A:"List + detail",B:"Cards",C:"Compact table"};
+
+function getVariant(){ const p=new URLSearchParams(location.search); return variants.includes(p.get("variant"))?p.get("variant"):"A"; }
+function setVariant(v){ const u=new URL(location.href); u.searchParams.set("variant",v); history.replaceState(null,"",u); render(); }
+function cycle(d){ const i=variants.indexOf(getVariant()); setVariant(variants[(i+d+variants.length)%variants.length]); }
+
+function filtered(){ return CUSTOMERS.filter(c=>c.name.toLowerCase().includes(search.toLowerCase())||c.phone.includes(search)); }
+function select(id){ selected=id; payAmount=0; render(); }
+function payOnAccount(){
+  if(!selected) return;
+  const c=CUSTOMERS.find(x=>x.id===selected);
+  const amt = parseFloat(prompt("Payment amount:", c.balance.toFixed(2)));
+  if(!amt||amt<=0) return;
+  c.balance = Math.max(0, c.balance - amt);
+  render();
+}
+function chargeToAccount(){
+  if(!selected) return;
+  alert("In real app: creates a sale charged to this customer's account (manager-gated).");
+}
+
+function renderDetail(el){
+  const c = CUSTOMERS.find(x=>x.id===selected);
+  if(!c){ el.innerHTML = `<div class="text-gray-400 text-sm py-8 text-center">Select a customer</div>`; return; }
+  el.innerHTML = `
+    <div class="space-y-2">
+      <div class="text-lg font-bold">${c.name}</div>
+      <div class="text-sm text-gray-500">${c.phone}</div>
+      ${c.notes?`<div class="text-xs italic text-gray-500">${c.notes}</div>`:""}
+      <div class="grid grid-cols-2 gap-2 mt-3">
+        <div class="bg-gray-50 p-2 rounded"><div class="text-xs text-gray-500">Balance owed</div><div class="font-bold ${c.balance>0?'text-red-600':'text-green-600'}">$${c.balance.toFixed(2)}</div></div>
+        <div class="bg-gray-50 p-2 rounded"><div class="text-xs text-gray-500">Credit limit</div><div class="font-bold">$${c.limit.toFixed(2)}</div></div>
+      </div>
+      <div class="flex gap-2 mt-3">
+        <button onclick="payOnAccount()" class="flex-1 py-2 bg-green-600 text-white rounded text-sm">Pay on account</button>
+        <button onclick="chargeToAccount()" class="flex-1 py-2 bg-blue-600 text-white rounded text-sm">Charge to account</button>
+      </div>
+    </div>`;
+}
+function renderList(el){
+  el.innerHTML = filtered().map(c=>`
+    <button onclick="select(${c.id})" class="w-full text-left px-3 py-2 border-b hover:bg-gray-50 ${selected===c.id?'bg-blue-50':''}">
+      <div class="flex justify-between">
+        <span class="font-medium text-sm">${c.name}</span>
+        <span class="text-sm ${c.balance>0?'text-red-600 font-semibold':'text-gray-400'}">$${c.balance.toFixed(2)}</span>
+      </div>
+      <div class="text-xs text-gray-500">${c.phone}</div>
+    </button>`).join("");
+}
+function renderCards(el){
+  el.innerHTML = filtered().map(c=>`
+    <div onclick="select(${c.id})" class="bg-white rounded-lg shadow-sm p-3 cursor-pointer border ${selected===c.id?'border-blue-500':'border-gray-200'}">
+      <div class="font-semibold">${c.name}</div>
+      <div class="text-xs text-gray-500">${c.phone}</div>
+      <div class="mt-2 flex justify-between items-center">
+        <span class="text-xs text-gray-500">Balance</span>
+        <span class="font-bold ${c.balance>0?'text-red-600':'text-green-600'}">$${c.balance.toFixed(2)}</span>
+      </div>
+      ${c.balance>0?`<button onclick="event.stopPropagation();select(${c.id});payOnAccount();" class="mt-2 w-full text-xs py-1 bg-green-600 text-white rounded">Pay</button>`:""}
+    </div>`).join("");
+}
+function renderCompact(el){
+  el.innerHTML = `
+    <table class="w-full text-sm"><thead class="bg-gray-100 text-xs uppercase text-gray-500"><tr>
+      <th class="px-3 py-2 text-left">Name</th><th class="px-3 py-2 text-left">Phone</th>
+      <th class="px-3 py-2 text-right">Balance</th><th class="px-3 py-2 text-right">Limit</th>
+      <th class="px-3 py-2"></th>
+    </tr></thead><tbody>
+    ${filtered().map(c=>`<tr class="border-b hover:bg-gray-50 ${selected===c.id?'bg-blue-50':''}" onclick="select(${c.id})">
+      <td class="px-3 py-2 font-medium">${c.name}</td>
+      <td class="px-3 py-2 text-xs text-gray-500">${c.phone}</td>
+      <td class="px-3 py-2 text-right ${c.balance>0?'text-red-600 font-semibold':''}">$${c.balance.toFixed(2)}</td>
+      <td class="px-3 py-2 text-right text-gray-500">$${c.limit.toFixed(2)}</td>
+      <td class="px-3 py-2 text-right"><button onclick="event.stopPropagation();select(${c.id});payOnAccount();" class="text-xs px-2 py-1 bg-green-600 text-white rounded">Pay</button></td>
+    </tr>`).join("")}
+    </tbody></table>`;
+}
+function render(){
+  const v=getVariant();
+  document.querySelectorAll(".variant").forEach(el=>el.classList.toggle("active", el.dataset.variant===v));
+  document.getElementById("vlabel").textContent = v+" ("+names[v]+")";
+  document.querySelectorAll(".search-inp").forEach(i=>{ i.value=search; i.oninput=(e)=>{search=e.target.value;render();};});
+  document.querySelectorAll(".list-pane").forEach(renderList);
+  document.querySelectorAll(".detail-pane").forEach(renderDetail);
+  document.querySelectorAll(".cards-pane").forEach(renderCards);
+  document.querySelectorAll(".compact-pane").forEach(renderCompact);
+}
+function init(){ document.addEventListener("keydown",(e)=>{const t=e.target;if(t&&(t.tagName==="INPUT"||t.tagName==="TEXTAREA"||t.isContentEditable))return;if(e.key==="ArrowLeft"){cycle(-1);e.preventDefault();}if(e.key==="ArrowRight"){cycle(1);e.preventDefault();}}); }
+window.select=select; window.payOnAccount=payOnAccount; window.chargeToAccount=chargeToAccount; window.setVariant=setVariant; window.cycle=cycle;
+</script>
+
+<!-- VARIANT A: List + detail -->
+<div class="variant" data-variant="A">
+  <div class="h-screen flex">
+    <div class="w-1/3 bg-white border-r flex flex-col">
+      <div class="p-3 border-b">
+        <input class="search-inp w-full px-3 py-2 border rounded text-sm" placeholder="Search customers..." />
+      </div>
+      <div class="list-pane flex-1 overflow-y-auto"></div>
+      <div class="p-3 border-t"><button class="w-full py-2 bg-blue-600 text-white rounded text-sm">+ New customer</button></div>
+    </div>
+    <div class="flex-1 p-6 overflow-y-auto">
+      <div class="detail-pane"></div>
+    </div>
+  </div>
+</div>
+
+<!-- VARIANT B: Cards -->
+<div class="variant" data-variant="B">
+  <div class="min-h-screen p-4 max-w-5xl mx-auto">
+    <header class="flex items-center justify-between mb-4">
+      <h1 class="text-xl font-bold">Customers</h1>
+      <button class="px-3 py-2 bg-blue-600 text-white rounded text-sm">+ New</button>
+    </header>
+    <input class="search-inp w-full px-3 py-2 border rounded mb-4" placeholder="Search..." />
+    <div class="cards-pane grid grid-cols-2 md:grid-cols-3 gap-3"></div>
+    <div class="mt-4 bg-white rounded-xl shadow p-4 detail-pane"></div>
+  </div>
+</div>
+
+<!-- VARIANT C: Compact table -->
+<div class="variant" data-variant="C">
+  <div class="h-screen flex flex-col">
+    <header class="bg-gray-900 text-white px-4 py-2 flex items-center justify-between">
+      <span class="font-bold">Customers</span>
+      <button class="px-3 py-1 bg-blue-600 rounded text-sm">+ New</button>
+    </header>
+    <div class="p-2 bg-white border-b">
+      <input class="search-inp w-full px-2 py-1 border rounded text-sm" placeholder="Search..." />
+    </div>
+    <div class="flex-1 overflow-y-auto compact-pane"></div>
+    <div class="border-t bg-white p-4 detail-pane"></div>
+  </div>
+</div>
+
+<div class="switcher flex items-center gap-2 bg-black/90 text-white rounded-full px-3 py-2 shadow-lg">
+  <button onclick="cycle(-1)" class="rounded-full w-8 h-8 flex items-center justify-center">◀</button>
+  <span id="vlabel" class="text-sm font-medium min-w-[180px] text-center">A (List + detail)</span>
+  <button onclick="cycle(1)" class="rounded-full w-8 h-8 flex items-center justify-center">▶</button>
+</div>
+
+<script>init(); render();</script>
+</body>
+</html>

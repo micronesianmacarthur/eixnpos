@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>POS Inventory — UI Prototype (THROWAWAY)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; }
+  .variant { display: none; } .variant.active { display: block; }
+  .switcher { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 9999; }
+  .switcher button { background: #111; color: #fff; border: 1px solid #333; }
+  .switcher button:hover { background: #333; }
+</style>
+</head>
+<body class="bg-gray-100 text-gray-900">
+
+<script>
+const PRODUCTS = [
+  { id:1, name:"Coffee (Regular)", price:2.50, category:"Drinks", stock:40, min:10, supplier:"Bean Co" },
+  { id:2, name:"Coffee (Large)", price:3.20, category:"Drinks", stock:35, min:10, supplier:"Bean Co" },
+  { id:3, name:"Latte", price:4.00, category:"Drinks", stock:4, min:8, supplier:"Bean Co" },
+  { id:4, name:"Croissant", price:2.80, category:"Food", stock:15, min:5, supplier:"Bakery Ltd" },
+  { id:5, name:"Sandwich", price:6.50, category:"Food", stock:2, min:6, supplier:"Bakery Ltd" },
+  { id:6, name:"Muffin", price:2.20, category:"Food", stock:18, min:5, supplier:"Bakery Ltd" },
+  { id:7, name:"Water Bottle", price:1.00, category:"Drinks", stock:50, min:12, supplier:"Aqua Inc" },
+  { id:8, name:"Juice", price:2.00, category:"Drinks", stock:25, min:8, supplier:"Aqua Inc" },
+  { id:9, name:"Chips", price:1.50, category:"Snacks", stock:30, min:10, supplier:"SnackCo" },
+  { id:10, name:"Chocolate Bar", price:1.80, category:"Snacks", stock:0, min:6, supplier:"SnackCo" },
+];
+let filter = "All", search = "", showReceive = null, receiveQty = 1;
+const variants = ["A","B","C"], names = {A:"Table + filters", B:"Card grid", C:"Compact list"};
+
+function getVariant(){ const p=new URLSearchParams(location.search); return variants.includes(p.get("variant"))?p.get("variant"):"A"; }
+function setVariant(v){ const u=new URL(location.href); u.searchParams.set("variant",v); history.replaceState(null,"",u); render(); }
+function cycle(d){ const i=variants.indexOf(getVariant()); setVariant(variants[(i+d+variants.length)%variants.length]); }
+
+function filtered(){
+  return PRODUCTS.filter(p =>
+    (filter==="All"||p.category===filter) &&
+    p.name.toLowerCase().includes(search.toLowerCase())
+  );
+}
+function stockBadge(p){
+  if (p.stock===0) return `<span class="text-xs px-2 py-0.5 rounded bg-red-100 text-red-700 font-semibold">Out</span>`;
+  if (p.stock < p.min) return `<span class="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-700 font-semibold">Low</span>`;
+  return `<span class="text-xs px-2 py-0.5 rounded bg-green-100 text-green-700">OK</span>`;
+}
+function receive(p){ showReceive=p.id; receiveQty=1; render(); }
+function confirmReceive(){ const p=PRODUCTS.find(x=>x.id===showReceive); p.stock+=receiveQty; showReceive=null; render(); }
+function cancelReceive(){ showReceive=null; render(); }
+
+function renderProductsTable(){
+  const rows = filtered().map(p=>`
+    <tr class="border-b hover:bg-gray-50">
+      <td class="px-3 py-2 text-sm font-medium">${p.name}</td>
+      <td class="px-3 py-2 text-xs text-gray-500">${p.category}</td>
+      <td class="px-3 py-2 text-sm text-right">${p.stock}</td>
+      <td class="px-3 py-2 text-xs text-gray-500 text-right">${p.min}</td>
+      <td class="px-3 py-2">${stockBadge(p)}</td>
+      <td class="px-3 py-2 text-xs text-gray-500">${p.supplier}</td>
+      <td class="px-3 py-2 text-right">
+        <button class="text-xs px-2 py-1 bg-blue-600 text-white rounded" onclick="receive(PRODUCTS.find(x=>x.id===${p.id}))">Receive</button>
+      </td>
+    </tr>`).join("");
+  document.querySelectorAll(".inv-table").forEach(t=>t.innerHTML = `
+    <thead class="bg-gray-100 text-xs uppercase text-gray-500"><tr>
+      <th class="px-3 py-2 text-left">Product</th><th class="px-3 py-2 text-left">Category</th>
+      <th class="px-3 py-2 text-right">Stock</th><th class="px-3 py-2 text-right">Min</th>
+      <th class="px-3 py-2 text-left">Status</th><th class="px-3 py-2 text-left">Supplier</th>
+      <th class="px-3 py-2"></th>
+    </tr></thead><tbody>${rows}</tbody>`);
+}
+function renderProductsCards(){
+  const cards = filtered().map(p=>`
+    <div class="bg-white rounded-lg shadow-sm p-3 border ${p.stock===0?'border-red-300':p.stock<p.min?'border-amber-300':'border-gray-200'}">
+      <div class="flex justify-between items-start">
+        <div class="font-semibold text-sm">${p.name}</div>${stockBadge(p)}
+      </div>
+      <div class="text-xs text-gray-500 mt-1">${p.category} · ${p.supplier}</div>
+      <div class="mt-2 flex justify-between items-center">
+        <div class="text-2xl font-bold">${p.stock}<span class="text-xs font-normal text-gray-500"> / min ${p.min}</span></div>
+        <button class="text-xs px-2 py-1 bg-blue-600 text-white rounded" onclick="receive(PRODUCTS.find(x=>x.id===${p.id}))">Receive</button>
+      </div>
+    </div>`).join("");
+  document.querySelectorAll(".inv-cards").forEach(g=>g.innerHTML=cards);
+}
+function renderProductsCompact(){
+  const rows = filtered().map(p=>`
+    <div class="flex items-center gap-3 py-2 border-b text-sm">
+      <div class="flex-1">
+        <div class="font-medium">${p.name}</div>
+        <div class="text-xs text-gray-500">${p.category} · ${p.supplier}</div>
+      </div>
+      ${stockBadge(p)}
+      <div class="w-12 text-right font-semibold">${p.stock}</div>
+      <button class="text-xs px-2 py-1 bg-blue-600 text-white rounded" onclick="receive(PRODUCTS.find(x=>x.id===${p.id}))">+</button>
+    </div>`).join("");
+  document.querySelectorAll(".inv-compact").forEach(g=>g.innerHTML=rows);
+}
+function renderReceiveModal(){
+  const m=document.getElementById("recv-modal");
+  if(showReceive===null){m.classList.add("hidden");return;}
+  m.classList.remove("hidden");
+  const p=PRODUCTS.find(x=>x.id===showReceive);
+  document.getElementById("recv-name").textContent=p.name;
+  document.getElementById("recv-qty").value=receiveQty;
+  document.getElementById("recv-qty").oninput=(e)=>{receiveQty=parseInt(e.target.value)||1;};
+}
+function render(){
+  const v=getVariant();
+  document.querySelectorAll(".variant").forEach(el=>el.classList.toggle("active", el.dataset.variant===v));
+  document.getElementById("vlabel").textContent = v+" ("+names[v]+")";
+  document.querySelectorAll(".filter-sel").forEach(s=>{ s.value=filter; s.onchange=(e)=>{filter=e.target.value;render();};});
+  document.querySelectorAll(".search-inp").forEach(i=>{ i.value=search; i.oninput=(e)=>{search=e.target.value;render();};});
+  renderProductsTable(); renderProductsCards(); renderProductsCompact(); renderReceiveModal();
+  // low stock count
+  const low = PRODUCTS.filter(p=>p.stock<p.min).length;
+  document.querySelectorAll(".lowcount").forEach(e=>e.textContent=low);
+}
+function init(){ document.querySelectorAll(".catbtn").forEach(b=>b.onclick=()=>{filter=b.dataset.cat;render();}); }
+window.PRODUCTS=PRODUCTS; window.receive=receive; window.confirmReceive=confirmReceive; window.cancelReceive=cancelReceive;
+window.setVariant=setVariant; window.cycle=cycle;
+document.addEventListener("keydown",(e)=>{const t=e.target;if(t&&(t.tagName==="INPUT"||t.tagName==="TEXTAREA"||t.isContentEditable))return;if(e.key==="ArrowLeft"){cycle(-1);e.preventDefault();}if(e.key==="ArrowRight"){cycle(1);e.preventDefault();}});
+</script>
+
+<!-- VARIANT A: Table + filters -->
+<div class="variant" data-variant="A">
+  <div class="h-screen flex flex-col">
+    <header class="bg-blue-700 text-white px-4 py-2 flex items-center justify-between">
+      <div class="font-bold">Inventory</div>
+      <div class="text-sm">Low stock: <span class="lowcount font-bold">0</span> · <button class="ml-3 px-3 py-1 bg-white/20 rounded text-sm">+ New Product</button></div>
+    </header>
+    <div class="p-3 bg-white border-b flex gap-2 items-center">
+      <input class="search-inp flex-1 px-3 py-2 border rounded" placeholder="Search products..." />
+      <select class="filter-sel px-3 py-2 border rounded"><option>All</option><option>Drinks</option><option>Food</option><option>Snacks</option></select>
+    </div>
+    <div class="flex-1 overflow-auto p-3">
+      <table class="w-full bg-white rounded shadow-sm"><tbody class="inv-table"></tbody></table>
+    </div>
+  </div>
+</div>
+
+<!-- VARIANT B: Card grid -->
+<div class="variant" data-variant="B">
+  <div class="min-h-screen p-4 max-w-6xl mx-auto">
+    <header class="flex items-center justify-between mb-4">
+      <h1 class="text-xl font-bold">Inventory</h1>
+      <div class="flex items-center gap-3">
+        <span class="text-sm text-amber-600 font-semibold">⚠ <span class="lowcount">0</span> low stock</span>
+        <button class="px-3 py-2 bg-blue-600 text-white rounded text-sm">+ New Product</button>
+      </div>
+    </header>
+    <div class="flex gap-2 mb-4">
+      <input class="search-inp flex-1 px-3 py-2 border rounded" placeholder="Search..." />
+      <select class="filter-sel px-3 py-2 border rounded"><option>All</option><option>Drinks</option><option>Food</option><option>Snacks</option></select>
+    </div>
+    <div class="inv-cards grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3"></div>
+  </div>
+</div>
+
+<!-- VARIANT C: Compact list -->
+<div class="variant" data-variant="C">
+  <div class="h-screen flex flex-col bg-gray-50">
+    <header class="bg-gray-900 text-white px-4 py-2 flex items-center justify-between">
+      <span class="font-bold">Inventory</span>
+      <span class="text-xs text-amber-300">Low: <span class="lowcount">0</span></span>
+    </header>
+    <div class="p-2 bg-white border-b flex gap-2">
+      <input class="search-inp flex-1 px-2 py-1 border rounded text-sm" placeholder="Search..." />
+      <select class="filter-sel px-2 py-1 border rounded text-sm"><option>All</option><option>Drinks</option><option>Food</option><option>Snacks</option></select>
+    </div>
+    <div class="flex-1 overflow-y-auto px-3 inv-compact"></div>
+  </div>
+</div>
+
+<!-- Receive modal -->
+<div id="recv-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+  <div class="bg-white rounded-lg p-6 w-80">
+    <h3 class="font-bold mb-2">Receive stock</h3>
+    <p id="recv-name" class="text-sm text-gray-600 mb-3"></p>
+    <input id="recv-qty" type="number" min="1" class="w-full px-3 py-2 border rounded mb-3" />
+    <div class="flex gap-2">
+      <button onclick="confirmReceive()" class="flex-1 py-2 bg-blue-600 text-white rounded">Confirm</button>
+      <button onclick="cancelReceive()" class="flex-1 py-2 bg-gray-200 rounded">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="switcher flex items-center gap-2 bg-black/90 text-white rounded-full px-3 py-2 shadow-lg">
+  <button onclick="cycle(-1)" class="rounded-full w-8 h-8 flex items-center justify-center">◀</button>
+  <span id="vlabel" class="text-sm font-medium min-w-[180px] text-center">A (Table + filters)</span>
+  <button onclick="cycle(1)" class="rounded-full w-8 h-8 flex items-center justify-center">▶</button>
+</div>
+
+<script>init(); render();</script>
+</body>
+</html>
