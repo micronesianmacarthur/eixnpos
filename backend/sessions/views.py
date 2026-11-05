@@ -1,0 +1,55 @@
+from rest_framework import viewsets, status
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+from django.utils import timezone
+from django.db.models import Sum
+from decimal import Decimal
+from .models import Session
+from .serializers import SessionSerializer
+from sales.models import Sale, Payment
+from sales.cash_count import calculate_totals, calculate_removal
+
+class SessionViewSet(viewsets.ModelViewSet):
+    queryset = Session.objects.all()
+    serializer_class = SessionSerializer
+    permission_classes = [IsAuthenticated]
+
+    def perform_create(self, serializer):
+        serializer.save(cashier=self.request.user)
+
+    @action(detail=True, methods=['post'])
+    def close(self, request, pk=None):
+        session = self.get_object()
+        if session.status == Session.STATUS_CLOSED:
+            return Response({'detail':'already closed'}, status=400)
+        counts = request.data.get('counts', {})
+        totals = calculate_totals(counts)
+        counted = totals['grand_total']
+        # cash sales
+        cash_sales = Payment.objects.filter(sale__cashier=session.cashier, method='cash', sale__status='completed', sale__created_at__gte=session.opened_at).aggregate(s=Sum('amount'))['s'] or Decimal('0')
+        expected = session.starting_cash + cash_sales
+        variance = expected - counted
+        session.cash_counts = counts
+        session.counted_cash = counted
+        session.expected_cash = expected
+        session.variance = variance
+        session.sales_total = Sale.objects.filter(cashier=session.cashier, status='completed', created_at__gte=session.opened_at).aggregate(s=Sum('total'))['s'] or Decimal('0')
+        session.status = Session.STATUS_CLOSED
+        session.closed_at = timezone.now()
+        if 'cash_removed' in request.data:
+            session.cash_removed = request.data['cash_removed']
+        session.save()
+        return Response(SessionSerializer(session).data)
+
+    @action(detail=True, methods=['get'])
+    def zreport(self, request, pk=None):
+        session = self.get_object()
+        return Response(SessionSerializer(session).data)
+
+    @action(detail=True, methods=['post'])
+    def removal(self, request, pk=None):
+        session = self.get_object()
+        amount = Decimal(str(request.data.get('amount', '0')))
+        res = calculate_removal(amount, request.data.get('available_counts', session.cash_counts or {}))
+        return Response(res)
