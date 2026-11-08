@@ -3,7 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.contrib.auth import authenticate
 from django.utils import timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from .models import Sale, SaleLine, Payment
 from .serializers import SaleSerializer, SaleLineSerializer, PaymentSerializer
 from products.models import Product
@@ -24,34 +24,54 @@ class SaleViewSet(viewsets.ModelViewSet):
         sale = self.get_object()
         if sale.status != Sale.STATUS_OPEN:
             return Response({'detail': 'sale not open'}, status=400)
-        product_id = request.data.get('product')
-        qty = int(request.data.get('quantity', 1))
-        product = Product.objects.get(pk=product_id)
+        try:
+            qty = int(request.data.get('quantity', 1))
+        except (TypeError, ValueError):
+            return Response({'detail': 'invalid quantity'}, status=400)
+        if qty < 1:
+            return Response({'detail': 'quantity must be positive'}, status=400)
+        try:
+            product = Product.objects.get(pk=request.data.get('product'))
+        except (Product.DoesNotExist, TypeError, ValueError):
+            return Response({'detail': 'product not found'}, status=400)
         line = SaleLine.objects.create(sale=sale, product=product, quantity=qty, unit_price=product.price)
         sale.recompute()
         return Response(SaleLineSerializer(line).data, status=201)
 
-    @action(detail=True, methods=['patch'], url_path='lines/(?P<line_id>[^/.]+)')
-    def update_line(self, request, pk=None, line_id=None):
+    @action(detail=True, methods=['patch', 'delete'], url_path='lines/(?P<line_id>[^/.]+)')
+    def line_detail(self, request, pk=None, line_id=None):
         sale = self.get_object()
-        line = SaleLine.objects.get(pk=line_id, sale=sale)
+        if sale.status != Sale.STATUS_OPEN:
+            return Response({'detail': 'sale not open'}, status=400)
+        try:
+            line = SaleLine.objects.get(pk=line_id, sale=sale)
+        except (SaleLine.DoesNotExist, TypeError, ValueError):
+            return Response({'detail': 'line not found'}, status=404)
+        if request.method == 'DELETE':
+            line.delete()
+            sale.recompute()
+            return Response(status=204)
         if 'quantity' in request.data:
-            line.quantity = int(request.data['quantity'])
+            try:
+                qty = int(request.data['quantity'])
+            except (TypeError, ValueError):
+                return Response({'detail': 'invalid quantity'}, status=400)
+            if qty < 1:
+                return Response({'detail': 'quantity must be positive'}, status=400)
+            line.quantity = qty
             line.save(update_fields=['quantity'])
         sale.recompute()
         return Response(SaleLineSerializer(line).data)
 
-    @action(detail=True, methods=['delete'], url_path='lines/(?P<line_id>[^/.]+)')
-    def remove_line(self, request, pk=None, line_id=None):
-        sale = self.get_object()
-        SaleLine.objects.filter(pk=line_id, sale=sale).delete()
-        sale.recompute()
-        return Response(status=204)
-
     @action(detail=True, methods=['post'], url_path='lines/(?P<line_id>[^/.]+)/discount')
     def apply_discount(self, request, pk=None, line_id=None):
         sale = self.get_object()
-        line = SaleLine.objects.get(pk=line_id, sale=sale)
+        if sale.status != Sale.STATUS_OPEN:
+            return Response({'detail': 'sale not open'}, status=400)
+        try:
+            line = SaleLine.objects.get(pk=line_id, sale=sale)
+        except (SaleLine.DoesNotExist, TypeError, ValueError):
+            return Response({'detail': 'line not found'}, status=404)
         # manager gating
         manager_username = request.data.get('manager_username')
         manager_password = request.data.get('manager_password')
@@ -65,16 +85,28 @@ class SaleViewSet(viewsets.ModelViewSet):
         if user is None:
             return Response({'detail': 'manager required'}, status=403)
         dtype = request.data.get('discount_type', 'none')
-        value = Decimal(str(request.data.get('discount_value', 0)))
-        line.discount_type = dtype
-        line.discount_value = value
+        if dtype not in dict(SaleLine.DISCOUNT_CHOICES):
+            return Response({'detail': 'invalid discount type'}, status=400)
+        try:
+            value = Decimal(str(request.data.get('discount_value', 0)))
+        except (InvalidOperation, TypeError, ValueError):
+            return Response({'detail': 'invalid discount value'}, status=400)
+        if value < 0:
+            return Response({'detail': 'discount cannot be negative'}, status=400)
         base = line.unit_price * line.quantity
         if dtype == 'percent':
-            line.discount_amount = (base * value / Decimal('100')).quantize(Decimal('0.01'))
+            if value > Decimal('100'):
+                return Response({'detail': 'percent discount cannot exceed 100'}, status=400)
+            discount_amount = (base * value / Decimal('100')).quantize(Decimal('0.01'))
         elif dtype == 'fixed':
-            line.discount_amount = value
+            if value > base:
+                return Response({'detail': 'discount cannot exceed line total'}, status=400)
+            discount_amount = value.quantize(Decimal('0.01'))
         else:
-            line.discount_amount = Decimal('0')
+            discount_amount = Decimal('0')
+        line.discount_type = dtype
+        line.discount_value = value
+        line.discount_amount = discount_amount
         line.discount_authorizer = user
         line.save()
         sale.recompute()
@@ -86,12 +118,23 @@ class SaleViewSet(viewsets.ModelViewSet):
         if sale.status != Sale.STATUS_OPEN:
             return Response({'detail': 'sale not open'}, status=400)
         method = request.data.get('method')
-        amount = Decimal(str(request.data.get('amount', 0)))
+        if method not in dict(Payment.METHOD_CHOICES):
+            return Response({'detail': 'invalid payment method'}, status=400)
+        try:
+            amount = Decimal(str(request.data.get('amount', 0)))
+        except (InvalidOperation, TypeError, ValueError):
+            return Response({'detail': 'invalid amount'}, status=400)
+        if amount <= 0:
+            return Response({'detail': 'amount must be positive'}, status=400)
         tendered = request.data.get('tendered')
-        tendered = Decimal(str(tendered)) if tendered is not None else None
-        manager_approved = False
-        if is_manager(request.user):
-            manager_approved = True
+        if tendered is not None:
+            try:
+                tendered = Decimal(str(tendered))
+            except (InvalidOperation, TypeError, ValueError):
+                return Response({'detail': 'invalid tendered amount'}, status=400)
+            if method == Payment.METHOD_CASH and tendered < amount:
+                return Response({'detail': 'tendered amount is less than amount due'}, status=400)
+        manager_approved = is_manager(request.user)
         # allow manager creds override
         mu = request.data.get('manager_username')
         mp = request.data.get('manager_password')
@@ -100,21 +143,26 @@ class SaleViewSet(viewsets.ModelViewSet):
             if cand and is_manager(cand):
                 manager_approved = True
         # invoice gating
-        if method == 'invoice':
-            customer = sale.customer or (Customer.objects.filter(pk=request.data.get('customer')).first())
+        if method == Payment.METHOD_INVOICE:
+            customer = sale.customer
+            if customer is None and request.data.get('customer') is not None:
+                try:
+                    customer = Customer.objects.filter(pk=request.data.get('customer')).first()
+                except (TypeError, ValueError):
+                    customer = None
             if customer is None:
                 return Response({'detail': 'customer required'}, status=400)
+            if not manager_approved:
+                return Response({'detail': 'manager required'}, status=403)
             sale.customer = customer
             sale.save(update_fields=['customer'])
-            if not is_manager(request.user) and not (mu and mp and authenticate(username=mu, password=mp) and is_manager(authenticate(username=mu, password=mp))):
-                return Response({'detail': 'manager required'}, status=403)
             new_balance = customer.balance + amount
             if new_balance > customer.credit_limit and not manager_approved:
                 return Response({'detail': 'credit limit exceeded'}, status=400)
             customer.balance = new_balance
             customer.save()
         change_due = Decimal('0')
-        if method == 'cash' and tendered is not None:
+        if method == Payment.METHOD_CASH and tendered is not None:
             change_due = tendered - amount
         payment = Payment.objects.create(sale=sale, method=method, amount=amount, tendered=tendered, change_due=change_due, manager_approved=manager_approved)
         return Response(PaymentSerializer(payment).data, status=201)

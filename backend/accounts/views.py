@@ -1,13 +1,16 @@
 from django.contrib.auth import authenticate, login, logout
 from django.middleware.csrf import get_token
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated, IsAdminUser
 from rest_framework.response import Response
-
 from .serializers import UserSerializer
 from django.contrib.auth import update_session_auth_hash
 from business.models import BusinessInfo
 
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def csrf_view(request):
+    return Response({'csrfToken': get_token(request)})
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -25,13 +28,11 @@ def login_view(request):
         'business_info_complete': bi.is_complete(),
     })
 
-
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def logout_view(request):
     logout(request)
     return Response({'detail': 'logged out'})
-
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -43,12 +44,23 @@ def me_view(request):
         'business_info_complete': bi.is_complete(),
     })
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def business_info_view(request):
+    bi = BusinessInfo.get()
+    return Response({
+        'company_name': bi.company_name,
+        'phone': bi.phone,
+        'email': bi.email,
+        'address': bi.address,
+        'website': bi.website,
+        'is_complete': bi.is_complete(),
+    })
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
-def csrf_view(request):
-    return Response({'csrfToken': get_token(request)})
-
+@permission_classes([IsAdminUser])
+def admin_dashboard_view(request):
+    return Response({'message': 'Admin dashboard'})
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -62,4 +74,3 @@ def change_password_view(request):
     request.user.save()
     update_session_auth_hash(request, request.user)
     return Response({'detail': 'changed'})
-

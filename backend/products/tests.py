@@ -29,3 +29,33 @@ class InventoryTests(TestCase):
     def test_low_stock(self):
         StockMovement.objects.create(product=self.product, movement_type='receive', quantity=3)
         self.assertTrue(self.product.is_low_stock())
+
+    def test_quantity_is_zero_without_movements(self):
+        self.assertEqual(self.product.quantity, 0)
+
+    def test_quantity_sums_all_movement_types(self):
+        StockMovement.objects.create(product=self.product, movement_type='receive', quantity=10)
+        StockMovement.objects.create(product=self.product, movement_type='sale', quantity=-4)
+        StockMovement.objects.create(product=self.product, movement_type='damage', quantity=-1)
+        StockMovement.objects.create(product=self.product, movement_type='adjustment', quantity=2)
+
+        self.assertEqual(self.product.quantity, 7)
+
+    def test_low_stock_is_inclusive_of_minimum(self):
+        StockMovement.objects.create(product=self.product, movement_type='receive', quantity=5)
+        self.assertTrue(self.product.is_low_stock())
+
+    def test_not_low_stock_above_minimum(self):
+        StockMovement.objects.create(product=self.product, movement_type='receive', quantity=6)
+        self.assertFalse(self.product.is_low_stock())
+
+    def test_receive_requires_authentication(self):
+        anonymous = APIClient()
+
+        response = anonymous.post(
+            f'/api/products/{self.product.id}/receive/',
+            {'quantity': 1},
+            format='json',
+        )
+
+        self.assertIn(response.status_code, (401, 403))
