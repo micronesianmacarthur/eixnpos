@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { apiFetch, ApiError } from './api';
 
 function LoginPage() {
   const [username, setUsername] = useState('');
@@ -8,29 +9,18 @@ function LoginPage() {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setLoading(true);
     setError('');
     try {
-      const response = await fetch('/api/auth/login', {
+      await apiFetch('/api/auth/login/', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
         body: JSON.stringify({ username, password }),
       });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        setError(errorData.detail || 'Login failed');
-      } else {
-        // Login successful - navigate to home
-        navigate('/', { replace: true });
-      }
+      navigate('/', { replace: true });
     } catch (err) {
-      setError('Network error');
+      setError(err instanceof ApiError ? err.message : 'Network error');
     } finally {
       setLoading(false);
     }

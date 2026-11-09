@@ -1,7 +1,20 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type ChangeEvent, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { apiFetch, ApiError } from './api';
 
-function BusinessInfoForm() {
+interface BusinessInfo {
+  company_name: string;
+  phone: string;
+  email: string;
+  address?: string;
+  website?: string;
+}
+
+interface BusinessInfoFormProps {
+  onSaved?: () => void;
+}
+
+function BusinessInfoForm({ onSaved }: BusinessInfoFormProps) {
   const [formData, setFormData] = useState({
     company_name: '',
     phone: '',
@@ -13,8 +26,7 @@ function BusinessInfoForm() {
 
   useEffect(() => {
     // Fetch business info on component mount
-    fetch('/api/business/')
-      .then((res) => res.json())
+    apiFetch<BusinessInfo>('/api/business/')
       .then((data) => {
         setFormData({
           company_name: data.company_name || '',
@@ -23,36 +35,31 @@ function BusinessInfoForm() {
         });
       })
       .catch((err) => {
-        setError('Failed to load business info');
+        setError(err instanceof ApiError ? err.message : 'Failed to load business info');
       });
   }, []);
 
-  const handleChange = (e) => {
+  const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setIsSubmitting(true);
     setError('');
     try {
-      const response = await fetch('/api/business/', {
+      await apiFetch<BusinessInfo>('/api/business/', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
         body: JSON.stringify(formData),
       });
-
-      if (response.ok) {
-        navigate('/');
+      if (onSaved) {
+        onSaved();
       } else {
-        const errorData = await response.json();
-        setError(errorData.error || 'Failed to save business info');
+        navigate('/');
       }
     } catch (err) {
-      setError('Network error');
+      setError(err instanceof ApiError ? err.message : 'Network error');
     } finally {
       setIsSubmitting(false);
     }

@@ -1,0 +1,69 @@
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.app-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.app-user {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.app-user-name {
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.app-user-role {
+  font-size: 0.85rem;
+  color: var(--text);
+  text-transform: capitalize;
+}
+
+.app-page {
+  flex: 1;
+  padding: 1.5rem;
+}
+
+.dashboard-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.dashboard-card {
+  padding: 1.25rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.dashboard-card h2 {
+  margin-top: 0;
+}
+
+.dashboard-card p {
+  color: var(--text);
+}
+
+@media (max-width: 800px) {
+  .app-header {
+    padding-left: 4rem;
+  }
+}
