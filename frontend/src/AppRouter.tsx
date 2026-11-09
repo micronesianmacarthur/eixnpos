@@ -5,6 +5,8 @@ import AppLayout from './AppLayout';
 import DashboardPage from './DashboardPage';
 import LoginPage from './LoginPage';
 import PlaceholderPage from './PlaceholderPage';
+import CustomersPage from './CustomersPage';
+import SalesPage from './SalesPage';
 import { AuthProvider, RequireAuth, RequireRole } from './auth';
 
 function AppRouter() {
@@ -23,15 +25,7 @@ function AppRouter() {
           >
             <Route element={<AppLayout />}>
               <Route index element={<DashboardPage />} />
-              <Route
-                path="sales"
-                element={
-                  <PlaceholderPage
-                    title="Sales"
-                    description="Ring up sales and review completed transactions."
-                  />
-                }
-              />
+              <Route path="sales" element={<SalesPage />} />
               <Route
                 path="sales-manager"
                 element={
@@ -41,15 +35,7 @@ function AppRouter() {
                   />
                 }
               />
-              <Route
-                path="customers"
-                element={
-                  <PlaceholderPage
-                    title="Customers"
-                    description="Manage customer accounts, balances, and credit limits."
-                  />
-                }
-              />
+              <Route path="customers" element={<CustomersPage />} />
               <Route
                 path="suppliers"
                 element={
