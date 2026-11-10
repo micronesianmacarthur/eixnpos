@@ -1,0 +1,238 @@
+.product-page {
+  --primary-bg: #7c3aed;
+  --primary-fg: #ffffff;
+  --success-bg: #15803d;
+  --success-fg: #ffffff;
+  --success: #15803d;
+  --danger: #b91c1c;
+  --warning: #b45309;
+  --panel-bg: var(--bg);
+  --panel-muted: var(--code-bg);
+}
+
+@media (prefers-color-scheme: dark) {
+  .product-page {
+    --primary-bg: #a78bfa;
+    --primary-fg: #16171d;
+    --success-bg: #4ade80;
+    --success-fg: #16171d;
+    --success: #4ade80;
+    --danger: #f87171;
+    --warning: #fbbf24;
+  }
+}
+
+.product-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.product-heading h1 {
+  margin: 0;
+}
+
+.page-subtitle {
+  margin-top: 0.2rem;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.product-page .error {
+  font-size: 0.88rem;
+  color: var(--danger);
+  margin-bottom: 1rem;
+}
+
+.product-page .loading {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text);
+}
+
+/* Buttons */
+.product-page .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.55rem 0.95rem;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--text-h);
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    opacity 0.15s ease;
+}
+
+.product-page .btn:hover:not(:disabled) {
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+}
+
+.product-page .btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.product-page .btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.product-page .btn-primary {
+  color: var(--primary-fg);
+  background: var(--primary-bg);
+  border-color: var(--primary-bg);
+}
+
+.product-page .btn-primary:hover:not(:disabled) {
+  color: var(--primary-fg);
+  background: var(--primary-bg);
+  filter: brightness(1.08);
+  border-color: var(--primary-bg);
+}
+
+.product-page .btn-ghost {
+  background: transparent;
+}
+
+.product-page .btn-danger-ghost {
+  color: var(--danger);
+  background: transparent;
+  border-color: var(--border);
+}
+
+.product-page .btn-danger-ghost:hover:not(:disabled) {
+  background: rgba(185, 28, 28, 0.1);
+  border-color: currentColor;
+}
+
+/* Form */
+.product-form {
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.5rem;
+  max-width: 720px;
+}
+
+.form-section {
+  margin-bottom: 1.5rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.form-section:last-of-type {
+  border-bottom: none;
+  margin-bottom: 0.5rem;
+  padding-bottom: 0;
+}
+
+.form-section h2 {
+  margin: 0 0 1rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-h);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.field > span {
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.required {
+  color: var(--danger);
+  margin-left: 0.2rem;
+}
+
+.field input,
+.field select,
+.field textarea {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 0.92rem;
+  color: var(--text-h);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.field input:focus-visible,
+.field select:focus-visible,
+.field textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.9rem;
+}
+
+.checkbox-field {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.checkbox-field input {
+  width: auto;
+  accent-color: var(--primary-bg);
+}
+
+.checkbox-field span {
+  font-weight: 500;
+  color: var(--text-h);
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 520px) {
+  .product-heading {
+    align-items: stretch;
+  }
+
+  .product-heading .btn {
+    width: 100%;
+  }
+
+  .form-actions {
+    flex-direction: column-reverse;
+  }
+
+  .form-actions .btn {
+    width: 100%;
+  }
+}

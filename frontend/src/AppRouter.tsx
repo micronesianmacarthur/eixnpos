@@ -8,6 +8,7 @@ import PlaceholderPage from './PlaceholderPage';
 import CustomersPage from './CustomersPage';
 import SalesPage from './SalesPage';
 import InventoryPage from './InventoryPage';
+import ProductPage from './ProductPage';
 import { AuthProvider, RequireAuth, RequireRole } from './auth';
 
 function AppRouter() {
@@ -46,10 +47,7 @@ function AppRouter() {
                   />
                 }
               />
-              <Route
-                path="inventory"
-                element={<InventoryPage />}
-              />
+              <Route path="inventory" element={<InventoryPage />} />
               <Route
                 path="close"
                 element={
@@ -59,6 +57,11 @@ function AppRouter() {
                   />
                 }
               />
+
+              <Route element={<RequireRole roles={['manager', 'admin']} />}>
+                <Route path="inventory/new" element={<ProductPage />} />
+                <Route path="inventory/product/:id" element={<ProductPage />} />
+              </Route>
 
               <Route element={<RequireRole roles={['manager', 'admin']} />}>
                 <Route
