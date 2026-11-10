@@ -7,6 +7,7 @@ import LoginPage from './LoginPage';
 import PlaceholderPage from './PlaceholderPage';
 import CustomersPage from './CustomersPage';
 import SalesPage from './SalesPage';
+import InventoryPage from './InventoryPage';
 import { AuthProvider, RequireAuth, RequireRole } from './auth';
 
 function AppRouter() {
@@ -47,12 +48,7 @@ function AppRouter() {
               />
               <Route
                 path="inventory"
-                element={
-                  <PlaceholderPage
-                    title="Inventory"
-                    description="Track stock movements, receive stock, and watch low-stock items."
-                  />
-                }
+                element={<InventoryPage />}
               />
               <Route
                 path="close"
