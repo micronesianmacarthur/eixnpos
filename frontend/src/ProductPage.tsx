@@ -38,6 +38,17 @@ interface Supplier {
   created_at: string;
 }
 
+interface StockMovement {
+  id: number;
+  product: number;
+  product_name: string;
+  movement_type: 'sale' | 'receive' | 'damage' | 'adjustment';
+  quantity: number;
+  reference: string;
+  note: string;
+  created_at: string;
+}
+
 interface ProductForm {
   name: string;
   sku: string;
@@ -47,6 +58,7 @@ interface ProductForm {
   min_stock: string;
   supplier: string;
   active: boolean;
+  initial_stock: string;
 }
 
 const EMPTY_FORM: ProductForm = {
@@ -58,11 +70,35 @@ const EMPTY_FORM: ProductForm = {
   min_stock: '0',
   supplier: '',
   active: true,
+  initial_stock: '0',
 };
 
 function toNumber(value: string | number | null | undefined): number {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+const TYPE_LABELS: Record<StockMovement['movement_type'], string> = {
+  sale: 'Sale',
+  receive: 'Receive',
+  damage: 'Damage',
+  adjustment: 'Adjustment',
+};
+
+const TYPE_COLORS: Record<StockMovement['movement_type'], string> = {
+  sale: 'type-sale',
+  receive: 'type-receive',
+  damage: 'type-damage',
+  adjustment: 'type-adjustment',
+};
+
+function formatDate(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function normalizeList<T>(data: T[] | { results: T[] }): T[] {
+  return Array.isArray(data) ? data : data.results;
 }
 
 export default function ProductPage() {
@@ -75,8 +111,11 @@ export default function ProductPage() {
   const productId = isEdit ? parseInt(id, 10) : null;
 
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [movements, setMovements] = useState<StockMovement[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [movementLoading, setMovementLoading] = useState(false);
+  const [movementError, setMovementError] = useState('');
   const [error, setError] = useState('');
 
   const [form, setForm] = useState<ProductForm>(EMPTY_FORM);
@@ -104,11 +143,28 @@ export default function ProductPage() {
         min_stock: String(product.min_stock),
         supplier: product.supplier ? String(product.supplier) : '',
         active: product.active,
+        initial_stock: '0',
       });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to load product');
     } finally {
       setLoading(false);
+    }
+  }, [isEdit, productId]);
+
+  const loadMovements = useCallback(async () => {
+    if (!isEdit || !productId) return;
+    setMovementLoading(true);
+    setMovementError('');
+    try {
+      const data = await apiFetch<StockMovement[] | { results: StockMovement[] }>(
+        `/api/inventory/?product=${productId}`
+      );
+      setMovements(normalizeList(data));
+    } catch (err) {
+      setMovementError(err instanceof ApiError ? err.message : 'Failed to load stock movements');
+    } finally {
+      setMovementLoading(false);
     }
   }, [isEdit, productId]);
 
@@ -122,6 +178,12 @@ export default function ProductPage() {
     }
   }, [isEdit]);
 
+  useEffect(() => {
+    if (isEdit && productId) {
+      loadMovements();
+    }
+  }, [isEdit, productId, loadMovements]);
+
   const handleChange = (field: keyof ProductForm, value: string | boolean) => {
     setForm((prev) => ({ ...prev, [field]: value }));
   };
@@ -131,6 +193,7 @@ export default function ProductPage() {
     if (toNumber(form.price) < 0) return 'Price cannot be negative.';
     if (toNumber(form.cost) < 0) return 'Cost cannot be negative.';
     if (toNumber(form.min_stock) < 0) return 'Min stock cannot be negative.';
+    if (!isEdit && toNumber(form.initial_stock) < 0) return 'Initial stock cannot be negative.';
     return null;
   };
 
@@ -163,13 +226,21 @@ export default function ProductPage() {
           method: 'PATCH',
           body: JSON.stringify(payload),
         });
+        navigate('/inventory', { replace: true });
       } else {
-        await apiFetch<Product>('/api/products/', {
+        const saved = await apiFetch<Product>('/api/products/', {
           method: 'POST',
           body: JSON.stringify(payload),
         });
+        const initialQty = parseInt(form.initial_stock, 10) || 0;
+        if (initialQty > 0) {
+          await apiFetch(`/api/products/${saved.id}/receive/`, {
+            method: 'POST',
+            body: JSON.stringify({ quantity: initialQty, note: 'Initial stock' }),
+          });
+        }
+        navigate('/inventory', { replace: true });
       }
-      navigate('/inventory', { replace: true });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to save product');
     } finally {
@@ -325,6 +396,20 @@ export default function ProductPage() {
                 required
               />
             </label>
+
+            {!isEdit && (
+              <label className="field">
+                <span>Initial stock</span>
+                <input
+                  type="number"
+                  step="1"
+                  min="0"
+                  value={form.initial_stock}
+                  onChange={(e) => handleChange('initial_stock', e.target.value)}
+                  placeholder="Optional, e.g. 50"
+                />
+              </label>
+            )}
           </div>
         </div>
 
@@ -350,6 +435,49 @@ export default function ProductPage() {
           </button>
         </footer>
       </form>
+
+      {isEdit && (
+        <section className="movements-section">
+          <h2>Stock Movements</h2>
+          {movementLoading && <p className="muted">Loading...</p>}
+          {movementError && <p className="error" role="alert">{movementError}</p>}
+          {!movementLoading && !movementError && movements.length === 0 && (
+            <p className="muted">No stock movements recorded yet.</p>
+          )}
+          {movements.length > 0 && (
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Type</th>
+                    <th className="num">Qty</th>
+                    <th>Reference</th>
+                    <th>Note</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {movements.map((movement) => (
+                    <tr key={movement.id}>
+                      <td>{formatDate(movement.created_at)}</td>
+                      <td>
+                        <span className={`movement-type ${TYPE_COLORS[movement.movement_type]}`}>
+                          {TYPE_LABELS[movement.movement_type]}
+                        </span>
+                      </td>
+                      <td className="num">
+                        {movement.quantity > 0 ? '+' : ''}{movement.quantity}
+                      </td>
+                      <td>{movement.reference || '—'}</td>
+                      <td>{movement.note || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
     </section>
   );
 }
