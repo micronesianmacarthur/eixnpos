@@ -2,6 +2,7 @@ from rest_framework import viewsets, permissions, status
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 from django.contrib.auth import get_user_model
+from django.db.models.deletion import ProtectedError
 
 from .serializers import UserSerializer, UserCreateSerializer, UserUpdateSerializer
 from accounts.permissions import IsManagerOrAdmin
@@ -64,4 +65,10 @@ class UserViewSet(viewsets.ModelViewSet):
                 {'detail': 'You cannot delete your own account.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        return super().destroy(request, *args, **kwargs)
+        try:
+            return super().destroy(request, *args, **kwargs)
+        except ProtectedError:
+            return Response(
+                {'detail': 'This user cannot be deleted because they are referenced by sales history.'},
+                status=status.HTTP_409_CONFLICT,
+            )

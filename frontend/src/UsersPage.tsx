@@ -291,7 +291,7 @@ export default function UsersPage() {
               <p className="user-list-message">Loading users...</p>
             )}
             {listError && (
-              <p className="user-list-message error" role="alert">
+              <p className="mm-alert mm-alert--danger user-list-message" role="alert">
                 {listError}
               </p>
             )}
