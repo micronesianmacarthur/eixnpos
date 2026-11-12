@@ -584,8 +584,10 @@ class TransactionService:
             sale.completed_at = timezone.now()
             sale.save(update_fields=['status', 'completed_at'])
 
-            # Create stock movements for each line item
+            # Create stock movements for each stock product only
             for line in sale.lines.all():
+                if line.product.non_stock:
+                    continue
                 StockMovement.objects.create(
                     product=line.product,
                     quantity=-line.quantity,
@@ -643,8 +645,10 @@ class TransactionService:
             sale.completed_at = timezone.now()
             sale.save(update_fields=['status', 'completed_at'])
 
-            # Create stock movements for each line item
+            # Create stock movements for each stock product only
             for line in sale.lines.all():
+                if line.product.non_stock:
+                    continue
                 StockMovement.objects.create(
                     product=line.product,
                     quantity=-line.quantity,

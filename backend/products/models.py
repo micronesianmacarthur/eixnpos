@@ -8,6 +8,7 @@ class Product(models.Model):
     price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     cost = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     min_stock = models.IntegerField(default=0)
+    non_stock = models.BooleanField(default=False)
     supplier = models.ForeignKey(Supplier, null=True, blank=True, on_delete=models.SET_NULL, related_name='products')
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -18,6 +19,8 @@ class Product(models.Model):
 
     @property
     def quantity(self):
+        if self.non_stock:
+            return 0
         from inventory.models import StockMovement
         total = 0
         for m in StockMovement.objects.filter(product=self):
@@ -25,4 +28,6 @@ class Product(models.Model):
         return total
 
     def is_low_stock(self):
+        if self.non_stock:
+            return False
         return self.quantity <= self.min_stock

@@ -26,6 +26,7 @@ interface Product {
   updated_at: string;
   quantity: number;
   is_low_stock: boolean;
+  non_stock: boolean;
 }
 
 interface ReceiveForm {
@@ -122,7 +123,7 @@ export default function InventoryPage() {
   );
 
   const outOfStockCount = useMemo(
-    () => products.filter((p) => p.quantity === 0).length,
+    () => products.filter((p) => !p.non_stock && p.quantity === 0).length,
     [products]
   );
 

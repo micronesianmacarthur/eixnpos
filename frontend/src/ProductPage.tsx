@@ -24,6 +24,7 @@ interface Product {
   updated_at: string;
   quantity: number;
   is_low_stock: boolean;
+  non_stock: boolean;
 }
 
 interface Supplier {
@@ -58,6 +59,7 @@ interface ProductForm {
   min_stock: string;
   supplier: string;
   active: boolean;
+  non_stock: boolean;
   initial_stock: string;
 }
 
@@ -70,6 +72,7 @@ const EMPTY_FORM: ProductForm = {
   min_stock: '0',
   supplier: '',
   active: true,
+  non_stock: false,
   initial_stock: '0',
 };
 
@@ -143,6 +146,7 @@ export default function ProductPage() {
         min_stock: String(product.min_stock),
         supplier: product.supplier ? String(product.supplier) : '',
         active: product.active,
+        non_stock: product.non_stock,
         initial_stock: '0',
       });
     } catch (err) {
@@ -218,6 +222,7 @@ export default function ProductPage() {
       min_stock: parseInt(form.min_stock, 10) || 0,
       supplier: form.supplier ? parseInt(form.supplier, 10) : null,
       active: form.active,
+      non_stock: form.non_stock,
     };
 
     try {
@@ -420,6 +425,15 @@ export default function ProductPage() {
             onChange={(e) => handleChange('active', e.target.checked)}
           />
           <span className="mm-label">Active (visible in sale screen)</span>
+        </label>
+
+        <label className="checkbox-field">
+          <input
+            type="checkbox"
+            checked={form.non_stock}
+            onChange={(e) => handleChange('non_stock', e.target.checked)}
+          />
+          <span className="mm-label">Non-stock product (service, no inventory tracking)</span>
         </label>
       </section>
 

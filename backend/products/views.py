@@ -18,6 +18,11 @@ class ProductViewSet(viewsets.ModelViewSet):
     @decorators.action(detail=True, methods=['post'])
     def receive(self, request, pk=None):
         product = self.get_object()
+        if product.non_stock:
+            return response.Response(
+                {'detail': 'Non-stock products cannot receive stock.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         qty = int(request.data.get('quantity', 0))
         note = request.data.get('note', '')
         from inventory.models import StockMovement

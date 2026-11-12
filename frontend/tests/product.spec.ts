@@ -576,6 +576,7 @@ test('creates a product and posts initial stock before returning to inventory', 
     min_stock: 8,
     supplier: 1,
     active: false,
+    non_stock: false,
   });
 
   const received = await receiveRequest;

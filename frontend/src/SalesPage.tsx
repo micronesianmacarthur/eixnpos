@@ -16,6 +16,7 @@ interface Product {
   price: string;
   quantity: number;
   is_low_stock: boolean;
+  non_stock: boolean;
   active: boolean;
 }
 
@@ -490,7 +491,7 @@ export default function SalesPage() {
                 key={product.id}
                 type="button"
                 className="mm-card product-card"                onClick={() => void addToCart(product)}
-                disabled={busy || product.quantity <= 0}
+                disabled={busy || (!product.non_stock && product.quantity <= 0)}
               >
                 <span className="product-name">{product.name}</span>
                 <span className="product-meta">
