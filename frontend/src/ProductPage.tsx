@@ -13,9 +13,12 @@ interface Product {
   id: number;
   name: string;
   sku: string | null;
+  category: number | null;
+  category_name: string | null;
   description: string;
   price: string;
   cost: string;
+  markup_margin: string;
   min_stock: number;
   supplier: number | null;
   supplier_name: string | null;
@@ -53,9 +56,11 @@ interface StockMovement {
 interface ProductForm {
   name: string;
   sku: string;
+  category: string;
   description: string;
   price: string;
   cost: string;
+  markup_margin: string;
   min_stock: string;
   supplier: string;
   active: boolean;
@@ -66,9 +71,11 @@ interface ProductForm {
 const EMPTY_FORM: ProductForm = {
   name: '',
   sku: '',
+  category: '',
   description: '',
   price: '0.00',
   cost: '0.00',
+  markup_margin: '10',
   min_stock: '0',
   supplier: '',
   active: true,
@@ -114,6 +121,17 @@ export default function ProductPage() {
   const productId = isEdit ? parseInt(id, 10) : null;
 
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [categories, setCategories] = useState<{ id: number; name: string; active?: boolean }[]>([]);
+
+  const [categoryModalOpen, setCategoryModalOpen] = useState(false);
+  const [categoryName, setCategoryName] = useState('');
+  const [categorySaving, setCategorySaving] = useState(false);
+  const [categoryError, setCategoryError] = useState('');
+
+  const [supplierModalOpen, setSupplierModalOpen] = useState(false);
+  const [supplierName, setSupplierName] = useState('');
+  const [supplierSaving, setSupplierSaving] = useState(false);
+  const [supplierError, setSupplierError] = useState('');
   const [movements, setMovements] = useState<StockMovement[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -133,6 +151,16 @@ export default function ProductPage() {
     }
   }, []);
 
+  const loadCategories = useCallback(async () => {
+    try {
+      const data = await apiFetch<{ id: number; name: string; active?: boolean }[] | { results: { id: number; name: string; active?: boolean }[] }>('/api/categories/');
+      const list = Array.isArray(data) ? data : data.results;
+      setCategories(list.filter((c) => c.active !== false));
+    } catch {
+      // non-fatal
+    }
+  }, []);
+
   const loadProduct = useCallback(async () => {
     if (!isEdit || !productId) return;
     try {
@@ -140,9 +168,11 @@ export default function ProductPage() {
       setForm({
         name: product.name,
         sku: product.sku || '',
+        category: product.category ? String(product.category) : '',
         description: product.description,
         price: product.price,
         cost: product.cost,
+        markup_margin: product.markup_margin || '10',
         min_stock: String(product.min_stock),
         supplier: product.supplier ? String(product.supplier) : '',
         active: product.active,
@@ -173,8 +203,8 @@ export default function ProductPage() {
   }, [isEdit, productId]);
 
   useEffect(() => {
-    Promise.all([loadSuppliers(), loadProduct()]);
-  }, [loadSuppliers, loadProduct]);
+    Promise.all([loadSuppliers(), loadCategories(), loadProduct()]);
+  }, [loadSuppliers, loadCategories, loadProduct]);
 
   useEffect(() => {
     if (!isEdit) {
@@ -190,6 +220,77 @@ export default function ProductPage() {
 
   const handleChange = (field: keyof ProductForm, value: string | boolean) => {
     setForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+
+  const openCategoryModal = () => {
+    setCategoryName('');
+    setCategoryError('');
+    setCategoryModalOpen(true);
+  };
+
+  const closeCategoryModal = () => {
+    if (categorySaving) return;
+    setCategoryModalOpen(false);
+  };
+
+  const handleCategoryCreate = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const name = categoryName.trim();
+    if (!name) {
+      setCategoryError('Name is required.');
+      return;
+    }
+    setCategorySaving(true);
+    setCategoryError('');
+    try {
+      const created = await apiFetch<{ id: number; name: string }>('/api/categories/', {
+        method: 'POST',
+        body: JSON.stringify({ name }),
+      });
+      setCategories((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
+      handleChange('category', String(created.id));
+      setCategoryModalOpen(false);
+    } catch (err) {
+      setCategoryError(err instanceof ApiError ? err.message : 'Failed to create category');
+    } finally {
+      setCategorySaving(false);
+    }
+  };
+
+  const openSupplierModal = () => {
+    setSupplierName('');
+    setSupplierError('');
+    setSupplierModalOpen(true);
+  };
+
+  const closeSupplierModal = () => {
+    if (supplierSaving) return;
+    setSupplierModalOpen(false);
+  };
+
+  const handleSupplierCreate = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const name = supplierName.trim();
+    if (!name) {
+      setSupplierError('Name is required.');
+      return;
+    }
+    setSupplierSaving(true);
+    setSupplierError('');
+    try {
+      const created = await apiFetch<Supplier>('/api/suppliers/', {
+        method: 'POST',
+        body: JSON.stringify({ name }),
+      });
+      setSuppliers((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
+      handleChange('supplier', String(created.id));
+      setSupplierModalOpen(false);
+    } catch (err) {
+      setSupplierError(err instanceof ApiError ? err.message : 'Failed to create supplier');
+    } finally {
+      setSupplierSaving(false);
+    }
   };
 
   const validateForm = (): string | null => {
@@ -215,10 +316,11 @@ export default function ProductPage() {
 
     const payload = {
       name: form.name.trim(),
-      sku: form.sku.trim() || null,
+      category: form.category ? parseInt(form.category, 10) : null,
       description: form.description.trim(),
       price: form.price.trim() || '0',
       cost: form.cost.trim() || '0',
+      markup_margin: form.markup_margin.trim() || '10',
       min_stock: parseInt(form.min_stock, 10) || 0,
       supplier: form.supplier ? parseInt(form.supplier, 10) : null,
       active: form.active,
@@ -308,17 +410,37 @@ export default function ProductPage() {
           />
         </label>
 
-        <label className="mm-field">
-          <span className="mm-label">SKU</span>
-          <input
-            type="text"
-            className="mm-input"
-            value={form.sku}
-            onChange={(e) => handleChange('sku', e.target.value)}
-            maxLength={64}
-            placeholder="Optional, e.g. COF-REG-001"
-          />
-        </label>
+        <div className="mm-field">
+          <span className="mm-label">
+            Category <span className="required" aria-hidden="true">*</span>
+          </span>
+          <div className="field-row" style={{ gridTemplateColumns: '1fr auto', gap: '0.5rem' }}>
+            <select
+              className="mm-select"
+              value={form.category}
+              onChange={(e) => handleChange('category', e.target.value)}
+              aria-label="Category"
+              required
+            >
+              <option value="">— Select category —</option>
+              {categories.map((category) => (
+                <option key={category.id} value={String(category.id)}>
+                  {category.name}
+                </option>
+              ))}
+            </select>
+            <button type="button" className="mm-btn mm-btn--ghost" onClick={openCategoryModal} aria-label="Create category">
+              +
+            </button>
+          </div>
+        </div>
+
+        {isEdit && form.sku && (
+          <label className="mm-field">
+            <span className="mm-label">SKU</span>
+            <input type="text" className="mm-input" value={form.sku} readOnly />
+          </label>
+        )}
 
         <label className="mm-field">
           <span className="mm-label">Description (category)</span>
@@ -332,42 +454,33 @@ export default function ProductPage() {
           />
         </label>
 
-        <label className="mm-field">
+        <div className="mm-field">
           <span className="mm-label">Supplier</span>
-          <select
-            className="mm-select"
-            value={form.supplier}
-            onChange={(e) => handleChange('supplier', e.target.value)}
-          >
-            <option value="">— No supplier —</option>
-            {suppliers.map((supplier) => (
-              <option key={supplier.id} value={String(supplier.id)}>
-                {supplier.name}
-              </option>
-            ))}
-          </select>
-        </label>
+          <div className="field-row" style={{ gridTemplateColumns: '1fr auto', gap: '0.5rem' }}>
+            <select
+              className="mm-select"
+              value={form.supplier}
+              onChange={(e) => handleChange('supplier', e.target.value)}
+              aria-label="Supplier"
+            >
+              <option value="">— No supplier —</option>
+              {suppliers.map((supplier) => (
+                <option key={supplier.id} value={String(supplier.id)}>
+                  {supplier.name}
+                </option>
+              ))}
+            </select>
+            <button type="button" className="mm-btn mm-btn--ghost" onClick={openSupplierModal} aria-label="Create supplier">
+              +
+            </button>
+          </div>
+        </div>
       </section>
 
       <section className="form-section">
         <h2 className="mm-card-title">Pricing &amp; stock</h2>
 
         <div className="field-row">
-          <label className="mm-field">
-            <span className="mm-label">
-              Price <span className="required" aria-hidden="true">*</span>
-            </span>
-            <input
-              type="number"
-              className="mm-input"
-              step="0.01"
-              min="0"
-              value={form.price}
-              onChange={(e) => handleChange('price', e.target.value)}
-              required
-            />
-          </label>
-
           <label className="mm-field">
             <span className="mm-label">
               Cost <span className="required" aria-hidden="true">*</span>
@@ -379,8 +492,43 @@ export default function ProductPage() {
               min="0"
               value={form.cost}
               onChange={(e) => handleChange('cost', e.target.value)}
+              aria-label="Cost"
               required
             />
+          </label>
+
+          <label className="mm-field">
+            <span className="mm-label">Markup margin (%)</span>
+            <input
+              type="number"
+              className="mm-input"
+              step="0.01"
+              min="0"
+              value={form.markup_margin}
+              onChange={(e) => handleChange('markup_margin', e.target.value)}
+              aria-label="Markup margin (%)"
+            />
+          </label>
+
+          <label className="mm-field">
+            <span className="mm-label">
+              Retail price <span className="required" aria-hidden="true">*</span>
+            </span>
+            <input
+              type="number"
+              className="mm-input"
+              step="0.01"
+              min="0"
+              value={form.price}
+              onChange={(e) => handleChange('price', e.target.value)}
+              aria-label="Retail price"
+              required
+            />
+            <span className="mm-muted small">
+              Suggested retail price: {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(
+                (Number(form.cost) || 0) * (1 + (Number(form.markup_margin) || 0) / 100),
+              )}
+            </span>
           </label>
 
           <label className="mm-field">
@@ -394,6 +542,7 @@ export default function ProductPage() {
               min="0"
               value={form.min_stock}
               onChange={(e) => handleChange('min_stock', e.target.value)}
+              aria-label="Min stock"
               required
             />
           </label>
@@ -408,6 +557,7 @@ export default function ProductPage() {
                 min="0"
                 value={form.initial_stock}
                 onChange={(e) => handleChange('initial_stock', e.target.value)}
+                aria-label="Initial stock"
                 placeholder="Optional, e.g. 50"
               />
             </label>
@@ -454,6 +604,7 @@ export default function ProductPage() {
   );
 
   return (
+    <>
     <div className="mm-page product-page">
       <header className="mm-page-header product-heading">
         <div className="product-heading-copy">
@@ -570,5 +721,50 @@ export default function ProductPage() {
         </form>
       )}
     </div>
+
+      {categoryModalOpen && (
+        <div className="mm-modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) closeCategoryModal(); }}>
+          <div className="mm-modal" role="dialog" aria-modal="true">
+            <header className="mm-modal-header">
+              <h2>Create category</h2>
+              <button type="button" className="mm-modal-close" onClick={closeCategoryModal} aria-label="Close">×</button>
+            </header>
+            <form className="mm-modal-body" onSubmit={handleCategoryCreate}>
+              {categoryError && <p className="mm-alert mm-alert--danger" role="alert">{categoryError}</p>}
+              <label className="mm-field">
+                <span className="mm-label">Name <span className="required" aria-hidden="true">*</span></span>
+                <input className="mm-input" type="text" value={categoryName} onChange={(e) => setCategoryName(e.target.value)} required autoFocus />
+              </label>
+              <footer className="mm-modal-footer">
+                <button type="button" className="mm-btn mm-btn--ghost" onClick={closeCategoryModal} disabled={categorySaving}>Cancel</button>
+                <button type="submit" className="mm-btn mm-btn--primary" disabled={categorySaving}>{categorySaving ? 'Creating...' : 'Create category'}</button>
+              </footer>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {supplierModalOpen && (
+        <div className="mm-modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) closeSupplierModal(); }}>
+          <div className="mm-modal" role="dialog" aria-modal="true">
+            <header className="mm-modal-header">
+              <h2>Create supplier</h2>
+              <button type="button" className="mm-modal-close" onClick={closeSupplierModal} aria-label="Close">×</button>
+            </header>
+            <form className="mm-modal-body" onSubmit={handleSupplierCreate}>
+              {supplierError && <p className="mm-alert mm-alert--danger" role="alert">{supplierError}</p>}
+              <label className="mm-field">
+                <span className="mm-label">Name <span className="required" aria-hidden="true">*</span></span>
+                <input className="mm-input" type="text" value={supplierName} onChange={(e) => setSupplierName(e.target.value)} required autoFocus />
+              </label>
+              <footer className="mm-modal-footer">
+                <button type="button" className="mm-btn mm-btn--ghost" onClick={closeSupplierModal} disabled={supplierSaving}>Cancel</button>
+                <button type="submit" className="mm-btn mm-btn--primary" disabled={supplierSaving}>{supplierSaving ? 'Creating...' : 'Create supplier'}</button>
+              </footer>
+            </form>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

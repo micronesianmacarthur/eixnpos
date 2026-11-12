@@ -39,9 +39,12 @@ const PRODUCT = {
   id: 7,
   name: 'Ethiopia Yirgacheffe',
   sku: 'COF-ETH-001',
+  category: 1,
+  category_name: 'Drinks',
   description: 'Drinks',
   price: '18.50',
   cost: '9.25',
+  markup_margin: '10.00',
   min_stock: 10,
   supplier: 2,
   supplier_name: 'Highland Roasters',
@@ -189,6 +192,15 @@ async function installApiMocks(
       return;
     }
 
+    if (path === '/api/categories/') {
+      if (method === 'POST') {
+        await route.fulfill(json({ id: 1, name: 'Drinks', active: true }, 201));
+        return;
+      }
+      await route.fulfill(json([{ id: 1, name: 'Drinks', active: true }]));
+      return;
+    }
+
     if (path === '/api/inventory/') {
       if (options.movementsGate) {
         await options.movementsGate;
@@ -287,12 +299,6 @@ test('renders the desktop create form with MaterialM primitives', async ({ page 
   await expect(nameInput).toHaveCSS('border-radius', '8px');
   await expect(nameInput).toHaveCSS('height', '40px');
 
-  // Name is auto-focused on load, so use an unfocused field for the resting
-  // border assertion.
-  await expect(
-    page.getByRole('textbox', { name: 'SKU', exact: true }),
-  ).toHaveCSS('border-color', 'rgb(228, 235, 240)');
-
   const nameLabel = page.locator('.mm-label').first();
   await expect(nameLabel).toHaveCSS('font-size', '13px');
   await expect(nameLabel).toHaveCSS('font-weight', '600');
@@ -354,16 +360,13 @@ test('renders the desktop edit form side-by-side with movement badges', async ({
     page.getByRole('textbox', { name: 'Name', exact: true }),
   ).toHaveValue(PRODUCT.name);
   await expect(
-    page.getByRole('textbox', { name: 'SKU', exact: true }),
-  ).toHaveValue('COF-ETH-001');
-  await expect(
     page.getByRole('textbox', { name: 'Description (category)', exact: true }),
   ).toHaveValue('Drinks');
   await expect(page.getByRole('combobox', { name: 'Supplier' })).toHaveValue(
     '2',
   );
   await expect(
-    page.getByRole('spinbutton', { name: 'Price', exact: true }),
+    page.getByRole('spinbutton', { name: 'Retail price', exact: true }),
   ).toHaveValue('18.50');
   await expect(
     page.getByRole('spinbutton', { name: 'Cost', exact: true }),
@@ -451,7 +454,7 @@ test('stacks the edit form on mobile and captures the layout', async ({
   expect(movementsBox).not.toBeNull();
   expectStacked(formBox!, movementsBox!);
 
-  const fieldRowColumns = await page.locator('.field-row').evaluate((element) => {
+  const fieldRowColumns = await page.locator('.field-row').last().evaluate((element) => {
     return getComputedStyle(element).gridTemplateColumns.split(' ').length;
   });
   expect(fieldRowColumns).toBe(1);
@@ -531,14 +534,12 @@ test('creates a product and posts initial stock before returning to inventory', 
     .getByRole('textbox', { name: 'Name', exact: true })
     .fill('House Blend');
   await page
-    .getByRole('textbox', { name: 'SKU', exact: true })
-    .fill('COF-HOUSE-001');
-  await page
     .getByRole('textbox', { name: 'Description (category)', exact: true })
     .fill('Drinks');
+  await page.getByRole('combobox', { name: 'Category' }).selectOption('1');
   await page.getByRole('combobox', { name: 'Supplier' }).selectOption('1');
   await page
-    .getByRole('spinbutton', { name: 'Price', exact: true })
+    .getByRole('spinbutton', { name: 'Retail price', exact: true })
     .fill('12.00');
   await page
     .getByRole('spinbutton', { name: 'Cost', exact: true })
@@ -569,11 +570,12 @@ test('creates a product and posts initial stock before returning to inventory', 
   const created = await createRequest;
   expect(created.postDataJSON()).toEqual({
     name: 'House Blend',
-    sku: 'COF-HOUSE-001',
+    category: 1,
     description: 'Drinks',
     price: '12.00',
     cost: '6.50',
     min_stock: 8,
+    markup_margin: '10',
     supplier: 1,
     active: false,
     non_stock: false,

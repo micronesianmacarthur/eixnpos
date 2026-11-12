@@ -27,6 +27,7 @@ interface Product {
   quantity: number;
   is_low_stock: boolean;
   non_stock: boolean;
+  category_name: string | null;
 }
 
 interface ReceiveForm {
@@ -99,7 +100,7 @@ export default function InventoryPage() {
   }, [receiveOpen, receiveProduct]);
 
   const categories = useMemo(() => {
-    const cats = new Set(products.map((p) => p.description || 'Uncategorized').filter(Boolean));
+    const cats = new Set(products.map((p) => p.category_name || 'Uncategorized').filter(Boolean));
     return ['All', ...Array.from(cats).sort()];
   }, [products]);
 
@@ -110,7 +111,7 @@ export default function InventoryPage() {
         !query ||
         p.name.toLowerCase().includes(query) ||
         (p.sku && p.sku.toLowerCase().includes(query));
-      const matchesCategory = categoryFilter === 'All' || (p.description || 'Uncategorized') === categoryFilter;
+      const matchesCategory = categoryFilter === 'All' || (p.category_name || 'Uncategorized') === categoryFilter;
       const status = stockStatus(p);
       const matchesStatus = statusFilter === 'All' || status.label === statusFilter;
       return matchesSearch && matchesCategory && matchesStatus;

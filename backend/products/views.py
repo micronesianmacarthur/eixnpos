@@ -1,10 +1,25 @@
 from rest_framework import serializers, viewsets, permissions, decorators, response, status
-from .models import Product
+from .models import Product, Category
+
+class CategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Category
+        fields = '__all__'
+
+class CategoryViewSet(viewsets.ModelViewSet):
+    queryset = Category.objects.filter(active=True).order_by('name')
+    serializer_class = CategorySerializer
+    permission_classes = [permissions.IsAuthenticated]
 
 class ProductSerializer(serializers.ModelSerializer):
     quantity = serializers.IntegerField(read_only=True)
     is_low_stock = serializers.BooleanField(read_only=True)
     supplier_name = serializers.CharField(source='supplier.name', read_only=True, allow_null=True)
+    category_name = serializers.CharField(source='category.name', read_only=True, allow_null=True)
+    sku = serializers.CharField(read_only=True)
+    category = serializers.PrimaryKeyRelatedField(
+        queryset=Category.objects.filter(active=True), required=True, allow_null=False
+    )
 
     class Meta:
         model = Product
