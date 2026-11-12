@@ -1,6 +1,7 @@
 import { useState, useEffect, type ChangeEvent, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiFetch, ApiError } from './api';
+import './AuthPages.css';
 
 interface BusinessInfo {
   company_name: string;
@@ -65,62 +66,89 @@ function BusinessInfoForm({ onSaved }: BusinessInfoFormProps) {
     }
   };
 
+  const header = (
+    <header className="auth-header">
+      <span className="auth-eyebrow">Store setup</span>
+      <h2 className="auth-title">Business Information</h2>
+      <p className="auth-subtitle">
+        These details appear on receipts, reports, and customer documents.
+      </p>
+    </header>
+  );
+
   if (error) {
-    return <p style={{ color: 'red' }}>{error}</p>;
+    return (
+      <section className="mm-card auth-card business-form">
+        {header}
+        <div className="mm-alert mm-alert--danger" role="alert">
+          {error}
+        </div>
+      </section>
+    );
   }
 
   return (
-    <div className="business-form" style={{ padding: '2rem', maxWidth: '400px', margin: 'auto' }}>
-      <h3>Business Information</h3>
-      <form onSubmit={handleSubmit}>
-        <div style={{ marginBottom: '1rem' }}>
-          <label>
+    <section className="mm-card auth-card business-form">
+      {header}
+
+      <form className="auth-form" onSubmit={handleSubmit}>
+        <div className="mm-field">
+          <label className="mm-label" htmlFor="business-company-name">
             Company Name:
-            <input
-              type="text"
-              name="company_name"
-              value={formData.company_name}
-              onChange={handleChange}
-              required
-              style={{ width: '100%', padding: '0.5rem' }}
-            />
           </label>
+          <input
+            id="business-company-name"
+            className="mm-input"
+            type="text"
+            name="company_name"
+            value={formData.company_name}
+            onChange={handleChange}
+            required
+            autoComplete="organization"
+          />
         </div>
-        <div style={{ marginBottom: '1rem' }}>
-          <label>
+
+        <div className="mm-field">
+          <label className="mm-label" htmlFor="business-phone">
             Phone:
-            <input
-              type="text"
-              name="phone"
-              value={formData.phone}
-              onChange={handleChange}
-              required
-              style={{ width: '100%', padding: '0.5rem' }}
-            />
           </label>
+          <input
+            id="business-phone"
+            className="mm-input"
+            type="text"
+            name="phone"
+            value={formData.phone}
+            onChange={handleChange}
+            required
+            autoComplete="tel"
+          />
         </div>
-        <div style={{ marginBottom: '1rem' }}>
-          <label>
+
+        <div className="mm-field">
+          <label className="mm-label" htmlFor="business-email">
             Email:
-            <input
-              type="email"
-              name="email"
-              value={formData.email}
-              onChange={handleChange}
-              required
-              style={{ width: '100%', padding: '0.5rem' }}
-            />
           </label>
+          <input
+            id="business-email"
+            className="mm-input"
+            type="email"
+            name="email"
+            value={formData.email}
+            onChange={handleChange}
+            required
+            autoComplete="email"
+          />
         </div>
+
         <button
           type="submit"
+          className="mm-btn mm-btn--primary auth-submit"
           disabled={isSubmitting}
-          style={{ padding: '0.5rem 1rem' }}
         >
           {isSubmitting ? 'Saving...' : 'Save Business Info'}
         </button>
       </form>
-    </div>
+    </section>
   );
 }
 
