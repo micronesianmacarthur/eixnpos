@@ -66,6 +66,12 @@ const SALE = {
   created_at: '2026-01-01T10:00:00Z',
 };
 
+const SALE_WITH_PAYMENT = {
+  ...SALE,
+  payments: [{ id: 1, method: 'cash', amount: '10.00', tendered: '10.00', change_due: '0.00', manager_approved: true }],
+};
+
+
 function json(data: unknown, status = 200) {
   return { status, contentType: 'application/json', body: JSON.stringify(data) };
 }
@@ -126,7 +132,11 @@ async function installApiMocks(page: Page): Promise<NetworkMonitor> {
       return;
     }
     if (path === '/api/sales/1/' || path === '/api/sales/1/add_line/') {
-      await route.fulfill(json(SALE));
+      await route.fulfill(json(SALE_WITH_PAYMENT));
+      return;
+    }
+    if (path === '/api/sales/1/set_payment/') {
+      await route.fulfill(json({ id: 1, method: 'cash', amount: '10.00', tendered: '10.00', change_due: '0.00', manager_approved: true }));
       return;
     }
     if (
@@ -188,8 +198,10 @@ test('opens the receipt modal', async ({ page }) => {
   const monitor = await openSales(page);
   await page.locator('.product-card').first().click();
   await expect(page.locator('.cart-line')).toBeVisible();
+  await page.getByRole('spinbutton', { name: 'Tendered' }).fill('10');
+  await page.getByRole('button', { name: /Record payment/i }).click();
   await page.getByRole('button', { name: /Complete sale/i }).click();
-  await expect(page.locator('.mm-modal')).toBeVisible();
+  await expect(page.locator('.receipt-modal')).toBeVisible();
   expectNoNetworkIssues(monitor);
   await expect(page).toHaveScreenshot('sales-receipt-modal.png', SNAPSHOT);
 });

@@ -52,6 +52,8 @@ interface Sale {
   total: string;
   lines: SaleLine[];
   payments: Payment[];
+  note?: string;
+  needs_review?: boolean;
   created_at?: string;
   completed_at?: string | null;
 }
@@ -74,7 +76,6 @@ interface BusinessInfo {
 const METHODS = [
   { value: 'cash', label: 'Cash' },
   { value: 'card', label: 'Card (recorded)' },
-  { value: 'split', label: 'Split' },
   { value: 'invoice', label: 'Invoice (account)' },
 ];
 
@@ -121,7 +122,6 @@ export default function SalesPage() {
   const [discountSaving, setDiscountSaving] = useState(false);
 
   const [payMethod, setPayMethod] = useState('cash');
-  const [payAmount, setPayAmount] = useState('');
   const [payTendered, setPayTendered] = useState('');
   const [payCustomer, setPayCustomer] = useState('');
   const [payManagerUser, setPayManagerUser] = useState('');
@@ -129,6 +129,9 @@ export default function SalesPage() {
   const [payError, setPayError] = useState('');
   const [paySaving, setPaySaving] = useState(false);
   const [paymentRecorded, setPaymentRecorded] = useState(false);
+  const [saleNote, setSaleNote] = useState('');
+  const [changeDue, setChangeDue] = useState('0');
+  const [changeModalOpen, setChangeModalOpen] = useState(false);
 
   const [receiptSale, setReceiptSale] = useState<Sale | null>(null);
 
@@ -187,7 +190,6 @@ export default function SalesPage() {
   const refreshSale = useCallback(async (id: number) => {
     const updated = await apiFetch<Sale>(`/api/sales/${id}/`);
     setSale(updated);
-    setPayAmount(updated.total);
     setPayTendered(updated.total);
     return updated;
   }, []);
@@ -294,19 +296,22 @@ export default function SalesPage() {
 
   const recordPayment = async () => {
     if (!sale) return;
-    const amount = payAmount.trim();
-    if (toNumber(amount) <= 0) {
+    const tendered = payTendered.trim();
+    if (toNumber(tendered) <= 0) {
       setPayError('Enter an amount greater than zero.');
       return;
     }
+    const recordedTotal = sale.payments.reduce((sum, payment) => sum + toNumber(payment.amount), 0);
+    const remaining = Math.max(0, toNumber(sale.total) - recordedTotal);
+    const appliedAmount = payMethod === 'cash' ? Math.min(toNumber(tendered), remaining || toNumber(tendered)) : toNumber(tendered);
     setPaySaving(true);
     setPayError('');
     const payload: Record<string, unknown> = {
       method: payMethod,
-      amount,
+      amount: appliedAmount > 0 ? appliedAmount.toFixed(2) : tendered,
     };
     if (payMethod === 'cash') {
-      payload.tendered = payTendered.trim() || amount;
+      payload.tendered = tendered;
     }
     if (payMethod === 'invoice') {
       if (!payCustomer) {
@@ -346,14 +351,15 @@ export default function SalesPage() {
     setBusy(true);
     setError('');
     try {
-      if (!paymentRecorded || sale.payments.length === 0) {
+      if (sale && toNumber(sale.total) > 0 && (!paymentRecorded || sale.payments.length === 0)) {
         // auto-record payment with current settings
+        const tendered = payTendered.trim() || sale.total;
         const payload: Record<string, unknown> = {
           method: payMethod,
-          amount: payAmount.trim() || sale.total,
+          amount: tendered,
         };
         if (payMethod === 'cash') {
-          payload.tendered = payTendered.trim() || payAmount.trim() || sale.total;
+          payload.tendered = tendered;
         }
         if (payMethod === 'invoice') {
           if (!payCustomer) throw new Error('Select a customer for invoice payment.');
@@ -368,21 +374,24 @@ export default function SalesPage() {
           body: JSON.stringify(payload),
         });
       }
-      const completed = await apiFetch<Sale>(`/api/sales/${sale.id}/complete/`, {
+      const completed = await apiFetch<Sale & { change_due?: string }>(`/api/sales/${sale.id}/complete/`, {
         method: 'POST',
+        body: JSON.stringify({ note: saleNote.trim() }),
       });
       setReceiptSale(completed);
+      setChangeDue(completed.change_due ?? '0');
+      setChangeModalOpen(true);
       setSale(null);
       setPaymentRecorded(false);
-      setPayAmount('');
       setPayTendered('');
+      setSaleNote('');
       await loadProducts();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : err instanceof Error ? err.message : 'Failed to complete sale');
     } finally {
       setBusy(false);
     }
-  }, [sale, paymentRecorded, payMethod, payAmount, payTendered, payCustomer, payManagerUser, payManagerPass, loadProducts]);
+  }, [sale, paymentRecorded, payMethod, payTendered, payCustomer, payManagerUser, payManagerPass, loadProducts]);
 
   const voidSale = useCallback(async () => {
     if (!sale) {
@@ -396,7 +405,6 @@ export default function SalesPage() {
       await apiFetch(`/api/sales/${sale.id}/void/`, { method: 'POST' });
       setSale(null);
       setPaymentRecorded(false);
-      setPayAmount('');
       setPayTendered('');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to void sale');
@@ -407,6 +415,10 @@ export default function SalesPage() {
 
   const closeReceipt = () => {
     setReceiptSale(null);
+  };
+
+  const closeChange = () => {
+    setChangeModalOpen(false);
   };
 
   const cartLines = sale?.lines ?? [];
@@ -425,7 +437,6 @@ export default function SalesPage() {
 
   useEffect(() => {
     if (sale) {
-      setPayAmount(sale.total);
       setPayTendered(sale.total);
     }
   }, [sale?.id, sale?.total]);
@@ -650,36 +661,32 @@ export default function SalesPage() {
               </>
             )}
 
-            <div className="field-row">
-              <label className="mm-field">
-                <span>Amount</span>
-                <input className="mm-input"
-                  type="number"
-                  step="0.01"
-                  min="0.01"
-                  value={payAmount}
-                  onChange={(e) => setPayAmount(e.target.value)}
-                />
-              </label>
-              {payMethod === 'cash' && (
-                <label className="mm-field">
-                  <span>Cash tendered</span>
-                  <input className="mm-input"
-                    type="number"
-                    step="0.01"
-                    min="0.01"
-                    value={payTendered}
-                    onChange={(e) => setPayTendered(e.target.value)}
-                  />
-                </label>
-              )}
-            </div>
+            <label className="mm-field">
+              <span>Tendered</span>
+              <input className="mm-input"
+                type="number"
+                step="0.01"
+                min="0.01"
+                value={payTendered}
+                onChange={(e) => setPayTendered(e.target.value)}
+              />
+            </label>
 
             {payMethod === 'cash' && (
               <div className="change-due">
-                Change due: {formatMoney(Math.max(0, toNumber(payTendered) - toNumber(payAmount)))}
+                Change due: {formatMoney(Math.max(0, toNumber(payTendered) - toNumber(sale?.total ?? 0)))}
               </div>
             )}
+
+            <label className="mm-field">
+              <span>Sale note</span>
+              <textarea
+                className="mm-textarea"
+                value={saleNote}
+                onChange={(e) => setSaleNote(e.target.value)}
+                placeholder="Required for zero-value sales"
+              />
+            </label>
 
             {payError && (
               <p className="mm-alert mm-alert--danger" role="alert">
@@ -722,7 +729,14 @@ export default function SalesPage() {
               type="button"
               className="mm-btn mm-btn--success"
               onClick={() => void completeSale()}
-              disabled={busy || cartLines.length === 0}
+              disabled={
+                busy ||
+                cartLines.length === 0 ||
+                (toNumber(sale?.total ?? 0) > 0 &&
+                  (sale?.payments ?? []).reduce((sum, payment) => sum + toNumber(payment.amount), 0) <
+                    toNumber(sale?.total ?? 0)) ||
+                (toNumber(sale?.total ?? 0) === 0 && !saleNote.trim())
+              }
             >
               {busy ? 'Processing...' : 'Complete sale'}
             </button>
@@ -861,6 +875,24 @@ export default function SalesPage() {
               <button type="button" className="mm-btn mm-btn--primary" onClick={closeReceipt}>
                 Close
               </button>
+            </footer>
+          </div>
+        </div>
+      )}
+
+      {changeModalOpen && (
+        <div className="mm-modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) closeChange(); }}>
+          <div className="mm-modal" role="dialog" aria-modal="true">
+            <header className="mm-modal-header">
+              <h2>Change due</h2>
+              <button type="button" className="mm-modal-close" onClick={closeChange}>×</button>
+            </header>
+            <div className="mm-modal-body">
+              <p className="mm-muted">Change to return to customer:</p>
+              <p className="mm-page-title">{formatMoney(changeDue)}</p>
+            </div>
+            <footer className="mm-modal-footer">
+              <button type="button" className="mm-btn mm-btn--primary" onClick={closeChange}>Close</button>
             </footer>
           </div>
         </div>

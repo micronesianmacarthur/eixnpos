@@ -32,6 +32,8 @@ class Sale(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     refunded_at = models.DateTimeField(null=True, blank=True)
+    note = models.TextField(blank=True)
+    needs_review = models.BooleanField(default=False)
 
     class Meta:
         ordering = ['-created_at']
