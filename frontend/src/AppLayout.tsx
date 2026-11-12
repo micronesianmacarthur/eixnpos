@@ -1,6 +1,5 @@
 import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
-import ThemeToggle from './ThemeToggle';
 import { useAuth } from './authContext';
 import './AppLayout.css';
 
@@ -14,9 +13,10 @@ export default function AppLayout() {
         <header className="app-header">
           <div className="app-user">
             <span className="app-user-name">{me?.user.username}</span>
-            <span className="app-user-role">{me?.user.role}</span>
+            <span className="app-user-role mm-badge mm-badge--primary">
+              {me?.user.role}
+            </span>
           </div>
-          <ThemeToggle />
         </header>
         <main className="app-page">
           <Outlet />

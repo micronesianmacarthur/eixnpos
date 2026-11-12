@@ -9,7 +9,10 @@ export type IconName =
   | 'inventory'
   | 'users'
   | 'settings'
-  | 'close';
+  | 'close'
+  | 'menu'
+  | 'x'
+  | 'sparkles';
 
 const icons: Record<IconName, ReactNode> = {
   dashboard: (
@@ -75,17 +78,50 @@ const icons: Record<IconName, ReactNode> = {
       <path d="M7 11V7a5 5 0 0 1 10 0v4" />
     </>
   ),
+  menu: (
+    <>
+      <line x1="4" y1="7" x2="20" y2="7" />
+      <line x1="4" y1="12" x2="20" y2="12" />
+      <line x1="4" y1="17" x2="20" y2="17" />
+    </>
+  ),
+  x: (
+    <>
+      <line x1="6" y1="6" x2="18" y2="18" />
+      <line x1="18" y1="6" x2="6" y2="18" />
+    </>
+  ),
+  sparkles: (
+    <>
+      <path d="m12 3 1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9L12 3Z" />
+      <path d="m19 14 .9 2.1L22 17l-2.1.9L19 20l-.9-2.1L16 17l2.1-.9L19 14Z" />
+    </>
+  ),
 };
 
-export function Icon({ name }: { name: IconName }) {
+interface IconProps {
+  name: IconName;
+  className?: string;
+  size?: number;
+  strokeWidth?: number;
+}
+
+export function Icon({
+  name,
+  className,
+  size = 20,
+  strokeWidth = 1.5,
+}: IconProps) {
   return (
     <svg
       aria-hidden="true"
-      className="sidebar-icon"
+      className={className ? `mm-icon ${className}` : 'mm-icon'}
+      width={size}
+      height={size}
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="2"
+      strokeWidth={strokeWidth}
       strokeLinecap="round"
       strokeLinejoin="round"
     >

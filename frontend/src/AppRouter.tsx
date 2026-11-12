@@ -1,6 +1,5 @@
 import { StrictMode } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
-import './index.css';
 import AppLayout from './AppLayout';
 import DashboardPage from './DashboardPage';
 import LoginPage from './LoginPage';

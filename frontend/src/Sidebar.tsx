@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuth, type Role } from './authContext';
 import { Icon, type IconName } from './Icon';
@@ -24,14 +24,43 @@ const MENU: readonly MenuItem[] = [
   { to: '/close', label: 'Close', icon: 'close' },
 ];
 
+const TABLET_QUERY = '(min-width: 769px) and (max-width: 1023px)';
+
+function isTablet(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    window.matchMedia(TABLET_QUERY).matches
+  );
+}
+
 function canManage(role: Role): boolean {
   return role === 'manager' || role === 'admin';
 }
 
 function Sidebar() {
   const { me } = useAuth();
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(isTablet);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const manuallySetCollapsed = useRef(false);
+
+  useEffect(() => {
+    const query = window.matchMedia(TABLET_QUERY);
+    const onBreakpointChange = (event: MediaQueryListEvent) => {
+      // Tablet defaults to the collapsed mini sidebar. Once the user has made
+      // an explicit choice, keep it across breakpoint changes.
+      if (!manuallySetCollapsed.current) {
+        setCollapsed(event.matches);
+      }
+    };
+
+    query.addEventListener('change', onBreakpointChange);
+    return () => query.removeEventListener('change', onBreakpointChange);
+  }, []);
+
+  const toggleCollapsed = () => {
+    manuallySetCollapsed.current = true;
+    setCollapsed((value) => !value);
+  };
 
   const role = me?.user.role ?? 'cashier';
   const items = MENU.filter((item) => !item.managerOnly || canManage(role));
@@ -45,7 +74,7 @@ function Sidebar() {
         aria-expanded={mobileOpen}
         onClick={() => setMobileOpen((open) => !open)}
       >
-        <span aria-hidden="true">{mobileOpen ? '✕' : '☰'}</span>
+        <Icon name={mobileOpen ? 'x' : 'menu'} size={20} />
       </button>
 
       {mobileOpen && (
@@ -61,13 +90,21 @@ function Sidebar() {
         aria-label="Main navigation"
       >
         <div className="sidebar-header">
-          <span className="sidebar-brand">{collapsed ? 'P' : 'eixnPOS'}</span>
+          <span className="sidebar-brand" aria-label="eixnPOS">
+            {collapsed ? (
+              <span aria-hidden="true">e</span>
+            ) : (
+              <>
+                <span className="sidebar-brand-accent">eixn</span>POS
+              </>
+            )}
+          </span>
           <button
             type="button"
             className="sidebar-collapse"
             aria-label={collapsed ? 'Expand menu' : 'Collapse menu'}
             aria-expanded={!collapsed}
-            onClick={() => setCollapsed((value) => !value)}
+            onClick={toggleCollapsed}
           >
             <span aria-hidden="true">{collapsed ? '»' : '«'}</span>
           </button>

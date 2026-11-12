@@ -34,16 +34,6 @@ interface ReceiveForm {
 
 const EMPTY_RECEIVE: ReceiveForm = { quantity: '1', note: '' };
 
-const currency = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-});
-
-function toNumber(value: string | number | null | undefined): number {
-  const parsed = Number(value ?? 0);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
 function stockStatus(product: Product): { label: string; className: string } {
   if (product.quantity === 0) return { label: 'Out', className: 'status-out' };
   if (product.is_low_stock) return { label: 'Low', className: 'status-low' };

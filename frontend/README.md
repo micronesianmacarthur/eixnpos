@@ -1,32 +1,31 @@
-# React + TypeScript + Vite
+# eixnPOS frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React 19 + Vite + TypeScript client for eixnPOS.
 
-Currently, two official plugins are available:
+## Commands
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm install
+npm run dev        # local dev server (proxies /api to 127.0.0.1:8000)
+npm run build      # type-check and production build
+npm run lint       # oxlint
+npm run test:e2e   # Playwright against the production build + vite preview
+npm run test:e2e:update  # refresh visual snapshots
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+The Playwright suite builds the app, starts `vite preview` on port 4173, mocks
+every API call in the browser, and aborts any request outside the preview
+origin. It also verifies that Inter is bundled and active. Install the browser
+once with `npx playwright install chromium` if needed.
+
+## Theme
+
+`src/theme.css` is the single global theme layer. It bundles the Latin Inter
+variable font from `@fontsource-variable/inter`, defines the MaterialM light
+tokens (`--mm-*`), aliases the older CSS variables for un-migrated screens, and
+provides the shared `mm-` UI primitives (cards, buttons, fields, tables,
+badges, modals, alerts, loading and empty states).
+
+Icons stay inline in `src/Icon.tsx`; there are no icon fonts or CDNs. The
+production build makes no requests outside its own origin, so the POS keeps
+working offline.
