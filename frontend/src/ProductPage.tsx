@@ -252,7 +252,13 @@ export default function ProductPage() {
       handleChange('category', String(created.id));
       setCategoryModalOpen(false);
     } catch (err) {
-      setCategoryError(err instanceof ApiError ? err.message : 'Failed to create category');
+      if (err instanceof ApiError && err.data && typeof err.data === 'object') {
+        const data = err.data as Record<string, unknown>;
+        const first = Object.values(data).flat().find((v) => typeof v === 'string');
+        setCategoryError(typeof first === 'string' ? first : err.message);
+      } else {
+        setCategoryError(err instanceof ApiError ? err.message : 'Failed to create category');
+      }
     } finally {
       setCategorySaving(false);
     }
@@ -287,7 +293,13 @@ export default function ProductPage() {
       handleChange('supplier', String(created.id));
       setSupplierModalOpen(false);
     } catch (err) {
-      setSupplierError(err instanceof ApiError ? err.message : 'Failed to create supplier');
+      if (err instanceof ApiError && err.data && typeof err.data === 'object') {
+        const data = err.data as Record<string, unknown>;
+        const first = Object.values(data).flat().find((v) => typeof v === 'string');
+        setSupplierError(typeof first === 'string' ? first : err.message);
+      } else {
+        setSupplierError(err instanceof ApiError ? err.message : 'Failed to create supplier');
+      }
     } finally {
       setSupplierSaving(false);
     }
