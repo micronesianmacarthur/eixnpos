@@ -1,25 +1,5 @@
 .customers-page {
-  --primary-bg: #7c3aed;
-  --primary-fg: #ffffff;
-  --success-bg: #15803d;
-  --success-fg: #ffffff;
-  --success: #15803d;
-  --danger: #b91c1c;
-  --warning: #b45309;
-  --panel-bg: var(--bg);
-  --panel-muted: var(--code-bg);
-}
-
-@media (prefers-color-scheme: dark) {
-  .customers-page {
-    --primary-bg: #a78bfa;
-    --primary-fg: #16171d;
-    --success-bg: #4ade80;
-    --success-fg: #16171d;
-    --success: #4ade80;
-    --danger: #f87171;
-    --warning: #fbbf24;
-  }
+  /* layout only; themed via mm- primitives and tokens */
 }
 
 .customers-heading {
