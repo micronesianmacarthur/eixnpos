@@ -5,7 +5,6 @@ import {
   useState,
   type FormEvent,
 } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { apiFetch, ApiError } from './api';
 import './CustomersPage.css';
 
@@ -92,8 +91,6 @@ function normalizeList(
 }
 
 function CustomersPage() {
-  const navigate = useNavigate();
-
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [listLoading, setListLoading] = useState(true);
@@ -610,7 +607,7 @@ function CustomersPage() {
                 >
                   Pay on account
                 </button>
-                <button
+                {/*<button
                   type="button"
                   className="mm-btn mm-btn--primary"
                   onClick={() =>
@@ -618,12 +615,12 @@ function CustomersPage() {
                   }
                 >
                   Charge to account
-                </button>
+                </button>*/}
               </div>
 
               <section className="transactions">
                 <div className="transactions-heading">
-                  <h3>Linked transactions</h3>
+                  <h3>Transactions</h3>
                   {txnLoading && <span className="muted">Loading...</span>}
                 </div>
 

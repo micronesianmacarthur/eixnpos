@@ -584,7 +584,7 @@ export default function ProductPage() {
             checked={form.non_stock}
             onChange={(e) => handleChange('non_stock', e.target.checked)}
           />
-          <span className="mm-label">Non-stock product (service, no inventory tracking)</span>
+          <span className="mm-label">Non-stock product{/* (service, no inventory tracking)*/}</span>
         </label>
       </section>
 
