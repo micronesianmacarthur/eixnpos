@@ -73,12 +73,6 @@ interface BusinessInfo {
   website: string;
 }
 
-const METHODS = [
-  { value: 'cash', label: 'Cash' },
-  { value: 'card', label: 'Card (recorded)' },
-  { value: 'invoice', label: 'Invoice (account)' },
-];
-
 const currency = new Intl.NumberFormat('en-US', {
   style: 'currency',
   currency: 'USD',
@@ -608,7 +602,7 @@ export default function SalesPage() {
 
           {/* Payment */}
           <div className="payment-section">
-            <label className="mm-field">
+            {/*<label className="mm-field">
               <span>Payment method</span>
               <select className="mm-select"
                 value={payMethod}
@@ -620,15 +614,15 @@ export default function SalesPage() {
                   </option>
                 ))}
               </select>
-            </label>
+            </label>*/}
 
             <label className="mm-field">
-              <span>Customer (for invoice)</span>
+              <span>Customer{/* (for invoice)*/}</span>
               <select className="mm-select"
                 value={payCustomer}
                 onChange={(e) => setPayCustomer(e.target.value)}
               >
-                <option value="">Select customer</option>
+                <option value="">Walk-in customer</option>
                 {customers.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.name} (owes {formatMoney(c.balance)}, limit{' '}
@@ -881,7 +875,7 @@ export default function SalesPage() {
                       }`,
                   )
                   .join('\n');
-                return `${business?.company_name || 'Store'}\n${business?.address || ''}\n${business?.phone || ''} ${business?.email || ''}\n${business?.website || ''}\n${'='.repeat(34)}\n${new Date(s.completed_at ?? s.created_at ?? '').toLocaleString()}\nCashier: user #${s.cashier}   Sale #${s.number}\n${'='.repeat(34)}\n${lines}\n${'='.repeat(34)}\nSubtotal: ${formatMoney(s.subtotal).padStart(22)}\nDiscount: -${formatMoney(s.discount_total).padStart(21)}\nTOTAL:    ${formatMoney(s.total).padStart(22)}\n${'='.repeat(34)}\n${payLines}\n${'='.repeat(34)}\nThank you for your visit!\n`;
+                return `${business?.company_name || 'Store'}\n${business?.address || ''}\n${business?.phone || ''} ${business?.email || ''}\n${business?.website || ''}\n${'='.repeat(34)}\n${new Date(s.completed_at ?? s.created_at ?? '').toLocaleString(undefined, { hour12: false })}\nCashier: user #${s.cashier}   Sale #${s.number}\n${'='.repeat(34)}\n${lines}\n${'='.repeat(34)}\nSubtotal: ${formatMoney(s.subtotal).padStart(22)}\nDiscount: -${formatMoney(s.discount_total).padStart(21)}\nTOTAL:    ${formatMoney(s.total).padStart(22)}\n${'='.repeat(34)}\n${s.note ? `Note: ${s.note}\n` : ''}${payLines}\n${'='.repeat(34)}\nThank you for your visit!\n`;
               })()}
             </pre>
             <footer className="mm-modal-footer">

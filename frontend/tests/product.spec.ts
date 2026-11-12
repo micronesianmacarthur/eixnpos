@@ -418,7 +418,7 @@ test('renders the desktop edit form side-by-side with movement badges', async ({
   );
   await expect(badge('Sale')).toHaveCSS('border-radius', '999px');
 
-  await expect(table).toContainText('1/8/2026, 10:30:00 AM');
+  await expect(table).toContainText('1/8/2026, 10:30:00');
   await expect(table).toContainText('PO-5510');
   await expect(table.locator('tbody tr').nth(2).locator('.num')).toHaveText(
     '-2',

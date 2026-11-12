@@ -325,14 +325,17 @@
 
 .user-stat-value.role-cashier {
   color: var(--text);
+  background: transparent;
 }
 
 .user-stat-value.role-manager {
   color: #1d4ed8;
+  background: transparent;
 }
 
 .user-stat-value.role-admin {
   color: #7c2d12;
+  background: transparent;
 }
 
 /* Modals */

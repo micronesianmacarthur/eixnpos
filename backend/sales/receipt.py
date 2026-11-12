@@ -131,6 +131,9 @@ class ReceiptGenerator:
         add_kv("TOTAL:", f"{currency}{sale.total:.2f}")
         add_line("=" * width)
 
+        if sale.note:
+            add_kv("Note:", sale.note)
+
         # Payments
         add_line("PAYMENTS:")
         add_line("-" * width)
@@ -291,6 +294,11 @@ class ReceiptGenerator:
                 draw_text("TOTAL:", width - margin - 2.5 * inch, y, "Helvetica-Bold", 12, align="right")
                 draw_text(f"{currency}{sale.total:.2f}", right_col, y, "Helvetica-Bold", 12, align="right")
                 y -= 24
+
+                if sale.note:
+                    draw_text("Note:", margin, y, "Helvetica-Bold", 10)
+                    draw_text(sale.note, margin, y - 14, size=10)
+                    y -= 30
 
                 # Payments
                 draw_text("PAYMENTS:", margin, y, "Helvetica-Bold", 10)

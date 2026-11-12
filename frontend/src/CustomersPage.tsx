@@ -81,7 +81,7 @@ function formatMoney(value: string | number): string {
 
 function formatDate(value: string): string {
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(undefined, { hour12: false });
 }
 
 function normalizeList(

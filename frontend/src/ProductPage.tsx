@@ -104,7 +104,7 @@ const TYPE_BADGES: Record<StockMovement['movement_type'], string> = {
 
 function formatDate(value: string): string {
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(undefined, { hour12: false });
 }
 
 function normalizeList<T>(data: T[] | { results: T[] }): T[] {

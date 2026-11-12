@@ -40,7 +40,7 @@ const ROLES = ['cashier', 'manager', 'admin'] as const;
 
 function formatDate(value: string): string {
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(undefined, { hour12: false });
 }
 
 function normalizeList<T>(data: T[] | { results: T[] }): T[] {
@@ -363,7 +363,7 @@ export default function UsersPage() {
                 <div className="user-stat">
                   <span className="user-stat-label">Role</span>
                   <span className={`user-stat-value role-${selectedUser.role}`}>
-                    {selectedUser.role}
+                    {selectedUser.role.charAt(0).toUpperCase() + selectedUser.role.slice(1)}
                   </span>
                 </div>
 

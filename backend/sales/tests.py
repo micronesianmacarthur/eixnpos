@@ -652,3 +652,52 @@ class CashCountTests(SimpleTestCase):
         self.assertEqual(result['total_removed'], Decimal('0.30'))
         self.assertEqual(result['remaining'], Decimal('0'))
         self.assertEqual(result['category_totals']['coins'], Decimal('0.30'))
+
+
+class ZeroValueSaleTests(TestCase):
+    def setUp(self):
+        self.cashier = User.objects.create_user(username='zerocashier', password='pw', role='cashier')
+        self.client = APIClient()
+        self.client.force_authenticate(self.cashier)
+        self.product = Product.objects.create(name='Repack Item', price=Decimal('0.00'))
+
+    def _create_zero_sale(self):
+        sale = Sale.objects.create(cashier=self.cashier)
+        SaleLine.objects.create(
+            sale=sale,
+            product=self.product,
+            quantity=1,
+            unit_price=Decimal('0.00'),
+            line_total=Decimal('0.00'),
+        )
+        sale.recompute()
+        return sale
+
+    def test_zero_sale_requires_note(self):
+        sale = self._create_zero_sale()
+        response = self.client.post(f'/api/sales/{sale.id}/complete/', {}, format='json')
+        self.assertEqual(response.status_code, 400)
+
+    def test_zero_sale_completes_without_payment_and_is_flagged(self):
+        sale = self._create_zero_sale()
+        response = self.client.post(
+            f'/api/sales/{sale.id}/complete/',
+            {'note': 'Repack case into packets'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(sale.payments.exists())
+        self.assertTrue(response.data['needs_review'])
+        self.assertEqual(response.data['note'], 'Repack case into packets')
+        sale.refresh_from_db()
+        self.assertTrue(sale.needs_review)
+        self.assertEqual(sale.note, 'Repack case into packets')
+
+    def test_receipt_includes_note(self):
+        sale = self._create_zero_sale()
+        sale.note = 'Repack case into packets'
+        sale.save(update_fields=['note'])
+        from .receipt import get_receipt_config_from_business, ReceiptGenerator
+        config = get_receipt_config_from_business()
+        receipt = ReceiptGenerator(config).generate_receipt(sale, format='text')
+        self.assertIn('Repack case into packets', receipt)
