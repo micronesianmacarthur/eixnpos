@@ -1,0 +1,162 @@
+/*
+ * Auth pages: Login and first-run Business Information.
+ *
+ * Layout and composition only. Colors, radii, shadows, typography, buttons,
+ * fields, and alerts come from the shared `mm-` theme primitives and tokens.
+ */
+
+.auth-page {
+  display: flex;
+  min-height: 100vh;
+  min-height: 100dvh;
+  flex-direction: column;
+  padding: clamp(16px, 4vw, 48px);
+  background:
+    radial-gradient(
+      circle at 12% 18%,
+      var(--mm-primary-soft),
+      transparent 42%
+    ),
+    radial-gradient(
+      circle at 88% 82%,
+      var(--mm-secondary-soft),
+      transparent 44%
+    ),
+    linear-gradient(
+      160deg,
+      var(--mm-surface) 0%,
+      var(--mm-background) 55%,
+      var(--mm-surface-muted) 100%
+    );
+}
+
+.auth-card.mm-card {
+  width: 100%;
+  max-width: 420px;
+  margin: auto;
+  padding: 32px;
+}
+
+.auth-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--mm-text);
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+
+.auth-brand-mark {
+  display: inline-flex;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  align-items: center;
+  justify-content: center;
+  color: var(--mm-on-primary);
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1;
+  background: var(--mm-primary);
+  border-radius: 12px;
+  box-shadow: var(--mm-shadow-sm);
+}
+
+.auth-brand-accent {
+  color: var(--mm-primary);
+}
+
+.auth-header {
+  margin: 24px 0;
+}
+
+.auth-eyebrow {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--mm-primary);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.auth-title {
+  font-size: 28px;
+  letter-spacing: -0.02em;
+}
+
+.auth-subtitle {
+  margin-top: 8px;
+  color: var(--mm-text-muted);
+  font-size: 14px;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.auth-alert {
+  margin-bottom: 20px;
+}
+
+.auth-submit {
+  width: 100%;
+  margin-top: 4px;
+}
+
+.auth-note {
+  margin-top: 24px;
+  padding-top: 20px;
+  color: var(--mm-text-muted);
+  font-size: 12px;
+  text-align: center;
+  border-top: 1px solid var(--mm-border);
+}
+
+/* Business Information keeps the auth-card family when shown inline on the
+ * Dashboard (first-run) as well as when used as a standalone setup screen. */
+.auth-card.business-form {
+  max-width: 460px;
+  margin-inline: auto;
+}
+
+.business-form .auth-title {
+  font-size: 24px;
+}
+
+@media (max-width: 480px) {
+  .auth-page {
+    padding: 16px;
+  }
+
+  .auth-card.mm-card {
+    padding: 24px;
+  }
+
+  .auth-brand {
+    font-size: 22px;
+  }
+
+  .auth-brand-mark {
+    width: 36px;
+    height: 36px;
+    flex-basis: 36px;
+    font-size: 18px;
+  }
+
+  .auth-header {
+    margin: 20px 0;
+  }
+
+  .auth-title {
+    font-size: 24px;
+  }
+
+  .business-form .auth-title {
+    font-size: 22px;
+  }
+}
