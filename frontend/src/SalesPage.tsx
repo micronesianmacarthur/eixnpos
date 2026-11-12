@@ -435,12 +435,13 @@ export default function SalesPage() {
   );
 
   return (
-    <section className="sales-page">
-      <header className="sales-heading">
+    <section className="mm-page sales-page">
+      <header className="mm-page-header sales-heading">
         <div>
-          <h1>Sale</h1>
+          <h1 className="mm-page-title">Sale</h1>
           {sale && (
-            <p className="page-subtitle">
+            <p className="mm-page-subtitle">
+
               Sale #{sale.number} · {sale.status}
             </p>
           )}
@@ -448,7 +449,7 @@ export default function SalesPage() {
         <div className="sales-heading-actions">
           <button
             type="button"
-            className="btn btn-ghost"
+            className="mm-btn mm-btn--ghost"
             onClick={() => navigate('/sales-manager')}
           >
             Sales manager
@@ -456,8 +457,7 @@ export default function SalesPage() {
           {sale && (
             <button
               type="button"
-              className="btn btn-danger-ghost"
-              onClick={() => void voidSale()}
+              className="mm-btn mm-btn--danger"              onClick={() => void voidSale()}
               disabled={busy}
             >
               Void cart
@@ -467,16 +467,15 @@ export default function SalesPage() {
       </header>
 
       {error && (
-        <p className="error" role="alert">
+        <p className="mm-alert mm-alert--danger" role="alert">
           {error}
         </p>
       )}
 
       <div className="sales-layout">
         {/* Products */}
-        <div className="products-panel">
-          <div className="product-search">
-            <input
+        <div className="mm-card products-panel">          <div className="product-search">
+            <input className="mm-input"
               type="search"
               value={productSearch}
               onChange={(e) => setProductSearch(e.target.value)}
@@ -484,14 +483,13 @@ export default function SalesPage() {
               aria-label="Search products"
             />
           </div>
-          {loading && <p className="muted">Loading products...</p>}
+          {loading && <div className="mm-loading" role="status">Loading products...</div>}
           <div className="product-grid">
             {filteredProducts.map((product) => (
               <button
                 key={product.id}
                 type="button"
-                className="product-card"
-                onClick={() => void addToCart(product)}
+                className="mm-card product-card"                onClick={() => void addToCart(product)}
                 disabled={busy || product.quantity <= 0}
               >
                 <span className="product-name">{product.name}</span>
@@ -504,15 +502,14 @@ export default function SalesPage() {
             ))}
           </div>
           {!loading && filteredProducts.length === 0 && (
-            <p className="muted">No products found.</p>
+            <div className="mm-empty"><p className="mm-empty-text">No products found.</p></div>
           )}
         </div>
 
         {/* Cart */}
-        <div className="cart-panel">
-          <div className="cart-header">
+        <div className="mm-card cart-panel">          <div className="cart-header">
             <h2>Cart</h2>
-            <span className="muted">
+            <span className="mm-muted">
               {cartLines.reduce((s, l) => s + l.quantity, 0)} items
             </span>
           </div>
@@ -591,9 +588,9 @@ export default function SalesPage() {
 
           {/* Payment */}
           <div className="payment-section">
-            <label className="field">
+            <label className="mm-field">
               <span>Payment method</span>
-              <select
+              <select className="mm-select"
                 value={payMethod}
                 onChange={(e) => setPayMethod(e.target.value)}
               >
@@ -607,9 +604,9 @@ export default function SalesPage() {
 
             {payMethod === 'invoice' && (
               <>
-                <label className="field">
+                <label className="mm-field">
                   <span>Customer</span>
-                  <select
+                  <select className="mm-select"
                     value={payCustomer}
                     onChange={(e) => setPayCustomer(e.target.value)}
                   >
@@ -623,25 +620,25 @@ export default function SalesPage() {
                   </select>
                 </label>
                 {selectedCustomer && (
-                  <p className="muted small">
+                  <p className="mm-muted small">
                     Available credit: {formatMoney(availableCredit)}
                     {availableCredit < 0 ? ' (over limit)' : ''}
                   </p>
                 )}
                 {!isManager && (
                   <>
-                    <label className="field">
+                    <label className="mm-field">
                       <span>Manager username</span>
-                      <input
+                      <input className="mm-input"
                         type="text"
                         value={payManagerUser}
                         onChange={(e) => setPayManagerUser(e.target.value)}
                         placeholder="Manager approval required"
                       />
                     </label>
-                    <label className="field">
+                    <label className="mm-field">
                       <span>Manager password</span>
-                      <input
+                      <input className="mm-input"
                         type="password"
                         value={payManagerPass}
                         onChange={(e) => setPayManagerPass(e.target.value)}
@@ -653,9 +650,9 @@ export default function SalesPage() {
             )}
 
             <div className="field-row">
-              <label className="field">
+              <label className="mm-field">
                 <span>Amount</span>
-                <input
+                <input className="mm-input"
                   type="number"
                   step="0.01"
                   min="0.01"
@@ -664,9 +661,9 @@ export default function SalesPage() {
                 />
               </label>
               {payMethod === 'cash' && (
-                <label className="field">
+                <label className="mm-field">
                   <span>Cash tendered</span>
-                  <input
+                  <input className="mm-input"
                     type="number"
                     step="0.01"
                     min="0.01"
@@ -684,7 +681,7 @@ export default function SalesPage() {
             )}
 
             {payError && (
-              <p className="error" role="alert">
+              <p className="mm-alert mm-alert--danger" role="alert">
                 {payError}
               </p>
             )}
@@ -692,7 +689,7 @@ export default function SalesPage() {
             <div className="payment-actions">
               <button
                 type="button"
-                className="btn btn-primary"
+                className="mm-btn mm-btn--primary"
                 onClick={() => void recordPayment()}
                 disabled={busy || paySaving || cartLines.length === 0}
               >
@@ -708,7 +705,7 @@ export default function SalesPage() {
                     <span>{p.method}</span>
                     <span>{formatMoney(p.amount)}</span>
                     {p.method === 'cash' && (
-                      <span className="muted small">
+                      <span className="mm-muted small">
                         tendered {formatMoney(p.tendered ?? 0)} · change{' '}
                         {formatMoney(p.change_due)}
                       </span>
@@ -722,7 +719,7 @@ export default function SalesPage() {
           <div className="cart-actions">
             <button
               type="button"
-              className="btn btn-success"
+              className="mm-btn mm-btn--success"
               onClick={() => void completeSale()}
               disabled={busy || cartLines.length === 0}
             >
@@ -735,36 +732,36 @@ export default function SalesPage() {
       {/* Discount modal */}
       {discountLineId !== null && discountLine && (
         <div
-          className="modal-backdrop"
+          className="mm-modal-backdrop"
           onMouseDown={(e) => {
             if (e.target === e.currentTarget) closeDiscount();
           }}
         >
-          <div className="modal" role="dialog" aria-modal="true">
-            <header className="modal-header">
+          <div className="mm-modal" role="dialog" aria-modal="true">
+            <header className="mm-modal-header">
               <h2>Line discount</h2>
               <button
                 type="button"
-                className="icon-button"
+                className="mm-modal-close"
                 onClick={closeDiscount}
               >
                 ×
               </button>
             </header>
-            <form className="modal-form" onSubmit={handleDiscountSubmit}>
+            <form className="mm-modal-body" onSubmit={handleDiscountSubmit}>
               <p className="modal-context">
                 {discountLine.product_name} — line total{' '}
                 {formatMoney(discountLine.unit_price)} ×{' '}
                 {discountLine.quantity}
               </p>
               {discountError && (
-                <p className="error" role="alert">
+                <p className="mm-alert mm-alert--danger" role="alert">
                   {discountError}
                 </p>
               )}
-              <label className="field">
+              <label className="mm-field">
                 <span>Type</span>
-                <select
+                <select className="mm-select"
                   value={discountType}
                   onChange={(e) => setDiscountType(e.target.value)}
                 >
@@ -773,9 +770,9 @@ export default function SalesPage() {
                   <option value="none">None (clear)</option>
                 </select>
               </label>
-              <label className="field">
+              <label className="mm-field">
                 <span>Value</span>
-                <input
+                <input className="mm-input"
                   type="number"
                   step="0.01"
                   min="0"
@@ -786,18 +783,18 @@ export default function SalesPage() {
               </label>
               {!isManager && (
                 <>
-                  <label className="field">
+                  <label className="mm-field">
                     <span>Manager username</span>
-                    <input
+                    <input className="mm-input"
                       type="text"
                       value={discountManagerUser}
                       onChange={(e) => setDiscountManagerUser(e.target.value)}
                       placeholder="Required for cashier"
                     />
                   </label>
-                  <label className="field">
+                  <label className="mm-field">
                     <span>Manager password</span>
-                    <input
+                    <input className="mm-input"
                       type="password"
                       value={discountManagerPass}
                       onChange={(e) => setDiscountManagerPass(e.target.value)}
@@ -805,10 +802,10 @@ export default function SalesPage() {
                   </label>
                 </>
               )}
-              <footer className="modal-actions">
+              <footer className="mm-modal-footer">
                 <button
                   type="button"
-                  className="btn btn-ghost"
+                  className="mm-btn mm-btn--ghost"
                   onClick={closeDiscount}
                   disabled={discountSaving}
                 >
@@ -816,7 +813,7 @@ export default function SalesPage() {
                 </button>
                 <button
                   type="submit"
-                  className="btn btn-primary"
+                  className="mm-btn mm-btn--primary"
                   disabled={discountSaving}
                 >
                   {discountSaving ? 'Applying...' : 'Apply discount'}
@@ -829,11 +826,11 @@ export default function SalesPage() {
 
       {/* Receipt modal */}
       {receiptSale && (
-        <div className="modal-backdrop">
-          <div className="modal receipt-modal" role="dialog" aria-modal="true">
-            <header className="modal-header">
+        <div className="mm-modal-backdrop">
+          <div className="mm-modal receipt-modal" role="dialog" aria-modal="true">
+            <header className="mm-modal-header">
               <h2>Receipt</h2>
-              <button type="button" className="icon-button" onClick={closeReceipt}>
+              <button type="button" className="mm-modal-close" onClick={closeReceipt}>
                 ×
               </button>
             </header>
@@ -859,8 +856,8 @@ export default function SalesPage() {
                 return `${business?.company_name || 'Store'}\n${business?.address || ''}\n${business?.phone || ''} ${business?.email || ''}\n${business?.website || ''}\n${'='.repeat(34)}\n${new Date(s.completed_at ?? s.created_at ?? '').toLocaleString()}\nCashier: user #${s.cashier}   Sale #${s.number}\n${'='.repeat(34)}\n${lines}\n${'='.repeat(34)}\nSubtotal: ${formatMoney(s.subtotal).padStart(22)}\nDiscount: -${formatMoney(s.discount_total).padStart(21)}\nTOTAL:    ${formatMoney(s.total).padStart(22)}\n${'='.repeat(34)}\n${payLines}\n${'='.repeat(34)}\nThank you for your visit!\n`;
               })()}
             </pre>
-            <footer className="modal-actions">
-              <button type="button" className="btn btn-primary" onClick={closeReceipt}>
+            <footer className="mm-modal-footer">
+              <button type="button" className="mm-btn mm-btn--primary" onClick={closeReceipt}>
                 Close
               </button>
             </footer>
