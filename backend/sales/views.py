@@ -257,27 +257,21 @@ class SaleViewSet(viewsets.ModelViewSet):
                         )
                 completed_sale = sale
             else:
+                if not sale.payments.exists():
+                    Payment.objects.create(
+                        sale=sale,
+                        method=Payment.METHOD_CASH,
+                        amount=sale.total,
+                        tendered=sale.total,
+                        change_due=Decimal('0'),
+                        manager_approved=True,
+                    )
                 ts = TransactionService(require_payment_tokens=False)
                 ts._current_sale = sale
                 ts._cart = CartService(sale)
                 ts._current_sale.note = sale.note
                 ts._current_sale.needs_review = sale.needs_review
-                if sale.payments.exists():
-                    last_payment = sale.payments.last()
-                    payment_method = last_payment.method
-                    amount = last_payment.amount
-                    tendered = last_payment.tendered
-                else:
-                    payment_method = Payment.METHOD_CASH
-                    amount = sale.total
-                    tendered = sale.total
-                completed_sale = ts.complete_sale(
-                    payment_method=payment_method,
-                    amount=amount,
-                    tendered=tendered,
-                    manager_approved=True,
-                    generate_receipt=True,
-                )
+                completed_sale = ts.finalize_sale(sale, generate_receipt=True)
                 completed_sale.note = sale.note
                 completed_sale.needs_review = sale.needs_review
                 completed_sale.save(update_fields=['note', 'needs_review'])
