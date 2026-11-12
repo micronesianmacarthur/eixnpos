@@ -637,7 +637,7 @@ export default function SalesPage() {
                 {availableCredit < 0 ? ' (over limit)' : ''}
               </p>
             )}
-            {!isManager && (
+            {!isManager && payCustomer && (
               <>
                 <label className="mm-field">
                   <span>Manager username</span>
