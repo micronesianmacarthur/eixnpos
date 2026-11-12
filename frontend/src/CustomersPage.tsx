@@ -685,7 +685,7 @@ function CustomersPage() {
 
       {formMode !== 'closed' && (
         <div
-          className="modal-backdrop"
+          className="mm-modal-backdrop"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) {
               closeForm();
@@ -693,18 +693,18 @@ function CustomersPage() {
           }}
         >
           <div
-            className="modal"
+            className="mm-modal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="customer-form-title"
           >
-            <header className="modal-header">
+            <header className="mm-modal-header">
               <h2 id="customer-form-title">
                 {formMode === 'create' ? 'New customer' : 'Edit customer'}
               </h2>
               <button
                 type="button"
-                className="icon-button"
+                className="mm-modal-close"
                 aria-label="Close"
                 onClick={closeForm}
               >
@@ -712,7 +712,7 @@ function CustomersPage() {
               </button>
             </header>
 
-            <form className="modal-form" onSubmit={handleFormSubmit}>
+            <form className="mm-modal-body" onSubmit={handleFormSubmit}>
               {formError && (
                 <p className="error" role="alert">
                   {formError}
@@ -800,7 +800,7 @@ function CustomersPage() {
                 />
               </label>
 
-              <footer className="modal-actions">
+              <footer className="mm-modal-footer">
                 <button
                   type="button"
                   className="mm-btn mm-btn--ghost"
@@ -828,7 +828,7 @@ function CustomersPage() {
 
       {payOpen && selected && (
         <div
-          className="modal-backdrop"
+          className="mm-modal-backdrop"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) {
               closePay();
@@ -836,16 +836,16 @@ function CustomersPage() {
           }}
         >
           <div
-            className="modal"
+            className="mm-modal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="pay-account-title"
           >
-            <header className="modal-header">
+            <header className="mm-modal-header">
               <h2 id="pay-account-title">Pay on account</h2>
               <button
                 type="button"
-                className="icon-button"
+                className="mm-modal-close"
                 aria-label="Close"
                 onClick={closePay}
               >
@@ -853,7 +853,7 @@ function CustomersPage() {
               </button>
             </header>
 
-            <form className="modal-form" onSubmit={handlePaySubmit}>
+            <form className="mm-modal-body" onSubmit={handlePaySubmit}>
               <p className="modal-context">
                 Record a payment for <strong>{selected.name}</strong>. Current
                 balance: <strong>{formatMoney(selected.balance)}</strong>.
@@ -889,7 +889,7 @@ function CustomersPage() {
                 />
               </label>
 
-              <footer className="modal-actions">
+              <footer className="mm-modal-footer">
                 <button
                   type="button"
                   className="mm-btn mm-btn--ghost"
