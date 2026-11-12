@@ -209,12 +209,14 @@ export default function UsersPage() {
     setFormError('');
 
     const payload: Record<string, string> = {
-      username,
       email,
       first_name: firstName,
       last_name: lastName,
       role,
     };
+    if (formMode === 'create') {
+      payload.username = username;
+    }
     if (password) {
       payload.password = password;
     }
@@ -533,11 +535,11 @@ export default function UsersPage() {
                   }
                   required={formMode === 'create'}
                 />
-                {formMode === 'edit' && (
+                {/*{formMode === 'edit' && (
                   <span className="mm-hint">
                     Leave blank to keep current password
                   </span>
-                )}
+                )}*/}
               </label>
 
               <footer className="mm-modal-footer">
