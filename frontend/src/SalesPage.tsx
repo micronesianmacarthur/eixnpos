@@ -440,7 +440,8 @@ export default function SalesPage() {
         <div>
           <h1 className="mm-page-title">Sale</h1>
           {sale && (
-            <p className="page-subtitle">
+            <p className="mm-page-subtitle">
+
               Sale #{sale.number} · {sale.status}
             </p>
           )}
@@ -466,7 +467,7 @@ export default function SalesPage() {
       </header>
 
       {error && (
-        <p className="error" role="alert">
+        <p className="mm-alert mm-alert--danger" role="alert">
           {error}
         </p>
       )}
@@ -474,16 +475,15 @@ export default function SalesPage() {
       <div className="sales-layout">
         {/* Products */}
         <div className="mm-card products-panel">          <div className="product-search">
-            <input
+            <input className="mm-input"
               type="search"
               value={productSearch}
               onChange={(e) => setProductSearch(e.target.value)}
               placeholder="Search products"
               aria-label="Search products"
-              className="mm-input"
             />
           </div>
-          {loading && <p className="muted">Loading products...</p>}
+          {loading && <div className="mm-loading" role="status">Loading products...</div>}
           <div className="product-grid">
             {filteredProducts.map((product) => (
               <button
@@ -502,14 +502,14 @@ export default function SalesPage() {
             ))}
           </div>
           {!loading && filteredProducts.length === 0 && (
-            <p className="muted">No products found.</p>
+            <div className="mm-empty"><p className="mm-empty-text">No products found.</p></div>
           )}
         </div>
 
         {/* Cart */}
         <div className="mm-card cart-panel">          <div className="cart-header">
             <h2>Cart</h2>
-            <span className="muted">
+            <span className="mm-muted">
               {cartLines.reduce((s, l) => s + l.quantity, 0)} items
             </span>
           </div>
@@ -588,9 +588,9 @@ export default function SalesPage() {
 
           {/* Payment */}
           <div className="payment-section">
-            <label className="field">
+            <label className="mm-field">
               <span>Payment method</span>
-              <select
+              <select className="mm-select"
                 value={payMethod}
                 onChange={(e) => setPayMethod(e.target.value)}
               >
@@ -604,9 +604,9 @@ export default function SalesPage() {
 
             {payMethod === 'invoice' && (
               <>
-                <label className="field">
+                <label className="mm-field">
                   <span>Customer</span>
-                  <select
+                  <select className="mm-select"
                     value={payCustomer}
                     onChange={(e) => setPayCustomer(e.target.value)}
                   >
@@ -620,25 +620,25 @@ export default function SalesPage() {
                   </select>
                 </label>
                 {selectedCustomer && (
-                  <p className="muted small">
+                  <p className="mm-muted small">
                     Available credit: {formatMoney(availableCredit)}
                     {availableCredit < 0 ? ' (over limit)' : ''}
                   </p>
                 )}
                 {!isManager && (
                   <>
-                    <label className="field">
+                    <label className="mm-field">
                       <span>Manager username</span>
-                      <input
+                      <input className="mm-input"
                         type="text"
                         value={payManagerUser}
                         onChange={(e) => setPayManagerUser(e.target.value)}
                         placeholder="Manager approval required"
                       />
                     </label>
-                    <label className="field">
+                    <label className="mm-field">
                       <span>Manager password</span>
-                      <input
+                      <input className="mm-input"
                         type="password"
                         value={payManagerPass}
                         onChange={(e) => setPayManagerPass(e.target.value)}
@@ -650,9 +650,9 @@ export default function SalesPage() {
             )}
 
             <div className="field-row">
-              <label className="field">
+              <label className="mm-field">
                 <span>Amount</span>
-                <input
+                <input className="mm-input"
                   type="number"
                   step="0.01"
                   min="0.01"
@@ -661,9 +661,9 @@ export default function SalesPage() {
                 />
               </label>
               {payMethod === 'cash' && (
-                <label className="field">
+                <label className="mm-field">
                   <span>Cash tendered</span>
-                  <input
+                  <input className="mm-input"
                     type="number"
                     step="0.01"
                     min="0.01"
@@ -681,7 +681,7 @@ export default function SalesPage() {
             )}
 
             {payError && (
-              <p className="error" role="alert">
+              <p className="mm-alert mm-alert--danger" role="alert">
                 {payError}
               </p>
             )}
@@ -705,7 +705,7 @@ export default function SalesPage() {
                     <span>{p.method}</span>
                     <span>{formatMoney(p.amount)}</span>
                     {p.method === 'cash' && (
-                      <span className="muted small">
+                      <span className="mm-muted small">
                         tendered {formatMoney(p.tendered ?? 0)} · change{' '}
                         {formatMoney(p.change_due)}
                       </span>
@@ -738,7 +738,7 @@ export default function SalesPage() {
           }}
         >
           <div className="mm-modal" role="dialog" aria-modal="true">
-            <header className="modal-header">
+            <header className="mm-modal-header">
               <h2>Line discount</h2>
               <button
                 type="button"
@@ -748,20 +748,20 @@ export default function SalesPage() {
                 ×
               </button>
             </header>
-            <form className="modal-form" onSubmit={handleDiscountSubmit}>
+            <form className="mm-modal-body" onSubmit={handleDiscountSubmit}>
               <p className="modal-context">
                 {discountLine.product_name} — line total{' '}
                 {formatMoney(discountLine.unit_price)} ×{' '}
                 {discountLine.quantity}
               </p>
               {discountError && (
-                <p className="error" role="alert">
+                <p className="mm-alert mm-alert--danger" role="alert">
                   {discountError}
                 </p>
               )}
-              <label className="field">
+              <label className="mm-field">
                 <span>Type</span>
-                <select
+                <select className="mm-select"
                   value={discountType}
                   onChange={(e) => setDiscountType(e.target.value)}
                 >
@@ -770,9 +770,9 @@ export default function SalesPage() {
                   <option value="none">None (clear)</option>
                 </select>
               </label>
-              <label className="field">
+              <label className="mm-field">
                 <span>Value</span>
-                <input
+                <input className="mm-input"
                   type="number"
                   step="0.01"
                   min="0"
@@ -783,18 +783,18 @@ export default function SalesPage() {
               </label>
               {!isManager && (
                 <>
-                  <label className="field">
+                  <label className="mm-field">
                     <span>Manager username</span>
-                    <input
+                    <input className="mm-input"
                       type="text"
                       value={discountManagerUser}
                       onChange={(e) => setDiscountManagerUser(e.target.value)}
                       placeholder="Required for cashier"
                     />
                   </label>
-                  <label className="field">
+                  <label className="mm-field">
                     <span>Manager password</span>
-                    <input
+                    <input className="mm-input"
                       type="password"
                       value={discountManagerPass}
                       onChange={(e) => setDiscountManagerPass(e.target.value)}
@@ -802,7 +802,7 @@ export default function SalesPage() {
                   </label>
                 </>
               )}
-              <footer className="modal-actions">
+              <footer className="mm-modal-footer">
                 <button
                   type="button"
                   className="mm-btn mm-btn--ghost"
@@ -826,9 +826,9 @@ export default function SalesPage() {
 
       {/* Receipt modal */}
       {receiptSale && (
-        <div className="modal-backdrop">
+        <div className="mm-modal-backdrop">
           <div className="mm-modal receipt-modal" role="dialog" aria-modal="true">
-            <header className="modal-header">
+            <header className="mm-modal-header">
               <h2>Receipt</h2>
               <button type="button" className="mm-modal-close" onClick={closeReceipt}>
                 ×
@@ -856,7 +856,7 @@ export default function SalesPage() {
                 return `${business?.company_name || 'Store'}\n${business?.address || ''}\n${business?.phone || ''} ${business?.email || ''}\n${business?.website || ''}\n${'='.repeat(34)}\n${new Date(s.completed_at ?? s.created_at ?? '').toLocaleString()}\nCashier: user #${s.cashier}   Sale #${s.number}\n${'='.repeat(34)}\n${lines}\n${'='.repeat(34)}\nSubtotal: ${formatMoney(s.subtotal).padStart(22)}\nDiscount: -${formatMoney(s.discount_total).padStart(21)}\nTOTAL:    ${formatMoney(s.total).padStart(22)}\n${'='.repeat(34)}\n${payLines}\n${'='.repeat(34)}\nThank you for your visit!\n`;
               })()}
             </pre>
-            <footer className="modal-actions">
+            <footer className="mm-modal-footer">
               <button type="button" className="mm-btn mm-btn--primary" onClick={closeReceipt}>
                 Close
               </button>
