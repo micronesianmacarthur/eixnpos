@@ -199,7 +199,7 @@ test('opens the receipt modal', async ({ page }) => {
   await page.locator('.product-card').first().click();
   await expect(page.locator('.cart-line')).toBeVisible();
   await page.getByRole('spinbutton', { name: 'Tendered' }).fill('10');
-  await page.getByRole('button', { name: /Record payment/i }).click();
+  await page.getByRole('button', { name: /^Cash$/i }).click();
   await page.getByRole('button', { name: /Complete sale/i }).click();
   await expect(page.locator('.receipt-modal')).toBeVisible();
   expectNoNetworkIssues(monitor);

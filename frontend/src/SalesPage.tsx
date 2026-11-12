@@ -294,7 +294,8 @@ export default function SalesPage() {
     }
   };
 
-  const recordPayment = async () => {
+  const recordPayment = async (method: string) => {
+    setPayMethod(method);
     if (!sale) return;
     const tendered = payTendered.trim();
     if (toNumber(tendered) <= 0) {
@@ -307,13 +308,13 @@ export default function SalesPage() {
     setPaySaving(true);
     setPayError('');
     const payload: Record<string, unknown> = {
-      method: payMethod,
+      method,
       amount: appliedAmount > 0 ? appliedAmount.toFixed(2) : tendered,
     };
-    if (payMethod === 'cash') {
+    if (method === 'cash') {
       payload.tendered = tendered;
     }
-    if (payMethod === 'invoice') {
+    if (method === 'invoice') {
       if (!payCustomer) {
         setPayError('Select a customer.');
         setPaySaving(false);
@@ -343,6 +344,12 @@ export default function SalesPage() {
     }
   };
 
+  const exactAmount = () => {
+    const recordedTotal = sale?.payments.reduce((sum, payment) => sum + toNumber(payment.amount), 0) ?? 0;
+    const remaining = Math.max(0, toNumber(sale?.total ?? 0) - recordedTotal);
+    setPayTendered(remaining > 0 ? remaining.toFixed(2) : (sale?.total ?? '0'));
+  };
+
   const completeSale = useCallback(async () => {
     if (!sale || sale.lines.length === 0) {
       setError('Add at least one item before completing.');
@@ -353,15 +360,16 @@ export default function SalesPage() {
     try {
       if (sale && toNumber(sale.total) > 0 && (!paymentRecorded || sale.payments.length === 0)) {
         // auto-record payment with current settings
+        const method = payMethod;
         const tendered = payTendered.trim() || sale.total;
         const payload: Record<string, unknown> = {
-          method: payMethod,
+          method,
           amount: tendered,
         };
-        if (payMethod === 'cash') {
+        if (method === 'cash') {
           payload.tendered = tendered;
         }
-        if (payMethod === 'invoice') {
+        if (method === 'invoice') {
           if (!payCustomer) throw new Error('Select a customer for invoice payment.');
           payload.customer = Number(payCustomer);
           if (payManagerUser || payManagerPass) {
@@ -614,63 +622,65 @@ export default function SalesPage() {
               </select>
             </label>
 
-            {payMethod === 'invoice' && (
+            <label className="mm-field">
+              <span>Customer (for invoice)</span>
+              <select className="mm-select"
+                value={payCustomer}
+                onChange={(e) => setPayCustomer(e.target.value)}
+              >
+                <option value="">Select customer</option>
+                {customers.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} (owes {formatMoney(c.balance)}, limit{' '}
+                    {formatMoney(c.credit_limit)})
+                  </option>
+                ))}
+              </select>
+            </label>
+            {selectedCustomer && (
+              <p className="mm-muted small">
+                Available credit: {formatMoney(availableCredit)}
+                {availableCredit < 0 ? ' (over limit)' : ''}
+              </p>
+            )}
+            {!isManager && (
               <>
                 <label className="mm-field">
-                  <span>Customer</span>
-                  <select className="mm-select"
-                    value={payCustomer}
-                    onChange={(e) => setPayCustomer(e.target.value)}
-                  >
-                    <option value="">Select customer</option>
-                    {customers.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name} (owes {formatMoney(c.balance)}, limit{' '}
-                        {formatMoney(c.credit_limit)})
-                      </option>
-                    ))}
-                  </select>
+                  <span>Manager username</span>
+                  <input className="mm-input"
+                    type="text"
+                    value={payManagerUser}
+                    onChange={(e) => setPayManagerUser(e.target.value)}
+                    placeholder="Manager approval required for invoice"
+                  />
                 </label>
-                {selectedCustomer && (
-                  <p className="mm-muted small">
-                    Available credit: {formatMoney(availableCredit)}
-                    {availableCredit < 0 ? ' (over limit)' : ''}
-                  </p>
-                )}
-                {!isManager && (
-                  <>
-                    <label className="mm-field">
-                      <span>Manager username</span>
-                      <input className="mm-input"
-                        type="text"
-                        value={payManagerUser}
-                        onChange={(e) => setPayManagerUser(e.target.value)}
-                        placeholder="Manager approval required"
-                      />
-                    </label>
-                    <label className="mm-field">
-                      <span>Manager password</span>
-                      <input className="mm-input"
-                        type="password"
-                        value={payManagerPass}
-                        onChange={(e) => setPayManagerPass(e.target.value)}
-                      />
-                    </label>
-                  </>
-                )}
+                <label className="mm-field">
+                  <span>Manager password</span>
+                  <input className="mm-input"
+                    type="password"
+                    value={payManagerPass}
+                    onChange={(e) => setPayManagerPass(e.target.value)}
+                  />
+                </label>
               </>
             )}
 
-            <label className="mm-field">
+            <div className="mm-field">
               <span>Tendered</span>
-              <input className="mm-input"
-                type="number"
-                step="0.01"
-                min="0.01"
-                value={payTendered}
-                onChange={(e) => setPayTendered(e.target.value)}
-              />
-            </label>
+              <div className="field-row" style={{ gridTemplateColumns: '1fr auto', gap: '0.5rem' }}>
+                <input className="mm-input"
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  value={payTendered}
+                  onChange={(e) => setPayTendered(e.target.value)}
+                  aria-label="Tendered"
+                />
+                <button type="button" className="mm-btn mm-btn--ghost" onClick={exactAmount}>
+                  Exact amount
+                </button>
+              </div>
+            </div>
 
             {payMethod === 'cash' && (
               <div className="change-due">
@@ -684,7 +694,7 @@ export default function SalesPage() {
                 className="mm-textarea"
                 value={saleNote}
                 onChange={(e) => setSaleNote(e.target.value)}
-                placeholder="Required for zero-value sales"
+                placeholder="Required for zero sales"
               />
             </label>
 
@@ -695,14 +705,17 @@ export default function SalesPage() {
             )}
 
             <div className="payment-actions">
-              <button
-                type="button"
-                className="mm-btn mm-btn--primary"
-                onClick={() => void recordPayment()}
-                disabled={busy || paySaving || cartLines.length === 0}
-              >
-                {paySaving ? 'Recording...' : 'Record payment'}
-              </button>
+              {['cash', 'card', 'invoice'].map((method) => (
+                <button
+                  key={method}
+                  type="button"
+                  className="mm-btn mm-btn--primary"
+                  onClick={() => void recordPayment(method)}
+                  disabled={busy || paySaving || cartLines.length === 0 || toNumber(payTendered) <= 0}
+                >
+                  {paySaving ? 'Recording...' : method.charAt(0).toUpperCase() + method.slice(1)}
+                </button>
+              ))}
             </div>
 
             {sale?.payments && sale.payments.length > 0 && (
@@ -710,14 +723,14 @@ export default function SalesPage() {
                 <h4>Recorded payments</h4>
                 {sale.payments.map((p) => (
                   <div key={p.id} className="recorded-payment">
-                    <span>{p.method}</span>
+                    <span>{p.method.charAt(0).toUpperCase() + p.method.slice(1)}</span>
                     <span>{formatMoney(p.amount)}</span>
-                    {p.method === 'cash' && (
+                    {/*{p.method === 'cash' && (
                       <span className="mm-muted small">
                         tendered {formatMoney(p.tendered ?? 0)} · change{' '}
                         {formatMoney(p.change_due)}
                       </span>
-                    )}
+                    )}*/}
                   </div>
                 ))}
               </div>
