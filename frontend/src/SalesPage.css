@@ -252,3 +252,68 @@
     grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
   }
 }
+/* Cart line action buttons */
+
+.qty-controls button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--mm-text);
+  background: var(--mm-surface);
+  border: 1px solid var(--mm-border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.qty-controls button:hover:not(:disabled) {
+  background: var(--mm-surface-hover);
+  border-color: var(--mm-primary);
+  color: var(--mm-primary);
+}
+
+.qty-controls button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.line-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--mm-text-muted);
+  background: transparent;
+  border: 1px solid var(--mm-border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.line-action:hover:not(:disabled) {
+  background: var(--mm-primary-soft);
+  border-color: var(--mm-primary);
+  color: var(--mm-primary);
+}
+
+.line-action.danger:hover:not(:disabled) {
+  background: var(--mm-error-soft);
+  border-color: var(--mm-error);
+  color: var(--mm-error-foreground);
+}
+
+.line-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
