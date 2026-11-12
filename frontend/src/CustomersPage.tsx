@@ -434,27 +434,28 @@ function CustomersPage() {
   };
 
   return (
-    <section className="customers-page">
-      <header className="customers-heading">
+    <div className="mm-page customers-page">
+      <header className="mm-page-header">
         <div>
-          <h1>Customers</h1>
-          <p className="page-subtitle">
+          <h1 className="mm-page-title">Customers</h1>
+          <p className="mm-page-subtitle">
             {customers.length} customer{customers.length === 1 ? '' : 's'} on
             file
           </p>
         </div>
-        <button type="button" className="btn btn-primary" onClick={openCreate}>
+        <button type="button" className="mm-btn mm-btn--primary" onClick={openCreate}>
           + New customer
         </button>
       </header>
 
       <div className="customers-layout">
-        <aside className="customer-list-panel">
+        <aside className="mm-card customer-list-panel">
           <div className="customer-search">
             <input
               type="search"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
+              className="mm-input"
               placeholder="Search by name or phone"
               aria-label="Search customers"
             />
@@ -505,7 +506,7 @@ function CustomersPage() {
           </div>
         </aside>
 
-        <section className="customer-detail-panel" aria-live="polite">
+        <section className="mm-card customer-detail-panel" aria-live="polite">
           {!selected ? (
             <div className="customer-empty">
               <p>Select a customer to view their account.</p>
@@ -522,14 +523,14 @@ function CustomersPage() {
                 <div className="customer-detail-buttons">
                   <button
                     type="button"
-                    className="btn btn-ghost"
+                    className="mm-btn mm-btn--ghost"
                     onClick={() => openEdit(selected)}
                   >
                     Edit
                   </button>
                   <button
                     type="button"
-                    className="btn btn-danger-ghost"
+                    className="mm-btn mm-btn--danger"
                     onClick={() => void handleDelete(selected)}
                     disabled={deleting}
                   >
@@ -604,14 +605,14 @@ function CustomersPage() {
               <div className="customer-actions">
                 <button
                   type="button"
-                  className="btn btn-success"
+                  className="mm-btn mm-btn--success"
                   onClick={() => openPay(selected)}
                 >
                   Pay on account
                 </button>
                 <button
                   type="button"
-                  className="btn btn-primary"
+                  className="mm-btn mm-btn--primary"
                   onClick={() =>
                     navigate(`/sales?customer=${selected.id}`)
                   }
@@ -802,7 +803,7 @@ function CustomersPage() {
               <footer className="modal-actions">
                 <button
                   type="button"
-                  className="btn btn-ghost"
+                  className="mm-btn mm-btn--ghost"
                   onClick={closeForm}
                   disabled={formSaving}
                 >
@@ -810,7 +811,7 @@ function CustomersPage() {
                 </button>
                 <button
                   type="submit"
-                  className="btn btn-primary"
+                  className="mm-btn mm-btn--primary"
                   disabled={formSaving}
                 >
                   {formSaving
@@ -891,7 +892,7 @@ function CustomersPage() {
               <footer className="modal-actions">
                 <button
                   type="button"
-                  className="btn btn-ghost"
+                  className="mm-btn mm-btn--ghost"
                   onClick={closePay}
                   disabled={paySaving}
                 >
@@ -899,7 +900,7 @@ function CustomersPage() {
                 </button>
                 <button
                   type="submit"
-                  className="btn btn-success"
+                  className="mm-btn mm-btn--success"
                   disabled={paySaving}
                 >
                   {paySaving ? 'Recording...' : 'Record payment'}
@@ -909,7 +910,7 @@ function CustomersPage() {
           </div>
         </div>
       )}
-    </section>
+    </div>
   );
 }
 
