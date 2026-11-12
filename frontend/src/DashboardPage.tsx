@@ -1,21 +1,47 @@
 import BusinessInfoForm from './BusinessInfoForm';
 import { useAuth } from './authContext';
+import { Icon, type IconName } from './Icon';
+import './DashboardPage.css';
 
-const CARDS = [
-  { title: 'Sale', body: 'Start a new sale from the sale screen.' },
-  { title: 'Inventory', body: 'Review stock levels and receive new stock.' },
-  { title: 'Reports', body: 'Close a shift and review the Z-report.' },
+interface DashboardCard {
+  readonly title: string;
+  readonly body: string;
+  readonly icon: IconName;
+  readonly tone: 'primary' | 'secondary';
+}
+
+const CARDS: readonly DashboardCard[] = [
+  {
+    title: 'Sale',
+    body: 'Start a new sale from the sale screen.',
+    icon: 'sales',
+    tone: 'primary',
+  },
+  {
+    title: 'Inventory',
+    body: 'Review stock levels and receive new stock.',
+    icon: 'inventory',
+    tone: 'secondary',
+  },
+  {
+    title: 'Reports',
+    body: 'Close a shift and review the Z-report.',
+    icon: 'sales-manager',
+    tone: 'primary',
+  },
 ];
 
 export default function DashboardPage() {
   const { me, refresh } = useAuth();
 
   return (
-    <section>
-      <h1>Dashboard</h1>
+    <div className="mm-page">
+      <header className="mm-page-header">
+        <h1 className="mm-page-title">Dashboard</h1>
+      </header>
 
       {!me?.business_info_complete && (
-        <section style={{ marginBottom: '2rem' }}>
+        <section className="dashboard-setup">
           <p>Complete your business information so it appears on receipts.</p>
           <BusinessInfoForm onSaved={refresh} />
         </section>
@@ -23,12 +49,19 @@ export default function DashboardPage() {
 
       <div className="dashboard-grid">
         {CARDS.map((card) => (
-          <div key={card.title} className="dashboard-card">
-            <h2>{card.title}</h2>
-            <p>{card.body}</p>
-          </div>
+          <article key={card.title} className="mm-card dashboard-card">
+            <span
+              className={`mm-icon-tile${card.tone === 'secondary' ? ' mm-icon-tile--secondary' : ''}`}
+            >
+              <Icon name={card.icon} size={22} />
+            </span>
+            <div>
+              <h2 className="mm-card-title">{card.title}</h2>
+              <p className="dashboard-card-text">{card.body}</p>
+            </div>
+          </article>
         ))}
       </div>
-    </section>
+    </div>
   );
 }

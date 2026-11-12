@@ -1,6 +1,7 @@
 .app-shell {
   display: flex;
   min-height: 100vh;
+  background: var(--mm-background);
 }
 
 .app-main {
@@ -8,62 +9,53 @@
   flex: 1;
   flex-direction: column;
   min-width: 0;
+  background: var(--mm-background);
 }
 
 .app-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
   display: flex;
+  height: var(--mm-header-height);
+  min-height: var(--mm-header-height);
   align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  padding: 1rem 1.5rem;
-  border-bottom: 1px solid var(--border);
+  justify-content: flex-end;
+  gap: 16px;
+  padding: 0 var(--mm-page-padding);
+  background: var(--mm-surface);
+  border-bottom: 1px solid var(--mm-border);
 }
 
 .app-user {
   display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
+  align-items: center;
+  gap: 10px;
 }
 
 .app-user-name {
+  color: var(--mm-text);
   font-weight: 600;
-  color: var(--text-h);
 }
 
 .app-user-role {
-  font-size: 0.85rem;
-  color: var(--text);
   text-transform: capitalize;
 }
 
 .app-page {
   flex: 1;
-  padding: 1.5rem;
+  width: 100%;
+  max-width: var(--mm-page-max-width);
+  margin: 0 auto;
+  padding: var(--mm-page-padding);
 }
 
-.dashboard-grid {
-  display: grid;
-  gap: 1rem;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-}
-
-.dashboard-card {
-  padding: 1.25rem;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-
-.dashboard-card h2 {
-  margin-top: 0;
-}
-
-.dashboard-card p {
-  color: var(--text);
-}
-
-@media (max-width: 800px) {
+@media (max-width: 768px) {
   .app-header {
-    padding-left: 4rem;
+    padding: 0 var(--mm-page-padding-mobile);
+  }
+
+  .app-page {
+    padding: var(--mm-page-padding-mobile);
   }
 }

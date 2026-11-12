@@ -1,0 +1,30 @@
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 24px;
+}
+
+.dashboard-card {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.dashboard-card-text {
+  margin-top: 6px;
+  color: var(--mm-text-muted);
+  font-size: 14px;
+}
+
+.dashboard-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+@media (max-width: 768px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+}
