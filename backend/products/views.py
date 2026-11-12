@@ -1,3 +1,4 @@
+from django.db.models.deletion import ProtectedError
 from rest_framework import serializers, viewsets, permissions, decorators, response, status
 from .models import Product, Category
 
@@ -29,6 +30,15 @@ class ProductViewSet(viewsets.ModelViewSet):
     queryset = Product.objects.all()
     serializer_class = ProductSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def destroy(self, request, *args, **kwargs):
+        try:
+            return super().destroy(request, *args, **kwargs)
+        except ProtectedError:
+            return response.Response(
+                {'detail': 'This product cannot be deleted because it is used in sales history.'},
+                status=status.HTTP_409_CONFLICT,
+            )
 
     @decorators.action(detail=True, methods=['post'])
     def receive(self, request, pk=None):
