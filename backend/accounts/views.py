@@ -2,10 +2,15 @@ from django.contrib.auth import authenticate, login, logout
 from django.middleware.csrf import get_token
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated, IsAdminUser
+from rest_framework import viewsets
 from rest_framework.response import Response
 from .serializers import UserSerializer
+from .permissions import IsManagerOrAdmin
 from django.contrib.auth import update_session_auth_hash
 from business.models import BusinessInfo
+from django.contrib.auth import get_user_model
+
+User = get_user_model()
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
@@ -74,3 +79,23 @@ def change_password_view(request):
     request.user.save()
     update_session_auth_hash(request, request.user)
     return Response({'detail': 'changed'})
+
+
+class UserViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing users.
+    Only accessible by managers and admins.
+    """
+    queryset = User.objects.all().order_by('username')
+    serializer_class = UserSerializer
+    permission_classes = [IsManagerOrAdmin]
+
+    def perform_create(self, serializer):
+        # Ensure the creator has manager/admin role (enforced by permission class)
+        user = serializer.save()
+        # If password not set, set a default or require it
+        if not user.has_usable_password():
+            user.set_unusable_password()
+            user.must_change_password = True
+            user.save()
+        return user

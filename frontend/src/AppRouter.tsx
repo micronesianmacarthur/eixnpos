@@ -6,6 +6,7 @@ import DashboardPage from './DashboardPage';
 import LoginPage from './LoginPage';
 import PlaceholderPage from './PlaceholderPage';
 import CustomersPage from './CustomersPage';
+import UsersPage from './UsersPage';
 import SalesPage from './SalesPage';
 import InventoryPage from './InventoryPage';
 import ProductPage from './ProductPage';
@@ -64,15 +65,7 @@ function AppRouter() {
               </Route>
 
               <Route element={<RequireRole roles={['manager', 'admin']} />}>
-                <Route
-                  path="users"
-                  element={
-                    <PlaceholderPage
-                      title="Users"
-                      description="Create and manage cashier, manager, and admin accounts."
-                    />
-                  }
-                />
+                <Route path="users" element={<UsersPage />} />
                 <Route
                   path="settings"
                   element={

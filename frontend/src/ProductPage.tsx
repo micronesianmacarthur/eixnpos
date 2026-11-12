@@ -302,102 +302,279 @@ export default function ProductPage() {
 
       {error && <p className="error" role="alert">{error}</p>}
 
-      <form className="product-form" onSubmit={handleSubmit}>
-        <div className="form-section">
-          <h2>Basic info</h2>
+      {isEdit ? (
+        <div className="edit-layout">
+          <form className="product-form" onSubmit={handleSubmit}>
+            <div className="form-section">
+              <h2>Basic info</h2>
 
-          <label className="field">
-            <span>Name <span className="required">*</span></span>
-            <input
-              type="text"
-              value={form.name}
-              onChange={(e) => handleChange('name', e.target.value)}
-              required
-              autoFocus
-              maxLength={200}
-              placeholder="Product name"
-            />
-          </label>
+              <label className="field">
+                <span>Name <span className="required">*</span></span>
+                <input
+                  type="text"
+                  value={form.name}
+                  onChange={(e) => handleChange('name', e.target.value)}
+                  required
+                  autoFocus
+                  maxLength={200}
+                  placeholder="Product name"
+                />
+              </label>
 
-          <label className="field">
-            <span>SKU</span>
-            <input
-              type="text"
-              value={form.sku}
-              onChange={(e) => handleChange('sku', e.target.value)}
-              maxLength={64}
-              placeholder="Optional, e.g. COF-REG-001"
-            />
-          </label>
+              <label className="field">
+                <span>SKU</span>
+                <input
+                  type="text"
+                  value={form.sku}
+                  onChange={(e) => handleChange('sku', e.target.value)}
+                  maxLength={64}
+                  placeholder="Optional, e.g. COF-REG-001"
+                />
+              </label>
 
-          <label className="field">
-            <span>Description (category)</span>
-            <input
-              type="text"
-              value={form.description}
-              onChange={(e) => handleChange('description', e.target.value)}
-              maxLength={200}
-              placeholder="Optional, e.g. Drinks, Food, Snacks"
-            />
-          </label>
+              <label className="field">
+                <span>Description (category)</span>
+                <input
+                  type="text"
+                  value={form.description}
+                  onChange={(e) => handleChange('description', e.target.value)}
+                  maxLength={200}
+                  placeholder="Optional, e.g. Drinks, Food, Snacks"
+                />
+              </label>
 
-          <label className="field">
-            <span>Supplier</span>
-            <select
-              value={form.supplier}
-              onChange={(e) => handleChange('supplier', e.target.value)}
-            >
-              <option value="">— No supplier —</option>
-              {suppliers.map((supplier) => (
-                <option key={supplier.id} value={String(supplier.id)}>
-                  {supplier.name}
-                </option>
-              ))}
-            </select>
-          </label>
+              <label className="field">
+                <span>Supplier</span>
+                <select
+                  value={form.supplier}
+                  onChange={(e) => handleChange('supplier', e.target.value)}
+                >
+                  <option value="">— No supplier —</option>
+                  {suppliers.map((supplier) => (
+                    <option key={supplier.id} value={String(supplier.id)}>
+                      {supplier.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <div className="form-section">
+              <h2>Pricing & stock</h2>
+
+              <div className="field-row">
+                <label className="field">
+                  <span>Price <span className="required">*</span></span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={form.price}
+                    onChange={(e) => handleChange('price', e.target.value)}
+                    required
+                  />
+                </label>
+
+                <label className="field">
+                  <span>Cost <span className="required">*</span></span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={form.cost}
+                    onChange={(e) => handleChange('cost', e.target.value)}
+                    required
+                  />
+                </label>
+
+                <label className="field">
+                  <span>Min stock <span className="required">*</span></span>
+                  <input
+                    type="number"
+                    step="1"
+                    min="0"
+                    value={form.min_stock}
+                    onChange={(e) => handleChange('min_stock', e.target.value)}
+                    required
+                  />
+                </label>
+
+                {!isEdit && (
+                  <label className="field">
+                    <span>Initial stock</span>
+                    <input
+                      type="number"
+                      step="1"
+                      min="0"
+                      value={form.initial_stock}
+                      onChange={(e) => handleChange('initial_stock', e.target.value)}
+                      placeholder="Optional, e.g. 50"
+                    />
+                  </label>
+                )}
+              </div>
+            </div>
+
+            <div className="form-section">
+              <h2>Status</h2>
+
+              <label className="field checkbox-field">
+                <input
+                  type="checkbox"
+                  checked={form.active}
+                  onChange={(e) => handleChange('active', e.target.checked)}
+                />
+                <span>Active (visible in sale screen)</span>
+              </label>
+            </div>
+
+            <footer className="form-actions">
+              <button type="button" className="btn btn-ghost" onClick={handleCancel} disabled={saving}>
+                Cancel
+              </button>
+              <button type="submit" className="btn btn-primary" disabled={saving}>
+                {saving ? 'Saving...' : isEdit ? 'Save changes' : 'Create product'}
+              </button>
+            </footer>
+          </form>
+
+          <section className="movements-section">
+            <h2>Stock Movements</h2>
+            {movementLoading && <p className="muted">Loading...</p>}
+            {movementError && <p className="error" role="alert">{movementError}</p>}
+            {!movementLoading && !movementError && movements.length === 0 && (
+              <p className="muted">No stock movements recorded yet.</p>
+            )}
+            {movements.length > 0 && (
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Type</th>
+                      <th className="num">Qty</th>
+                      <th>Reference</th>
+                      <th>Note</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {movements.map((movement) => (
+                      <tr key={movement.id}>
+                        <td>{formatDate(movement.created_at)}</td>
+                        <td>
+                          <span className={`movement-type ${TYPE_COLORS[movement.movement_type]}`}>
+                            {TYPE_LABELS[movement.movement_type]}
+                          </span>
+                        </td>
+                        <td className="num">
+                          {movement.quantity > 0 ? '+' : ''}{movement.quantity}
+                        </td>
+                        <td>{movement.reference || '—'}</td>
+                        <td>{movement.note || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
         </div>
+      ) : (
+        <form className="product-form" onSubmit={handleSubmit}>
+          <div className="form-section">
+            <h2>Basic info</h2>
 
-        <div className="form-section">
-          <h2>Pricing & stock</h2>
-
-          <div className="field-row">
             <label className="field">
-              <span>Price <span className="required">*</span></span>
+              <span>Name <span className="required">*</span></span>
               <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={form.price}
-                onChange={(e) => handleChange('price', e.target.value)}
+                type="text"
+                value={form.name}
+                onChange={(e) => handleChange('name', e.target.value)}
                 required
+                autoFocus
+                maxLength={200}
+                placeholder="Product name"
               />
             </label>
 
             <label className="field">
-              <span>Cost <span className="required">*</span></span>
+              <span>SKU</span>
               <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={form.cost}
-                onChange={(e) => handleChange('cost', e.target.value)}
-                required
+                type="text"
+                value={form.sku}
+                onChange={(e) => handleChange('sku', e.target.value)}
+                maxLength={64}
+                placeholder="Optional, e.g. COF-REG-001"
               />
             </label>
 
             <label className="field">
-              <span>Min stock <span className="required">*</span></span>
+              <span>Description (category)</span>
               <input
-                type="number"
-                step="1"
-                min="0"
-                value={form.min_stock}
-                onChange={(e) => handleChange('min_stock', e.target.value)}
-                required
+                type="text"
+                value={form.description}
+                onChange={(e) => handleChange('description', e.target.value)}
+                maxLength={200}
+                placeholder="Optional, e.g. Drinks, Food, Snacks"
               />
             </label>
 
-            {!isEdit && (
+            <label className="field">
+              <span>Supplier</span>
+              <select
+                value={form.supplier}
+                onChange={(e) => handleChange('supplier', e.target.value)}
+              >
+                <option value="">— No supplier —</option>
+                {suppliers.map((supplier) => (
+                  <option key={supplier.id} value={String(supplier.id)}>
+                    {supplier.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="form-section">
+            <h2>Pricing & stock</h2>
+
+            <div className="field-row">
+              <label className="field">
+                <span>Price <span className="required">*</span></span>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={form.price}
+                  onChange={(e) => handleChange('price', e.target.value)}
+                  required
+                />
+              </label>
+
+              <label className="field">
+                <span>Cost <span className="required">*</span></span>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={form.cost}
+                  onChange={(e) => handleChange('cost', e.target.value)}
+                  required
+                />
+              </label>
+
+              <label className="field">
+                <span>Min stock <span className="required">*</span></span>
+                <input
+                  type="number"
+                  step="1"
+                  min="0"
+                  value={form.min_stock}
+                  onChange={(e) => handleChange('min_stock', e.target.value)}
+                  required
+                />
+              </label>
+
               <label className="field">
                 <span>Initial stock</span>
                 <input
@@ -409,74 +586,31 @@ export default function ProductPage() {
                   placeholder="Optional, e.g. 50"
                 />
               </label>
-            )}
-          </div>
-        </div>
-
-        <div className="form-section">
-          <h2>Status</h2>
-
-          <label className="field checkbox-field">
-            <input
-              type="checkbox"
-              checked={form.active}
-              onChange={(e) => handleChange('active', e.target.checked)}
-            />
-            <span>Active (visible in sale screen)</span>
-          </label>
-        </div>
-
-        <footer className="form-actions">
-          <button type="button" className="btn btn-ghost" onClick={handleCancel} disabled={saving}>
-            Cancel
-          </button>
-          <button type="submit" className="btn btn-primary" disabled={saving}>
-            {saving ? 'Saving...' : isEdit ? 'Save changes' : 'Create product'}
-          </button>
-        </footer>
-      </form>
-
-      {isEdit && (
-        <section className="movements-section">
-          <h2>Stock Movements</h2>
-          {movementLoading && <p className="muted">Loading...</p>}
-          {movementError && <p className="error" role="alert">{movementError}</p>}
-          {!movementLoading && !movementError && movements.length === 0 && (
-            <p className="muted">No stock movements recorded yet.</p>
-          )}
-          {movements.length > 0 && (
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Type</th>
-                    <th className="num">Qty</th>
-                    <th>Reference</th>
-                    <th>Note</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {movements.map((movement) => (
-                    <tr key={movement.id}>
-                      <td>{formatDate(movement.created_at)}</td>
-                      <td>
-                        <span className={`movement-type ${TYPE_COLORS[movement.movement_type]}`}>
-                          {TYPE_LABELS[movement.movement_type]}
-                        </span>
-                      </td>
-                      <td className="num">
-                        {movement.quantity > 0 ? '+' : ''}{movement.quantity}
-                      </td>
-                      <td>{movement.reference || '—'}</td>
-                      <td>{movement.note || '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
             </div>
-          )}
-        </section>
+          </div>
+
+          <div className="form-section">
+            <h2>Status</h2>
+
+            <label className="field checkbox-field">
+              <input
+                type="checkbox"
+                checked={form.active}
+                onChange={(e) => handleChange('active', e.target.checked)}
+              />
+              <span>Active (visible in sale screen)</span>
+            </label>
+          </div>
+
+          <footer className="form-actions">
+            <button type="button" className="btn btn-ghost" onClick={handleCancel} disabled={saving}>
+              Cancel
+            </button>
+            <button type="submit" className="btn btn-primary" disabled={saving}>
+              {saving ? 'Saving...' : isEdit ? 'Save changes' : 'Create product'}
+            </button>
+          </footer>
+        </form>
       )}
     </section>
   );

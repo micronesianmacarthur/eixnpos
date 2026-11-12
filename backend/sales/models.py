@@ -1,18 +1,23 @@
 from django.db import models
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 from decimal import Decimal
 
 User = get_user_model()
 
 
 class Sale(models.Model):
+    STATUS_PENDING = 'pending'
     STATUS_OPEN = 'open'
     STATUS_COMPLETED = 'completed'
     STATUS_VOIDED = 'voided'
+    STATUS_REFUNDED = 'refunded'
     STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
         (STATUS_OPEN, 'Open'),
         (STATUS_COMPLETED, 'Completed'),
         (STATUS_VOIDED, 'Voided'),
+        (STATUS_REFUNDED, 'Refunded'),
     ]
 
     number = models.PositiveIntegerField(unique=True, editable=False)
@@ -21,9 +26,12 @@ class Sale(models.Model):
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_OPEN)
     subtotal = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     discount_total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    tax_total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    refunded_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['-created_at']
@@ -34,18 +42,32 @@ class Sale(models.Model):
             self.number = (last.number + 1) if last else 1
         super().save(*args, **kwargs)
 
-    def recompute(self):
+    def recompute(self, tax_rate: Decimal = Decimal('0')):
+        """Recalculate sale totals from line items.
+        
+        Args:
+            tax_rate: Tax rate as a decimal (e.g., Decimal('0.10') for 10%)
+        """
         subtotal = Decimal('0')
         discount_total = Decimal('0')
         for line in self.lines.all():
             line.line_total = (line.unit_price * line.quantity) - line.discount_amount
             line.save(update_fields=['line_total'])
+            # Update in-memory object to reflect saved value
+            line.refresh_from_db(fields=['line_total'])
             subtotal += line.unit_price * line.quantity
             discount_total += line.discount_amount
+        
         self.subtotal = subtotal
         self.discount_total = discount_total
-        self.total = subtotal - discount_total
-        self.save(update_fields=['subtotal', 'discount_total', 'total'])
+        taxable_amount = subtotal - discount_total
+        self.tax_total = (taxable_amount * tax_rate).quantize(Decimal('0.01'))
+        self.total = taxable_amount + self.tax_total
+        self.save(update_fields=['subtotal', 'discount_total', 'tax_total', 'total'])
+
+    def is_open(self) -> bool:
+        """Check if sale is in a modifiable state."""
+        return self.status in (self.STATUS_PENDING, self.STATUS_OPEN)
 
     def __str__(self):
         return f'Sale #{self.number}'
