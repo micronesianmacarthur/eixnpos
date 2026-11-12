@@ -454,17 +454,6 @@ export default function ProductPage() {
           </label>
         )}
 
-        <label className="mm-field">
-          <span className="mm-label">Description (category)</span>
-          <input
-            type="text"
-            className="mm-input"
-            value={form.description}
-            onChange={(e) => handleChange('description', e.target.value)}
-            maxLength={200}
-            placeholder="Optional, e.g. Drinks, Food, Snacks"
-          />
-        </label>
 
         <div className="mm-field">
           <span className="mm-label">Supplier</span>

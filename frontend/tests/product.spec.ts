@@ -359,9 +359,6 @@ test('renders the desktop edit form side-by-side with movement badges', async ({
   await expect(
     page.getByRole('textbox', { name: 'Name', exact: true }),
   ).toHaveValue(PRODUCT.name);
-  await expect(
-    page.getByRole('textbox', { name: 'Description (category)', exact: true }),
-  ).toHaveValue('Drinks');
   await expect(page.getByRole('combobox', { name: 'Supplier' })).toHaveValue(
     '2',
   );
@@ -533,9 +530,6 @@ test('creates a product and posts initial stock before returning to inventory', 
   await page
     .getByRole('textbox', { name: 'Name', exact: true })
     .fill('House Blend');
-  await page
-    .getByRole('textbox', { name: 'Description (category)', exact: true })
-    .fill('Drinks');
   await page.getByRole('combobox', { name: 'Category' }).selectOption('1');
   await page.getByRole('combobox', { name: 'Supplier' }).selectOption('1');
   await page
@@ -571,7 +565,7 @@ test('creates a product and posts initial stock before returning to inventory', 
   expect(created.postDataJSON()).toEqual({
     name: 'House Blend',
     category: 1,
-    description: 'Drinks',
+    description: '',
     price: '12.00',
     cost: '6.50',
     min_stock: 8,
