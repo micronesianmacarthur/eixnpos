@@ -8,6 +8,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { apiFetch, ApiError } from './api';
 import { useAuth } from './authContext';
+import { Icon } from './Icon';
 import './InventoryPage.css';
 
 interface Product {
@@ -34,10 +35,14 @@ interface ReceiveForm {
 
 const EMPTY_RECEIVE: ReceiveForm = { quantity: '1', note: '' };
 
-function stockStatus(product: Product): { label: string; className: string } {
-  if (product.quantity === 0) return { label: 'Out', className: 'status-out' };
-  if (product.is_low_stock) return { label: 'Low', className: 'status-low' };
-  return { label: 'OK', className: 'status-ok' };
+function stockStatus(product: Product): { label: string; badge: string } {
+  if (product.quantity === 0) {
+    return { label: 'Out', badge: 'mm-badge mm-badge--danger' };
+  }
+  if (product.is_low_stock) {
+    return { label: 'Low', badge: 'mm-badge mm-badge--warning' };
+  }
+  return { label: 'OK', badge: 'mm-badge mm-badge--success' };
 }
 
 function normalizeList<T>(data: T[] | { results: T[] }): T[] {
@@ -167,32 +172,41 @@ export default function InventoryPage() {
   };
 
   return (
-    <section className="inventory-page">
-      <header className="inventory-heading">
+    <div className="mm-page inventory-page">
+      <header className="mm-page-header">
         <div>
-          <h1>Inventory</h1>
-          <p className="page-subtitle">
-            {products.length} product{products.length === 1 ? '' : 's'} ·
+          <h1 className="mm-page-title">Inventory</h1>
+          <p className="mm-page-subtitle">
+            {products.length} product{products.length === 1 ? '' : 's'} ·{' '}
             {lowStockCount} low stock · {outOfStockCount} out of stock
           </p>
         </div>
         {isManagerOrAdmin && (
-          <button type="button" className="btn btn-primary" onClick={() => navigate('/inventory/new')}>
+          <button
+            type="button"
+            className="mm-btn mm-btn--primary"
+            onClick={() => navigate('/inventory/new')}
+          >
             + New product
           </button>
         )}
       </header>
 
       {error && (
-        <p className="error" role="alert">
+        <div className="mm-alert mm-alert--danger" role="alert">
           {error}
-        </p>
+        </div>
       )}
 
-      <div className="product-list-panel-full">
-        <div className="product-toolbar">
-          <div className="product-search">
+      <section className="mm-card inventory-panel" aria-label="Products">
+        <div className="inventory-toolbar">
+          <div className="inventory-field inventory-search">
+            <label className="mm-visually-hidden" htmlFor="inventory-search">
+              Search products
+            </label>
             <input
+              id="inventory-search"
+              className="mm-input"
               type="search"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -200,57 +214,79 @@ export default function InventoryPage() {
               aria-label="Search products"
             />
           </div>
-          <div className="product-filters">
-            <select
-              value={categoryFilter}
-              onChange={(e) => setCategoryFilter(e.target.value)}
-              aria-label="Filter by category"
-            >
-              {categories.map((cat) => (
-                <option key={cat} value={cat}>
-                  {cat}
-                </option>
-              ))}
-            </select>
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              aria-label="Filter by stock status"
-            >
-              <option value="All">All status</option>
-              <option value="OK">OK</option>
-              <option value="Low">Low</option>
-              <option value="Out">Out</option>
-            </select>
+          <div className="inventory-filters">
+            <div className="inventory-field">
+              <label className="mm-visually-hidden" htmlFor="inventory-category">
+                Filter by category
+              </label>
+              <select
+                id="inventory-category"
+                className="mm-select"
+                value={categoryFilter}
+                onChange={(e) => setCategoryFilter(e.target.value)}
+                aria-label="Filter by category"
+              >
+                {categories.map((cat) => (
+                  <option key={cat} value={cat}>
+                    {cat}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="inventory-field">
+              <label className="mm-visually-hidden" htmlFor="inventory-status">
+                Filter by stock status
+              </label>
+              <select
+                id="inventory-status"
+                className="mm-select"
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                aria-label="Filter by stock status"
+              >
+                <option value="All">All status</option>
+                <option value="OK">OK</option>
+                <option value="Low">Low</option>
+                <option value="Out">Out</option>
+              </select>
+            </div>
           </div>
         </div>
 
-        <div className="product-list" role="listbox" aria-label="Products">
-          {loading && <p className="product-list-message">Loading products...</p>}
-          {error && !loading && (
-            <p className="product-list-message error" role="alert">
-              {error}
-            </p>
-          )}
-          {!loading && !error && filteredProducts.length === 0 && (
-            <p className="product-list-message">
-              {products.length === 0
-                ? 'No products yet. Create the first one.'
-                : 'No products match your filters.'}
-            </p>
-          )}
+        {loading && (
+          <div className="mm-loading" role="status">
+            <span className="mm-spinner" aria-hidden="true" />
+            Loading products...
+          </div>
+        )}
 
-          <div className="table-wrap">
-            <table>
+        {!loading && !error && filteredProducts.length === 0 && (
+          <div className="mm-empty inventory-empty">
+            <p className="mm-empty-title">
+              {products.length === 0 ? 'No products yet' : 'No matching products'}
+            </p>
+            <p className="mm-empty-text">
+              {products.length === 0
+                ? 'Create the first product to start tracking inventory.'
+                : 'Try a different search term, category, or stock status.'}
+            </p>
+          </div>
+        )}
+
+        {!loading && filteredProducts.length > 0 && (
+          <div className="mm-table-wrap inventory-table-wrap">
+            <table className="mm-table inventory-table">
               <thead>
                 <tr>
                   <th>ID</th>
                   <th>Product</th>
-                  <th>Stock</th>
-                  <th>Min</th>
+                  <th className="num">Stock</th>
+                  <th className="num">Min</th>
                   <th>Status</th>
-                  <th>Supplier</th>
-                  <th></th>
+                  <th className="col-supplier">Supplier</th>
+                  <th>
+                    <span className="mm-visually-hidden">Actions</span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -260,8 +296,8 @@ export default function InventoryPage() {
                   return (
                     <tr
                       key={product.id}
+                      className="inventory-row"
                       onClick={() => handleRowClick(product)}
-                      role="option"
                     >
                       <td className="col-id">{product.id}</td>
                       <td className="col-name">
@@ -270,25 +306,26 @@ export default function InventoryPage() {
                           <span className="product-sku">{product.sku}</span>
                         )}
                       </td>
-                      <td className="col-stock">{product.quantity}</td>
-                      <td className="col-min">{product.min_stock}</td>
+                      <td className="col-stock num">{product.quantity}</td>
+                      <td className="col-min num">{product.min_stock}</td>
                       <td className="col-status">
-                        <span className={`status-badge ${status.className}`}>{status.label}</span>
+                        <span className={status.badge}>{status.label}</span>
                       </td>
                       <td className="col-supplier">{supplierName}</td>
                       <td className="col-actions">
                         {isManagerOrAdmin && (
                           <button
                             type="button"
-                            className="btn-icon receive-btn"
+                            className="mm-btn mm-btn--outline mm-btn--sm"
                             onClick={(e) => {
                               e.stopPropagation();
                               openReceive(product);
                             }}
+                            aria-label={`Receive stock for ${product.name}`}
                             title="Receive stock"
                             disabled={receiveSaving}
                           >
-                            ↓
+                            Receive
                           </button>
                         )}
                       </td>
@@ -298,62 +335,85 @@ export default function InventoryPage() {
               </tbody>
             </table>
           </div>
-        </div>
-      </div>
+        )}
+      </section>
 
       {/* Receive stock modal */}
       {receiveOpen && receiveProduct && (
         <div
-          className="modal-backdrop"
+          className="mm-modal-backdrop"
           onMouseDown={(e) => {
             if (e.target === e.currentTarget) closeReceive();
           }}
         >
-          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="receive-title">
-            <header className="modal-header">
-              <h2 id="receive-title">Receive stock</h2>
-              <button type="button" className="icon-button" onClick={closeReceive} aria-label="Close">
-                ×
+          <div
+            className="mm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="receive-title"
+          >
+            <header className="mm-modal-header">
+              <h2 id="receive-title" className="mm-modal-title">
+                Receive stock
+              </h2>
+              <button
+                type="button"
+                className="mm-modal-close"
+                onClick={closeReceive}
+                aria-label="Close"
+              >
+                <Icon name="x" size={20} />
               </button>
             </header>
-            <form className="modal-form" onSubmit={handleReceiveSubmit}>
-              <p className="modal-context">
-                Add stock for <strong>{receiveProduct.name}</strong>. Current stock:{' '}
-                <strong>{receiveProduct.quantity}</strong> (min: {receiveProduct.min_stock}).
-              </p>
+            <form className="receive-form" onSubmit={handleReceiveSubmit}>
+              <div className="mm-modal-body receive-body">
+                <p className="mm-muted">
+                  Add stock for <strong>{receiveProduct.name}</strong>. Current
+                  stock: <strong>{receiveProduct.quantity}</strong> (min:{' '}
+                  {receiveProduct.min_stock}).
+                </p>
 
-              {receiveError && (
-                <p className="error" role="alert">{receiveError}</p>
-              )}
+                {receiveError && (
+                  <div className="mm-alert mm-alert--danger" role="alert">
+                    {receiveError}
+                  </div>
+                )}
 
-              <label className="field">
-                <span>Quantity to receive</span>
-                <input
-                  type="number"
-                  min="1"
-                  step="1"
-                  value={receiveForm.quantity}
-                  onChange={(e) => setReceiveForm((c) => ({ ...c, quantity: e.target.value }))}
-                  required
-                  autoFocus
-                />
-              </label>
+                <label className="mm-field">
+                  <span className="mm-label">Quantity to receive</span>
+                  <input
+                    className="mm-input"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={receiveForm.quantity}
+                    onChange={(e) =>
+                      setReceiveForm((c) => ({ ...c, quantity: e.target.value }))
+                    }
+                    required
+                    autoFocus
+                  />
+                </label>
 
-              <label className="field">
-                <span>Note</span>
-                <input
-                  type="text"
-                  value={receiveForm.note}
-                  onChange={(e) => setReceiveForm((c) => ({ ...c, note: e.target.value }))}
-                  maxLength={200}
-                  placeholder="Optional, e.g. PO #1234"
-                />
-              </label>
+                <label className="mm-field">
+                  <span className="mm-label">Note</span>
+                  <input
+                    className="mm-input"
+                    type="text"
+                    value={receiveForm.note}
+                    onChange={(e) =>
+                      setReceiveForm((c) => ({ ...c, note: e.target.value }))
+                    }
+                    maxLength={200}
+                    placeholder="Optional, e.g. PO #1234"
+                  />
+                </label>
+              </div>
 
-              <footer className="modal-actions">
+              <footer className="mm-modal-footer">
                 <button
                   type="button"
-                  className="btn btn-ghost"
+                  className="mm-btn mm-btn--ghost"
                   onClick={closeReceive}
                   disabled={receiveSaving}
                 >
@@ -361,7 +421,7 @@ export default function InventoryPage() {
                 </button>
                 <button
                   type="submit"
-                  className="btn btn-primary"
+                  className="mm-btn mm-btn--primary"
                   disabled={receiveSaving}
                 >
                   {receiveSaving ? 'Receiving...' : 'Confirm receive'}
@@ -371,6 +431,6 @@ export default function InventoryPage() {
           </div>
         </div>
       )}
-    </section>
+    </div>
   );
 }
