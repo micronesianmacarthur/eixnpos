@@ -435,10 +435,10 @@ export default function SalesPage() {
   );
 
   return (
-    <section className="sales-page">
-      <header className="sales-heading">
+    <section className="mm-page sales-page">
+      <header className="mm-page-header sales-heading">
         <div>
-          <h1>Sale</h1>
+          <h1 className="mm-page-title">Sale</h1>
           {sale && (
             <p className="page-subtitle">
               Sale #{sale.number} · {sale.status}
@@ -448,7 +448,7 @@ export default function SalesPage() {
         <div className="sales-heading-actions">
           <button
             type="button"
-            className="btn btn-ghost"
+            className="mm-btn mm-btn--ghost"
             onClick={() => navigate('/sales-manager')}
           >
             Sales manager
@@ -456,8 +456,7 @@ export default function SalesPage() {
           {sale && (
             <button
               type="button"
-              className="btn btn-danger-ghost"
-              onClick={() => void voidSale()}
+              className="mm-btn mm-btn--danger"              onClick={() => void voidSale()}
               disabled={busy}
             >
               Void cart
@@ -474,14 +473,14 @@ export default function SalesPage() {
 
       <div className="sales-layout">
         {/* Products */}
-        <div className="products-panel">
-          <div className="product-search">
+        <div className="mm-card products-panel">          <div className="product-search">
             <input
               type="search"
               value={productSearch}
               onChange={(e) => setProductSearch(e.target.value)}
               placeholder="Search products"
               aria-label="Search products"
+              className="mm-input"
             />
           </div>
           {loading && <p className="muted">Loading products...</p>}
@@ -490,8 +489,7 @@ export default function SalesPage() {
               <button
                 key={product.id}
                 type="button"
-                className="product-card"
-                onClick={() => void addToCart(product)}
+                className="mm-card product-card"                onClick={() => void addToCart(product)}
                 disabled={busy || product.quantity <= 0}
               >
                 <span className="product-name">{product.name}</span>
@@ -509,8 +507,7 @@ export default function SalesPage() {
         </div>
 
         {/* Cart */}
-        <div className="cart-panel">
-          <div className="cart-header">
+        <div className="mm-card cart-panel">          <div className="cart-header">
             <h2>Cart</h2>
             <span className="muted">
               {cartLines.reduce((s, l) => s + l.quantity, 0)} items
@@ -692,7 +689,7 @@ export default function SalesPage() {
             <div className="payment-actions">
               <button
                 type="button"
-                className="btn btn-primary"
+                className="mm-btn mm-btn--primary"
                 onClick={() => void recordPayment()}
                 disabled={busy || paySaving || cartLines.length === 0}
               >
@@ -722,7 +719,7 @@ export default function SalesPage() {
           <div className="cart-actions">
             <button
               type="button"
-              className="btn btn-success"
+              className="mm-btn mm-btn--success"
               onClick={() => void completeSale()}
               disabled={busy || cartLines.length === 0}
             >
@@ -735,17 +732,17 @@ export default function SalesPage() {
       {/* Discount modal */}
       {discountLineId !== null && discountLine && (
         <div
-          className="modal-backdrop"
+          className="mm-modal-backdrop"
           onMouseDown={(e) => {
             if (e.target === e.currentTarget) closeDiscount();
           }}
         >
-          <div className="modal" role="dialog" aria-modal="true">
+          <div className="mm-modal" role="dialog" aria-modal="true">
             <header className="modal-header">
               <h2>Line discount</h2>
               <button
                 type="button"
-                className="icon-button"
+                className="mm-modal-close"
                 onClick={closeDiscount}
               >
                 ×
@@ -808,7 +805,7 @@ export default function SalesPage() {
               <footer className="modal-actions">
                 <button
                   type="button"
-                  className="btn btn-ghost"
+                  className="mm-btn mm-btn--ghost"
                   onClick={closeDiscount}
                   disabled={discountSaving}
                 >
@@ -816,7 +813,7 @@ export default function SalesPage() {
                 </button>
                 <button
                   type="submit"
-                  className="btn btn-primary"
+                  className="mm-btn mm-btn--primary"
                   disabled={discountSaving}
                 >
                   {discountSaving ? 'Applying...' : 'Apply discount'}
@@ -830,10 +827,10 @@ export default function SalesPage() {
       {/* Receipt modal */}
       {receiptSale && (
         <div className="modal-backdrop">
-          <div className="modal receipt-modal" role="dialog" aria-modal="true">
+          <div className="mm-modal receipt-modal" role="dialog" aria-modal="true">
             <header className="modal-header">
               <h2>Receipt</h2>
-              <button type="button" className="icon-button" onClick={closeReceipt}>
+              <button type="button" className="mm-modal-close" onClick={closeReceipt}>
                 ×
               </button>
             </header>
@@ -860,7 +857,7 @@ export default function SalesPage() {
               })()}
             </pre>
             <footer className="modal-actions">
-              <button type="button" className="btn btn-primary" onClick={closeReceipt}>
+              <button type="button" className="mm-btn mm-btn--primary" onClick={closeReceipt}>
                 Close
               </button>
             </footer>
