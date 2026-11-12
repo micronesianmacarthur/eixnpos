@@ -73,7 +73,10 @@ export default function InventoryPage() {
     try {
       const data = await apiFetch<Product[] | { results: Product[] }>('/api/products/');
       const list = normalizeList(data);
-      setProducts(list.filter((p) => p.active !== false));
+      const sorted = list.filter((p) => p.active !== false).sort((a, b) =>
+        String(a.sku || '').localeCompare(String(b.sku || '')),
+      );
+      setProducts(sorted);
       setError('');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to load products');
@@ -280,8 +283,9 @@ export default function InventoryPage() {
             <table className="mm-table inventory-table">
               <thead>
                 <tr>
-                  <th>ID</th>
+                  <th>SKU</th>
                   <th>Product</th>
+                  <th className="num">Retail price</th>
                   <th className="num">Stock</th>
                   <th className="num">Min</th>
                   <th>Status</th>
@@ -301,13 +305,11 @@ export default function InventoryPage() {
                       className="inventory-row"
                       onClick={() => handleRowClick(product)}
                     >
-                      <td className="col-id">{product.id}</td>
+                      <td className="col-sku">{product.sku || '—'}</td>
                       <td className="col-name">
                         <span className="product-name">{product.name}</span>
-                        {product.sku && (
-                          <span className="product-sku">{product.sku}</span>
-                        )}
                       </td>
+                      <td className="col-price num">{new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Number(product.price) || 0)}</td>
                       <td className="col-stock num">{product.quantity}</td>
                       <td className="col-min num">{product.min_stock}</td>
                       <td className="col-status">

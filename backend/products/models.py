@@ -31,6 +31,9 @@ class Product(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        ordering = ['sku']
+
     def _generate_sku(self):
         name = self.category.name if self.category is not None else ''
         first = ''

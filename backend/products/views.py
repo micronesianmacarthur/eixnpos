@@ -27,7 +27,7 @@ class ProductSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class ProductViewSet(viewsets.ModelViewSet):
-    queryset = Product.objects.all()
+    queryset = Product.objects.all().order_by('sku')
     serializer_class = ProductSerializer
     permission_classes = [permissions.IsAuthenticated]
 

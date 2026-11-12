@@ -24,6 +24,8 @@ interface ProductFixture {
   updated_at: string;
   quantity: number;
   is_low_stock: boolean;
+  non_stock: boolean;
+  category_name: string | null;
 }
 
 const TIMESTAMP = '2026-01-15T10:00:00Z';
@@ -44,6 +46,8 @@ function product(
     updated_at: TIMESTAMP,
     quantity: 0,
     is_low_stock: false,
+    non_stock: false,
+    category_name: null,
     ...overrides,
   };
 }
@@ -54,6 +58,7 @@ const BASE_PRODUCTS: ProductFixture[] = [
     name: 'Espresso Beans',
     sku: 'BEAN-001',
     description: 'Drinks',
+    category_name: 'Drinks',
     price: '12.50',
     cost: '7.00',
     min_stock: 10,
@@ -66,6 +71,7 @@ const BASE_PRODUCTS: ProductFixture[] = [
     name: 'Oat Milk',
     sku: 'OATM-002',
     description: 'Drinks',
+    category_name: 'Drinks',
     price: '3.25',
     cost: '1.80',
     min_stock: 12,
@@ -79,6 +85,7 @@ const BASE_PRODUCTS: ProductFixture[] = [
     name: 'Butter Croissant',
     sku: 'CROS-003',
     description: 'Food',
+    category_name: 'Food',
     price: '2.75',
     cost: '1.10',
     min_stock: 8,
@@ -90,6 +97,7 @@ const BASE_PRODUCTS: ProductFixture[] = [
     name: 'Dot Grid Notebook',
     sku: 'NOTE-004',
     description: 'Stationery',
+    category_name: 'Stationery',
     price: '6.00',
     cost: '2.40',
     min_stock: 5,
@@ -285,8 +293,9 @@ test('renders the themed Inventory list, filters, and status badges', async ({
 
   const table = page.locator('.inventory-table');
   await expect(table.locator('thead th')).toHaveText([
-    'ID',
+    'SKU',
     'Product',
+    'Retail price',
     'Stock',
     'Min',
     'Status',
