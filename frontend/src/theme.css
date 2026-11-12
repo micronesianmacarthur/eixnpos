@@ -762,3 +762,16 @@ pre,
     transition-duration: 0.01ms !important;
   }
 }
+
+/*
+ * Reduced motion: the near-zero duration above still schedules one animation
+ * frame, which leaves layout transitions (notably the mobile sidebar drawer)
+ * one frame behind their state. Remove transitions entirely for the shell so
+ * the drawer position is final as soon as it opens or closes.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .sidebar-backdrop {
+    transition: none !important;
+  }
+}

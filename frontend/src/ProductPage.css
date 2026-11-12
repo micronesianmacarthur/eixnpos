@@ -1,236 +1,114 @@
-.product-page {
-  --primary-bg: #7c3aed;
-  --primary-fg: #ffffff;
-  --success-bg: #15803d;
-  --success-fg: #ffffff;
-  --success: #15803d;
-  --danger: #b91c1c;
-  --warning: #b45309;
-  --panel-bg: var(--bg);
-  --panel-muted: var(--code-bg);
-}
-
-@media (prefers-color-scheme: dark) {
-  .product-page {
-    --primary-bg: #a78bfa;
-    --primary-fg: #16171d;
-    --success-bg: #4ade80;
-    --success-fg: #16171d;
-    --success: #4ade80;
-    --danger: #f87171;
-    --warning: #fbbf24;
-  }
-}
+/*
+ * Product page layout only.
+ *
+ * All colors, radii, typography, and control styling come from `theme.css` and
+ * the shared `mm-` primitives. Keep this file free of palette values so the
+ * page cannot drift away from the MaterialM light theme.
+ */
 
 .product-heading {
-  display: flex;
-  flex-wrap: wrap;
   align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: 1.25rem;
 }
 
-.product-heading h1 {
-  margin: 0;
+.product-heading-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
 }
 
-.page-subtitle {
-  margin-top: 0.2rem;
-  font-size: 0.9rem;
-  color: var(--text);
+.product-back {
+  margin-left: -15px;
 }
 
-.product-page .error {
-  font-size: 0.88rem;
-  color: var(--danger);
-  margin-bottom: 1rem;
-}
-
-.product-page .loading {
-  padding: 2rem;
-  text-align: center;
-  color: var(--text);
-}
-
-/* Buttons */
-.product-page .btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.4rem;
-  padding: 0.55rem 0.95rem;
-  font: inherit;
-  font-size: 0.9rem;
-  font-weight: 600;
-  line-height: 1.2;
-  color: var(--text-h);
-  background: var(--panel-bg);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  cursor: pointer;
-  transition:
-    background 0.15s ease,
-    border-color 0.15s ease,
-    opacity 0.15s ease;
-}
-
-.product-page .btn:hover:not(:disabled) {
-  background: var(--accent-bg);
-  border-color: var(--accent-border);
-}
-
-.product-page .btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.product-page .btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.product-page .btn-primary {
-  color: var(--primary-fg);
-  background: var(--primary-bg);
-  border-color: var(--primary-bg);
-}
-
-.product-page .btn-primary:hover:not(:disabled) {
-  color: var(--primary-fg);
-  background: var(--primary-bg);
-  filter: brightness(1.08);
-  border-color: var(--primary-bg);
-}
-
-.product-page .btn-ghost {
-  background: transparent;
-}
-
-.product-page .btn-danger-ghost {
-  color: var(--danger);
-  background: transparent;
-  border-color: var(--border);
-}
-
-.product-page .btn-danger-ghost:hover:not(:disabled) {
-  background: rgba(185, 28, 28, 0.1);
-  border-color: currentColor;
-}
-
-/* Form */
 .product-form {
-  background: var(--panel-bg);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 1.5rem;
-  max-width: 720px;
+  max-width: 760px;
 }
 
-/* Edit layout - side by side on edit page */
 .edit-layout {
   display: grid;
-  grid-template-columns: 60% 40%;
-  gap: 1.5rem;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 24px;
   align-items: start;
 }
 
-@media (max-width: 980px) {
-  .edit-layout {
-    grid-template-columns: 1fr;
-  }
+.edit-layout .product-form {
+  max-width: none;
 }
 
 .form-section {
-  margin-bottom: 1.5rem;
-  padding-bottom: 1.5rem;
-  border-bottom: 1px solid var(--border);
-}
-
-.form-section:last-of-type {
-  border-bottom: none;
-  margin-bottom: 0.5rem;
-  padding-bottom: 0;
-}
-
-.form-section h2 {
-  margin: 0 0 1rem;
-  font-size: 0.95rem;
-  font-weight: 600;
-  color: var(--text-h);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.field {
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
-  font-size: 0.85rem;
-  color: var(--text);
+  gap: 16px;
 }
 
-.field > span {
-  font-weight: 600;
-  color: var(--text-h);
-}
-
-.required {
-  color: var(--danger);
-  margin-left: 0.2rem;
-}
-
-.field input,
-.field select,
-.field textarea {
-  width: 100%;
-  padding: 0.55rem 0.7rem;
-  box-sizing: border-box;
-  font: inherit;
-  font-size: 0.92rem;
-  color: var(--text-h);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-}
-
-.field input:focus-visible,
-.field select:focus-visible,
-.field textarea:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
+.form-section + .form-section {
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid var(--mm-border);
 }
 
 .field-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 0.9rem;
+  gap: 16px;
+}
+
+.required {
+  margin-left: 2px;
+  color: var(--mm-error-foreground);
 }
 
 .checkbox-field {
-  flex-direction: row;
+  display: flex;
   align-items: center;
-  gap: 0.5rem;
-  font-size: 0.9rem;
+  gap: 10px;
+  cursor: pointer;
 }
 
 .checkbox-field input {
-  width: auto;
-  accent-color: var(--primary-bg);
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--mm-primary);
 }
 
-.checkbox-field span {
-  font-weight: 500;
-  color: var(--text-h);
+.checkbox-field .mm-label {
+  cursor: pointer;
 }
 
-.form-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.6rem;
-  margin-top: 1rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--border);
+.product-form-actions {
+  margin-top: 24px;
+}
+
+.movements-section .mm-card-header {
+  margin-bottom: 16px;
+}
+
+.product-movements th,
+.product-movements td {
+  white-space: nowrap;
+}
+
+.product-movements .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.movements-empty {
+  padding: 32px 16px;
+}
+
+@media (max-width: 1023px) {
+  .edit-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .field-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 @media (max-width: 520px) {
@@ -238,113 +116,15 @@
     align-items: stretch;
   }
 
-  .product-heading .btn {
+  .product-heading > .mm-btn {
     width: 100%;
   }
 
-  .form-actions {
+  .product-form-actions {
     flex-direction: column-reverse;
   }
 
-  .form-actions .btn {
+  .product-form-actions .mm-btn {
     width: 100%;
   }
-}
-
-/* Movements section */
-.movements-section {
-  margin-top: 0;
-  background: var(--panel-bg);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 1.5rem;
-}
-
-.movements-section h2 {
-  margin: 0 0 1rem;
-  font-size: 0.95rem;
-  font-weight: 600;
-  color: var(--text-h);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.movements-section .muted {
-  color: var(--text);
-  padding: 1rem 0;
-}
-
-.movements-section .error {
-  font-size: 0.88rem;
-  color: var(--danger);
-  margin-bottom: 1rem;
-}
-
-.movements-section .table-wrap {
-  overflow-x: auto;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-
-.movements-section table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.87rem;
-}
-
-.movements-section th,
-.movements-section td {
-  padding: 0.55rem 0.7rem;
-  text-align: left;
-  white-space: nowrap;
-  border-bottom: 1px solid var(--border);
-}
-
-.movements-section th {
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: var(--text);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  background: var(--panel-muted);
-}
-
-.movements-section tbody tr:last-child td {
-  border-bottom: 0;
-}
-
-.movements-section .movement-type {
-  display: inline-block;
-  padding: 0.12rem 0.5rem;
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: var(--text);
-  text-transform: capitalize;
-  background: var(--panel-muted);
-  border-radius: 999px;
-}
-
-.movements-section .type-sale {
-  color: var(--text-h);
-  background: var(--panel-muted);
-}
-
-.movements-section .type-receive {
-  color: var(--success);
-  background: rgba(21, 128, 61, 0.15);
-}
-
-.movements-section .type-damage {
-  color: var(--danger);
-  background: rgba(185, 28, 28, 0.15);
-}
-
-.movements-section .type-adjustment {
-  color: var(--warning);
-  background: rgba(180, 83, 9, 0.15);
-}
-
-.movements-section .num {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
 }
