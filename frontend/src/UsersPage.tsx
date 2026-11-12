@@ -184,10 +184,6 @@ export default function UsersPage() {
       setFormError('Username is required.');
       return;
     }
-    if (!email) {
-      setFormError('Email is required.');
-      return;
-    }
     if (!firstName && !lastName) {
       setFormError('At least first name or last name is required.');
       return;
@@ -456,7 +452,6 @@ export default function UsersPage() {
                       email: event.target.value,
                     }))
                   }
-                  required
                   maxLength={254}
                 />
               </label>
