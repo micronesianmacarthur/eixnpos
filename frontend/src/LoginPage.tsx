@@ -31,9 +31,9 @@ function LoginPage() {
     <div className="auth-page">
       <main className="mm-card auth-card">
         <div className="auth-brand">
-          <span className="auth-brand-mark" aria-hidden="true">
+          {/*<span className="auth-brand-mark" aria-hidden="true">
             e
-          </span>
+          </span>*/}
           <span>
             <span className="auth-brand-accent">eixn</span>POS
           </span>
