@@ -248,23 +248,23 @@ export default function UsersPage() {
   };
 
   return (
-    <section className="users-page">
-      <header className="users-heading">
+    <section className="mm-page users-page">
+      <header className="mm-page-header users-heading">
         <div>
-          <h1>Users</h1>
-          <p className="page-subtitle">
+          <h1 className="mm-page-title">Users</h1>
+          <p className="mm-page-subtitle">
             {users.length} user{users.length === 1 ? '' : 's'} on file
           </p>
         </div>
-        <button type="button" className="btn btn-primary" onClick={openCreate}>
+        <button type="button" className="mm-btn mm-btn--primary" onClick={openCreate}>
           + New user
         </button>
       </header>
 
       <div className="users-layout">
-        <aside className="user-list-panel">
+        <aside className="mm-card user-list-panel">
           <div className="user-search">
-            <input
+            <input className="mm-input"
               type="search"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
@@ -273,7 +273,7 @@ export default function UsersPage() {
             />
           </div>
           <div className="user-filter">
-            <select
+            <select className="mm-select"
               value={roleFilter}
               onChange={(event) => setRoleFilter(event.target.value)}
               aria-label="Filter by role"
@@ -324,7 +324,7 @@ export default function UsersPage() {
           </div>
         </aside>
 
-        <section className="user-detail-panel" aria-live="polite">
+        <section className="mm-card user-detail-panel" aria-live="polite">
           {!selectedUser ? (
             <div className="user-empty">
               <p>Select a user to view details.</p>
@@ -339,14 +339,14 @@ export default function UsersPage() {
                 <div className="user-detail-buttons">
                   <button
                     type="button"
-                    className="btn btn-ghost"
+                    className="mm-btn mm-btn--ghost"
                     onClick={() => openEditWithUser(selectedUser)}
                   >
                     Edit
                   </button>
                   <button
                     type="button"
-                    className="btn btn-danger-ghost"
+                    className="mm-btn mm-btn--danger"
                     onClick={() => void handleDelete(selectedUser)}
                     disabled={deletingId === selectedUser.id || selectedUser.id === currentUserId}
                   >
@@ -388,7 +388,7 @@ export default function UsersPage() {
 
       {formMode !== 'closed' && (
         <div
-          className="modal-backdrop"
+          className="mm-modal-backdrop"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) {
               closeForm();
@@ -396,18 +396,18 @@ export default function UsersPage() {
           }}
         >
           <div
-            className="modal"
+            className="mm-modal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="user-form-title"
           >
-            <header className="modal-header">
+            <header className="mm-modal-header">
               <h2 id="user-form-title">
                 {formMode === 'create' ? 'New user' : 'Edit user'}
               </h2>
               <button
                 type="button"
-                className="icon-button"
+                className="mm-modal-close"
                 aria-label="Close"
                 onClick={closeForm}
               >
@@ -415,16 +415,16 @@ export default function UsersPage() {
               </button>
             </header>
 
-            <form className="modal-form" onSubmit={handleFormSubmit}>
+            <form className="mm-modal-body" onSubmit={handleFormSubmit}>
               {formError && (
-                <p className="error" role="alert">
+                <p className="mm-alert mm-alert--danger" role="alert">
                   {formError}
                 </p>
               )}
 
-              <label className="field">
-                <span>Username</span>
-                <input
+              <label className="mm-field">
+                <span className="mm-label">Username</span>
+                <input className="mm-input"
                   type="text"
                   value={form.username}
                   onChange={(event) =>
@@ -439,13 +439,13 @@ export default function UsersPage() {
                   disabled={formMode === 'edit'}
                 />
                 {formMode === 'edit' && (
-                  <span className="field-hint">Username cannot be changed</span>
+                  <span className="mm-hint">Username cannot be changed</span>
                 )}
               </label>
 
-              <label className="field">
-                <span>Email</span>
-                <input
+              <label className="mm-field">
+                <span className="mm-label">Email</span>
+                <input className="mm-input"
                   type="email"
                   value={form.email}
                   onChange={(event) =>
@@ -459,10 +459,10 @@ export default function UsersPage() {
                 />
               </label>
 
-              <div className="field-row">
-                <label className="field">
-                  <span>First name</span>
-                  <input
+              <div className="mm-field-row">
+                <label className="mm-field">
+                  <span className="mm-label">First name</span>
+                  <input className="mm-input"
                     type="text"
                     value={form.first_name}
                     onChange={(event) =>
@@ -476,9 +476,9 @@ export default function UsersPage() {
                   />
                 </label>
 
-                <label className="field">
-                  <span>Last name</span>
-                  <input
+                <label className="mm-field">
+                  <span className="mm-label">Last name</span>
+                  <input className="mm-input"
                     type="text"
                     value={form.last_name}
                     onChange={(event) =>
@@ -493,9 +493,9 @@ export default function UsersPage() {
                 </label>
               </div>
 
-              <label className="field">
-                <span>Role</span>
-                <select
+              <label className="mm-field">
+                <span className="mm-label">Role</span>
+                <select className="mm-select"
                   value={form.role}
                   onChange={(event) =>
                     setForm((current) => ({
@@ -513,9 +513,9 @@ export default function UsersPage() {
                 </select>
               </label>
 
-              <label className="field">
-                <span>Password</span>
-                <input
+              <label className="mm-field">
+                <span className="mm-label">Password</span>
+                <input className="mm-input"
                   type="password"
                   value={form.password}
                   onChange={(event) =>
@@ -534,16 +534,16 @@ export default function UsersPage() {
                   required={formMode === 'create'}
                 />
                 {formMode === 'edit' && (
-                  <span className="field-hint">
+                  <span className="mm-hint">
                     Leave blank to keep current password
                   </span>
                 )}
               </label>
 
-              <footer className="modal-actions">
+              <footer className="mm-modal-footer">
                 <button
                   type="button"
-                  className="btn btn-ghost"
+                  className="mm-btn mm-btn--ghost"
                   onClick={closeForm}
                   disabled={formSaving}
                 >
@@ -551,7 +551,7 @@ export default function UsersPage() {
                 </button>
                 <button
                   type="submit"
-                  className="btn btn-primary"
+                  className="mm-btn mm-btn--primary"
                   disabled={formSaving}
                 >
                   {formSaving
