@@ -889,7 +889,7 @@ export default function SalesPage() {
             </header>
             <div className="mm-modal-body">
               <p className="mm-muted">Change to return to customer:</p>
-              <p className="mm-page-title" style={{ fontSize: '3rem' }}>{formatMoney(changeDue)}</p>
+              <p className="mm-page-title" style={{ fontSize: '5rem' }}>{formatMoney(changeDue)}</p>
             </div>
             <footer className="mm-modal-footer">
               <button type="button" className="mm-btn mm-btn--primary" onClick={closeChange}>Close</button>
