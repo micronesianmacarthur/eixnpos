@@ -34,6 +34,19 @@ function errorMessage(data: unknown, status: number): string {
     if (typeof record.error === 'string') {
       return record.error;
     }
+    // DRF maps field errors to `{field: ["detail", ...]}`. Flatten the first
+    // field error so callers see the real cause instead of a generic 400.
+    for (const key of Object.keys(record)) {
+      const value = record[key];
+      if (Array.isArray(value)) {
+        const first = value.find((item): item is string => typeof item === 'string' && Boolean(item.trim()));
+        if (first) {
+          return `${key}: ${first}`;
+        }
+      } else if (typeof value === 'string' && value.trim()) {
+        return `${key}: ${value}`;
+      }
+    }
   }
   return `Request failed (${status})`;
 }

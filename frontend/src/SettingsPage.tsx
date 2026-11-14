@@ -10,6 +10,7 @@ import {
 import { apiFetch, ApiError } from './api';
 import { useAuth } from './authContext';
 import { useTheme } from './themeContext';
+import { useBlocker } from 'react-router-dom';
 import UserFormModal from './UserFormModal';
 import type { User } from './users';
 import './SettingsPage.css';
@@ -77,6 +78,7 @@ export default function SettingsPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [usersLoading, setUsersLoading] = useState(true);
   const [usersError, setUsersError] = useState('');
+  const [usersActionError, setUsersActionError] = useState('');
   const [userFormMode, setUserFormMode] = useState<'closed' | 'create' | 'edit'>('closed');
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [userFormError, setUserFormError] = useState('');
@@ -155,6 +157,16 @@ export default function SettingsPage() {
       setStoreError(`${missing[1]} is required.`);
       return;
     }
+    const email = store.email.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setStoreError('Enter a valid email address.');
+      return;
+    }
+    const website = store.website.trim();
+    if (website && !/^https?:\/\/\S+$/i.test(website)) {
+      setStoreError('Enter a valid website URL starting with http:// or https://.');
+      return;
+    }
     setStoreSaving(true);
     setStoreError('');
     setStoreSaved('');
@@ -229,7 +241,7 @@ export default function SettingsPage() {
 
   const handleDeleteUser = async (user: User) => {
     if (user.id === currentUserId) {
-      setUsersError('You cannot delete your own account.');
+      setUsersActionError('You cannot delete your own account.');
       return;
     }
     const confirmed = window.confirm(
@@ -237,12 +249,12 @@ export default function SettingsPage() {
     );
     if (!confirmed) return;
     setDeletingId(user.id);
-    setUsersError('');
+    setUsersActionError('');
     try {
       await apiFetch(`/api/users/${user.id}/`, { method: 'DELETE' });
       await loadUsers();
     } catch (err) {
-      setUsersError(err instanceof ApiError ? err.message : 'Failed to delete user');
+      setUsersActionError(err instanceof ApiError ? err.message : 'Failed to delete user');
     } finally {
       setDeletingId(null);
     }
@@ -315,9 +327,7 @@ export default function SettingsPage() {
   const isBackupDirty = store.backup_path !== savedStore.backup_path;
 
   // Dirty-state guard: warn on browser-level close/reload when either Store or
-  // Backup has unsaved edits. In-app navigation is SPA-navigated (no data
-  // router blocker); tab switches are discard-safe because each section owns
-  // its own local state.
+  // Backup has unsaved edits.
   const dirty = isStoreDirty || isBackupDirty;
   useEffect(() => {
     if (!dirty) return;
@@ -330,7 +340,18 @@ export default function SettingsPage() {
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [dirty]);
 
+  // Block in-app navigation (sidebar links) when there are unsaved edits,
+  // instead of losing them silently. Tab switches within Settings stay free
+  // because each section owns its own local state.
+  const blocker = useBlocker(dirty);
+
   const handleBackupNow = async () => {
+    const path = store.backup_path.trim();
+    if (!path) {
+      setBackupState('error');
+      setBackupMessage('Backup path is required.');
+      return;
+    }
     setBackupState('running');
     setBackupMessage('');
     setBackupSaved('');
@@ -559,8 +580,14 @@ export default function SettingsPage() {
               {usersError}
             </p>
           )}
-          {!usersLoading && !usersError && (
-            <div className="mm-table-wrap">
+          {!usersError && (
+            <>
+              {usersActionError && (
+                <p className="mm-alert mm-alert--danger settings-notice" role="alert">
+                  {usersActionError}
+                </p>
+              )}
+              <div className="mm-table-wrap">
               <table className="mm-table">
                 <thead>
                   <tr>
@@ -622,7 +649,8 @@ export default function SettingsPage() {
                   )}
                 </tbody>
               </table>
-            </div>
+              </div>
+            </>
           )}
         </div>
       </div>
@@ -689,7 +717,7 @@ export default function SettingsPage() {
                 type="button"
                 className="mm-btn mm-btn--primary"
                 onClick={() => void handleBackupNow()}
-                disabled={backupState === 'running' || storeLoading}
+                disabled={backupState === 'running' || storeLoading || !store.backup_path.trim()}
               >
                 {backupState === 'running' ? 'Backing up...' : 'Back up now'}
               </button>
@@ -748,6 +776,39 @@ export default function SettingsPage() {
           onSubmit={(payload) => void handleUserSubmit(payload)}
           onClose={closeUserForm}
         />
+      )}
+
+      {blocker.state === 'blocked' && (
+        <div
+          className="mm-modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) blocker.reset();
+          }}
+        >
+          <div className="mm-modal" role="dialog" aria-modal="true" aria-labelledby="settings-unsaved-title" aria-describedby="settings-unsaved-desc">
+            <div className="mm-modal-header">
+              <h2 className="mm-modal-title" id="settings-unsaved-title">Discard unsaved changes?</h2>
+            </div>
+            <div className="mm-modal-body">
+              <p id="settings-unsaved-desc">
+                You have unsaved changes on the Settings page. If you navigate away, they will be lost.
+              </p>
+            </div>
+            <div className="mm-modal-footer">
+              <button type="button" className="mm-btn mm-btn--ghost" onClick={() => blocker.reset()}>
+                Keep editing
+              </button>
+              <button
+                type="button"
+                className="mm-btn mm-btn--primary"
+                onClick={() => blocker.proceed()}
+              >
+                Discard &amp; leave
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </section>
   );
