@@ -74,6 +74,12 @@ STATIC_URL = 'static/'
 STATICFILES_DIRS = [BASE_DIR.parent / 'frontend' / 'dist'] if (BASE_DIR.parent / 'frontend' / 'dist').exists() else []
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# Root directory allowed for database backups. Backups may only be written
+# under this root (or an explicitly approved mount in APPROVED_BACKUP_MOUNTS).
+BACKUP_ROOT = BASE_DIR / 'data' / 'backups'
+# Additional absolute paths (e.g. mounted volumes) approved for backup output.
+APPROVED_BACKUP_MOUNTS = []
+
 AUTH_USER_MODEL = 'accounts.User'
 
 CORS_ALLOW_ALL_ORIGINS = True
