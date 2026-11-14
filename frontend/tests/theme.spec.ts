@@ -211,7 +211,7 @@ test('bundles Inter locally and applies the MaterialM shell tokens', async ({
   await expect(activeLink).toHaveCSS('border-radius', '24px');
   await expect(activeLink).toHaveCSS(
     'background-color',
-    'rgba(0, 161, 255, 0.15)',
+    'rgba(0, 114, 196, 0.15)',
   );
 
   await expect(page.locator('.app-user-name')).toHaveText('maya');
@@ -239,7 +239,7 @@ test('bundles Inter locally and applies the MaterialM shell tokens', async ({
 
   await expect(page.locator('#primary-probe')).toHaveCSS(
     'background-color',
-    'rgb(0, 161, 255)',
+    'rgb(0, 114, 196)',
   );
   await expect(page.locator('#primary-probe')).toHaveCSS(
     'color',

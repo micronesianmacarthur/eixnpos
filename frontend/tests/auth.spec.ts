@@ -222,7 +222,7 @@ test('renders the Login auth card on desktop', async ({ page }) => {
   await expect(page.getByLabel('Username:')).toHaveCSS('border-radius', '8px');
   await expect(
     page.getByRole('button', { name: 'Login' }),
-  ).toHaveCSS('background-color', 'rgb(0, 161, 255)');
+  ).toHaveCSS('background-color', 'rgb(0, 114, 196)');
 
   await expectNoInlineStyles(page, '.auth-page, .auth-page *');
 
@@ -307,7 +307,7 @@ test('renders Business Information on desktop', async ({ page }) => {
   await expect(card).toHaveCSS('border-radius', '24px');
   await expect(
     page.getByRole('button', { name: 'Save Business Info' }),
-  ).toHaveCSS('background-color', 'rgb(0, 161, 255)');
+  ).toHaveCSS('background-color', 'rgb(0, 114, 196)');
 
   await expectNoInlineStyles(page, '.business-form, .business-form *');
 

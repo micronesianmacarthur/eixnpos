@@ -208,11 +208,15 @@ test('toggles between light and dark theme from Appearance', async ({ page }) =>
   await expect(page.getByText('Theme: Dark')).toBeVisible();
   await expect(page.locator('html')).toHaveClass(/dark/);
 
-  // The dark theme applies the MaterialM dark token set.
-  const bodyBackground = await page.evaluate(() =>
-    getComputedStyle(document.body).backgroundColor,
-  );
-  expect(bodyBackground).toBe('rgb(17, 24, 39)'); // --mm-background dark
+  // The dark theme applies the MaterialM dark token set. The background
+  // repaints one frame after html.dark swaps the tokens (reduced-motion frame
+  // lag), so poll for the settled value instead of reading mid-transition.
+  await expect
+    .poll(
+      () => page.evaluate(() => getComputedStyle(document.body).backgroundColor),
+      { timeout: 2000, message: 'dark theme applies dark background' },
+    )
+    .toBe('rgb(17, 24, 39)'); // --mm-background dark
 
   // Persists across reload.
   await page.reload();

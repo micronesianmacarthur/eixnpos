@@ -326,7 +326,7 @@ test('renders the desktop create form with MaterialM primitives', async ({ page 
   ).toHaveCSS('border-radius', '8px');
 
   const primary = page.getByRole('button', { name: 'Create product' });
-  await expect(primary).toHaveCSS('background-color', 'rgb(0, 161, 255)');
+  await expect(primary).toHaveCSS('background-color', 'rgb(0, 114, 196)');
   await expect(primary).toHaveCSS('color', 'rgb(255, 255, 255)');
   await expect(primary).toHaveCSS('border-radius', '8px');
   await expect(primary).toHaveCSS('height', '40px');
@@ -390,7 +390,7 @@ test('renders the desktop edit form side-by-side with movement badges', async ({
     'background-color',
     'rgb(242, 246, 250)',
   );
-  await expect(table.locator('th').first()).toHaveCSS('color', 'rgb(107, 122, 144)');
+  await expect(table.locator('th').first()).toHaveCSS('color', 'rgb(100, 112, 133)');
   await expect(table.locator('th').first()).toHaveCSS('font-size', '13px');
 
   const badge = (label: string) =>

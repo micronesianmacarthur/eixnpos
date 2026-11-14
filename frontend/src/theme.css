@@ -26,10 +26,10 @@
   color-scheme: light;
 
   /* Palette */
-  --mm-primary: #00a1ff;
-  --mm-primary-hover: #0090e6;
-  --mm-primary-soft: rgba(0, 161, 255, 0.15);
-  --mm-primary-border: rgba(0, 161, 255, 0.4);
+  --mm-primary: #0072c4;
+  --mm-primary-hover: #0060a0;
+  --mm-primary-soft: rgba(0, 114, 196, 0.15);
+  --mm-primary-border: rgba(0, 114, 196, 0.4);
   --mm-on-primary: #ffffff;
 
   --mm-secondary: #16cdc7;
@@ -56,7 +56,7 @@
   --mm-surface-hover: #f6f9fc;
   --mm-border: #e4ebf0;
   --mm-text: #111c2d;
-  --mm-text-muted: #6b7a90;
+  --mm-text-muted: #647085;
   --mm-overlay: rgba(17, 28, 45, 0.5);
 
   /* Typography */
