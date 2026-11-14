@@ -296,9 +296,9 @@ export default function SalesPage() {
       setPayError('Enter an amount greater than zero.');
       return;
     }
-    const recordedTotal = sale.payments.reduce((sum, payment) => sum + toNumber(payment.amount), 0);
-    const remaining = Math.max(0, toNumber(sale.total) - recordedTotal);
-    const appliedAmount = payMethod === 'cash' ? Math.min(toNumber(tendered), remaining || toNumber(tendered)) : toNumber(tendered);
+    // Record the full tendered amount (over-tender included); the backend
+    // reconciles the change_due against the sale's outstanding balance.
+    const appliedAmount = toNumber(tendered);
     setPaySaving(true);
     setPayError('');
     const payload: Record<string, unknown> = {
@@ -718,13 +718,16 @@ export default function SalesPage() {
                 {sale.payments.map((p) => (
                   <div key={p.id} className="recorded-payment">
                     <span>{p.method.charAt(0).toUpperCase() + p.method.slice(1)}</span>
-                    <span>{formatMoney(p.amount)}</span>
-                    {/*{p.method === 'cash' && (
+                    <span>
+                      {p.method === 'cash' && p.tendered != null
+                        ? formatMoney(p.tendered)
+                        : formatMoney(p.amount)}
+                    </span>
+                    {p.method === 'cash' && toNumber(p.change_due) > 0 && (
                       <span className="mm-muted small">
-                        tendered {formatMoney(p.tendered ?? 0)} · change{' '}
-                        {formatMoney(p.change_due)}
+                        change {formatMoney(p.change_due)}
                       </span>
-                    )}*/}
+                    )}
                   </div>
                 ))}
               </div>
