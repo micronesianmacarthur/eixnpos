@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type FormEvent,
@@ -57,6 +58,16 @@ export default function SettingsPage() {
     website: '',
     backup_path: '',
   });
+  /** The store detail fields as last confirmed by the server (state, not ref,
+   *  so "dirty" recomputes and clears reactively after each save). */
+  const [savedStore, setSavedStore] = useState<BusinessInfo>({
+    company_name: '',
+    phone: '',
+    email: '',
+    address: '',
+    website: '',
+    backup_path: '',
+  });
   const [storeLoading, setStoreLoading] = useState(true);
   const [storeSaving, setStoreSaving] = useState(false);
   const [storeError, setStoreError] = useState('');
@@ -83,14 +94,16 @@ export default function SettingsPage() {
   const loadStore = useCallback(async () => {
     try {
       const data = await apiFetch<BusinessInfo>('/api/business/');
-      setStore({
+      const next: BusinessInfo = {
         company_name: data.company_name || '',
         phone: data.phone || '',
         email: data.email || '',
         address: data.address || '',
         website: data.website || '',
         backup_path: data.backup_path || '',
-      });
+      };
+      setStore(next);
+      setSavedStore(next);
       setSavedBackupPath(data.backup_path || '');
       setStoreError('');
       setStoreSaved('');
@@ -132,6 +145,16 @@ export default function SettingsPage() {
 
   const handleStoreSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const required: Array<[keyof BusinessInfo, string]> = [
+      ['company_name', 'Company name'],
+      ['phone', 'Phone'],
+      ['email', 'Email'],
+    ];
+    const missing = required.find(([field]) => !store[field].trim());
+    if (missing) {
+      setStoreError(`${missing[1]} is required.`);
+      return;
+    }
     setStoreSaving(true);
     setStoreError('');
     setStoreSaved('');
@@ -146,6 +169,14 @@ export default function SettingsPage() {
           website: store.website,
         }),
       });
+      setSavedStore((prev) => ({
+        ...prev,
+        company_name: store.company_name,
+        phone: store.phone,
+        email: store.email,
+        address: store.address,
+        website: store.website,
+      }));
       setStoreSaved('Store details saved.');
     } catch (err) {
       setStoreError(err instanceof ApiError ? err.message : 'Failed to save store details');
@@ -153,6 +184,29 @@ export default function SettingsPage() {
       setStoreSaving(false);
     }
   };
+
+  /** Discard unsaved Store edits by restoring the last server-confirmed values. */
+  const handleStoreCancel = () => {
+    setStore((current) => ({ ...current, ...storeFieldSnapshot() }));
+    setStoreError('');
+    setStoreSaved('');
+  };
+
+  /** The store detail fields currently confirmed by the server (excl. backup_path). */
+  const storeFieldSnapshot = () => {
+    const { company_name, phone, email, address, website } = savedStore;
+    return { company_name, phone, email, address, website };
+  };
+
+  const isStoreDirty = useMemo(
+    () =>
+      store.company_name !== savedStore.company_name ||
+      store.phone !== savedStore.phone ||
+      store.email !== savedStore.email ||
+      store.address !== savedStore.address ||
+      store.website !== savedStore.website,
+    [store, savedStore],
+  );
 
   // Users form ------------------------------------------------------------
   const openCreateUser = () => {
@@ -229,6 +283,10 @@ export default function SettingsPage() {
 
   const handleSaveBackupPath = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (!store.backup_path.trim()) {
+      setBackupError('Backup path is required.');
+      return;
+    }
     setStoreSaving(true);
     setBackupError('');
     setBackupSaved('');
@@ -238,6 +296,7 @@ export default function SettingsPage() {
         body: JSON.stringify({ backup_path: store.backup_path }),
       });
       setSavedBackupPath(store.backup_path);
+      setSavedStore((prev) => ({ ...prev, backup_path: store.backup_path }));
       setBackupSaved('Backup path saved.');
     } catch (err) {
       setBackupError(err instanceof ApiError ? err.message : 'Failed to save backup path');
@@ -245,6 +304,31 @@ export default function SettingsPage() {
       setStoreSaving(false);
     }
   };
+
+  /** Discard an unsaved backup-path edit by restoring the last server-confirmed path. */
+  const handleBackupCancel = () => {
+    setStore((current) => ({ ...current, backup_path: savedStore.backup_path }));
+    setBackupError('');
+    setBackupSaved('');
+  };
+
+  const isBackupDirty = store.backup_path !== savedStore.backup_path;
+
+  // Dirty-state guard: warn on browser-level close/reload when either Store or
+  // Backup has unsaved edits. In-app navigation is SPA-navigated (no data
+  // router blocker); tab switches are discard-safe because each section owns
+  // its own local state.
+  const dirty = isStoreDirty || isBackupDirty;
+  useEffect(() => {
+    if (!dirty) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      // eslint-disable-next-line no-param-reassign
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [dirty]);
 
   const handleBackupNow = async () => {
     setBackupState('running');
@@ -259,6 +343,7 @@ export default function SettingsPage() {
           body: JSON.stringify({ backup_path: store.backup_path }),
         });
         setSavedBackupPath(store.backup_path);
+        setSavedStore((prev) => ({ ...prev, backup_path: store.backup_path }));
       }
       const data = await apiFetch<{ path: string }>('/api/backups/trigger/', {
         method: 'POST',
@@ -290,7 +375,7 @@ export default function SettingsPage() {
   };
 
   const storeForm = () => (
-    <form className="settings-form" onSubmit={handleStoreSubmit}>
+    <form className="settings-form" onSubmit={handleStoreSubmit} noValidate>
       <div className="settings-fields">
         <div className="mm-field">
           <label className="mm-label" htmlFor="settings-company-name">Company name</label>
@@ -302,6 +387,8 @@ export default function SettingsPage() {
             value={store.company_name}
             onChange={(event) => handleStoreField('company_name', event.target.value)}
             autoComplete="organization"
+            required
+            aria-required="true"
           />
         </div>
         <div className="mm-field">
@@ -314,6 +401,8 @@ export default function SettingsPage() {
             value={store.phone}
             onChange={(event) => handleStoreField('phone', event.target.value)}
             autoComplete="tel"
+            required
+            aria-required="true"
           />
         </div>
         <div className="mm-field">
@@ -326,6 +415,8 @@ export default function SettingsPage() {
             value={store.email}
             onChange={(event) => handleStoreField('email', event.target.value)}
             autoComplete="email"
+            required
+            aria-required="true"
           />
         </div>
         <div className="mm-field">
@@ -364,7 +455,15 @@ export default function SettingsPage() {
         </p>
       )}
       <footer className="mm-card-footer">
-        <button type="submit" className="mm-btn mm-btn--primary" disabled={storeSaving}>
+        <button
+          type="button"
+          className="mm-btn mm-btn--ghost"
+          onClick={handleStoreCancel}
+          disabled={storeSaving || storeLoading}
+        >
+          Cancel
+        </button>
+        <button type="submit" className="mm-btn mm-btn--primary" disabled={storeSaving || storeLoading}>
           {storeSaving ? 'Saving...' : 'Save'}
         </button>
       </footer>
@@ -544,7 +643,7 @@ export default function SettingsPage() {
               </p>
             </div>
           </div>
-          <form className="settings-form" onSubmit={handleSaveBackupPath}>
+          <form className="settings-form" onSubmit={handleSaveBackupPath} noValidate>
             <div className="mm-field">
               <label className="mm-label" htmlFor="settings-backup-path">Backup path</label>
               <input
@@ -557,6 +656,8 @@ export default function SettingsPage() {
                 placeholder="/backup"
                 autoComplete="off"
                 disabled={storeLoading}
+                required
+                aria-required="true"
               />
             </div>
             <p className="mm-hint settings-hint">
@@ -575,6 +676,14 @@ export default function SettingsPage() {
             <div className="settings-row settings-backup-actions">
               <button type="submit" className="mm-btn mm-btn--outline" disabled={storeSaving || storeLoading}>
                 {storeSaving ? 'Saving...' : 'Save path'}
+              </button>
+              <button
+                type="button"
+                className="mm-btn mm-btn--ghost"
+                onClick={handleBackupCancel}
+                disabled={storeSaving || storeLoading}
+              >
+                Cancel
               </button>
               <button
                 type="button"
