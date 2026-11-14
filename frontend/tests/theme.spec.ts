@@ -358,7 +358,6 @@ test('keeps the Business Information prompt and form', async ({ page }) => {
 const PLACEHOLDERS = [
   ['/sales-manager', 'Sales Manager'],
   ['/suppliers', 'Suppliers'],
-  ['/settings', 'Settings'],
   ['/close', 'Close'],
 ] as const;
 

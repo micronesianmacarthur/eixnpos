@@ -8,11 +8,12 @@ class UserSerializer(serializers.ModelSerializer):
     name = serializers.SerializerMethodField()
     createdAt = serializers.DateTimeField(source='date_joined', read_only=True)
     updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
+    active = serializers.BooleanField(source='is_active', read_only=True)
 
     class Meta:
         model = User
-        fields = ['id', 'email', 'name', 'role', 'createdAt', 'updatedAt']
-        read_only_fields = ['id', 'createdAt', 'updatedAt']
+        fields = ['id', 'email', 'name', 'role', 'active', 'createdAt', 'updatedAt']
+        read_only_fields = ['id', 'active', 'createdAt', 'updatedAt']
 
     def get_name(self, obj):
         """Combine first_name and last_name for display name."""

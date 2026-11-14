@@ -552,6 +552,11 @@ pre,
   background: var(--mm-error-soft);
 }
 
+.mm-badge--muted {
+  color: var(--mm-text-muted);
+  background: var(--mm-surface-muted);
+}
+
 /* Modal ----------------------------------------------------------------- */
 
 .mm-modal-backdrop {
@@ -774,4 +779,69 @@ pre,
   .sidebar-backdrop {
     transition: none !important;
   }
+}
+
+/* Dark theme ----------------------------------------------------------- */
+
+/**
+ * Dark palette. Applied by toggling `html.dark` (see ThemeProvider). Only the
+ * token definitions are swapped — every mm- primitive reads from these CSS
+ * variables, so the whole design system flips without per-component overrides.
+ */
+html.dark {
+  color-scheme: dark;
+
+  /* Palette */
+  --mm-primary: #38b6ff;
+  --mm-primary-hover: #4dc0ff;
+  --mm-primary-soft: rgba(56, 182, 255, 0.18);
+  --mm-primary-border: rgba(56, 182, 255, 0.45);
+  --mm-on-primary: #05131f;
+
+  --mm-secondary: #3fe0da;
+  --mm-secondary-soft: rgba(63, 224, 218, 0.16);
+
+  --mm-info: #66a9ff;
+  --mm-info-soft: rgba(102, 169, 255, 0.16);
+
+  --mm-success: #2ee8c9;
+  --mm-success-soft: rgba(46, 232, 201, 0.16);
+  --mm-success-foreground: #37e6c6;
+
+  --mm-warning: #ffbe4d;
+  --mm-warning-soft: rgba(255, 190, 77, 0.16);
+  --mm-warning-foreground: #ffc86b;
+
+  --mm-error: #ff86aa;
+  --mm-error-soft: rgba(255, 134, 170, 0.16);
+  --mm-error-foreground: #ff8fb0;
+
+  --mm-background: #111827;
+  --mm-surface: #1b2637;
+  --mm-surface-muted: #202c3f;
+  --mm-surface-hover: #263650;
+  --mm-border: #34415a;
+  --mm-text: #eef2f8;
+  --mm-text-muted: #9aa7bc;
+  --mm-overlay: rgba(3, 7, 12, 0.6);
+
+  /* Shadows */
+  --mm-shadow-sm: 0 2px 4px -1px rgba(0, 0, 0, 0.45);
+  --mm-shadow-md: 0 1px 4px rgba(0, 0, 0, 0.45);
+  --mm-shadow-lg: 0 15px 30px rgba(0, 0, 0, 0.55);
+  --mm-shadow-sidebar: 2px 0 12px rgba(0, 0, 0, 0.4);
+}
+
+html.dark ::selection {
+  color: var(--mm-text);
+  background: var(--mm-primary-soft);
+}
+
+html.dark .mm-btn--danger {
+  background: var(--mm-error-soft);
+  border-color: transparent;
+}
+
+html.dark .mm-btn--danger:hover:not(:disabled):not([aria-disabled='true']) {
+  background: rgba(255, 134, 170, 0.26);
 }

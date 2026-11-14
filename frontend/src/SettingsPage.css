@@ -1,0 +1,117 @@
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--mm-border);
+}
+
+.settings-tab {
+  display: inline-flex;
+  align-items: center;
+  margin-bottom: -1px;
+  padding: 10px 16px;
+  color: var(--mm-text-muted);
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: var(--mm-radius-sm) var(--mm-radius-sm) 0 0;
+  cursor: pointer;
+}
+
+.settings-tab:hover {
+  color: var(--mm-text);
+}
+
+.settings-tab.active {
+  color: var(--mm-primary);
+  border-bottom-color: var(--mm-primary);
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.settings-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+}
+
+.settings-field-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 16px;
+}
+
+.settings-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.settings-appearance-row {
+  justify-content: space-between;
+}
+
+.settings-theme-label {
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.settings-hint {
+  margin-top: -8px;
+}
+
+.settings-backup-actions {
+  padding-top: 4px;
+}
+
+.settings-notice {
+  margin: 0;
+}
+
+.settings-user-name {
+  font-weight: 600;
+}
+
+.settings-user-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.settings-role {
+  text-transform: capitalize;
+}
+
+.settings-empty-row {
+  padding: 24px 16px;
+  color: var(--mm-text-muted);
+  text-align: center;
+}
+
+@media (max-width: 768px) {
+  .settings-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-field-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-appearance-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .settings-tab {
+    flex: 0 0 auto;
+  }
+}

@@ -9,6 +9,7 @@ import UsersPage from './UsersPage';
 import SalesPage from './SalesPage';
 import InventoryPage from './InventoryPage';
 import ProductPage from './ProductPage';
+import SettingsPage from './SettingsPage';
 import { AuthProvider, RequireAuth, RequireRole } from './auth';
 
 function AppRouter() {
@@ -65,15 +66,7 @@ function AppRouter() {
 
               <Route element={<RequireRole roles={['manager', 'admin']} />}>
                 <Route path="users" element={<UsersPage />} />
-                <Route
-                  path="settings"
-                  element={
-                    <PlaceholderPage
-                      title="Settings"
-                      description="Configure store details, backup path, and preferences."
-                    />
-                  }
-                />
+                <Route path="settings" element={<SettingsPage />} />
               </Route>
 
               <Route path="*" element={<Navigate to="/" replace />} />

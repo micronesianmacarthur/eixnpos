@@ -61,6 +61,8 @@ class UserApiTests(TestCase):
         self.assertEqual(response.data['role'], 'manager')
         self.assertIn('createdAt', response.data)
         self.assertIn('updatedAt', response.data)
+        self.assertIn('active', response.data)
+        self.assertIs(response.data['active'], True)
 
     def test_create_user(self):
         response = self.client.post(
@@ -163,6 +165,6 @@ class UserApiTests(TestCase):
         """Verify User DTO contains required fields: id, email, name, role, createdAt, updatedAt"""
         response = self.client.get(f'/api/users/{self.manager_user.id}/')
         self.assertEqual(response.status_code, 200)
-        required_fields = ['id', 'email', 'name', 'role', 'createdAt', 'updatedAt']
+        required_fields = ['id', 'email', 'name', 'role', 'active', 'createdAt', 'updatedAt']
         for field in required_fields:
             self.assertIn(field, response.data, f"Missing required field: {field}")
