@@ -214,8 +214,15 @@ test('tab hover and focus states are styled', async ({ page }) => {
   const tab = page.getByRole('tab', { name: 'Users' });
   const base = await tab.evaluate((el) => getComputedStyle(el).color);
   await tab.hover();
-  const hovered = await tab.evaluate((el) => getComputedStyle(el).color);
-  expect(hovered, 'hover changes tab color').not.toBe(base);
+  // Poll for the hover style instead of reading synchronously: the mouse
+  // event lands before the renderer's next :hover style recalc, so an
+  // immediate read can still see the base color.
+  await expect
+    .poll(() => tab.evaluate((el) => getComputedStyle(el).color), {
+      timeout: 5_000,
+      message: 'hover should change tab color',
+    })
+    .not.toBe(base);
   await tab.focus();
   const outline = await tab.evaluate((el) => getComputedStyle(el).outlineStyle);
   const shadow = await tab.evaluate((el) => getComputedStyle(el).boxShadow);
