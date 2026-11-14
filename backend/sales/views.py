@@ -182,9 +182,13 @@ class SaleViewSet(viewsets.ModelViewSet):
             customer.balance = new_balance
             customer.save(update_fields=['balance'])
         
+        # Change due is the tender excess over the outstanding sale balance this
+        # tender settles: an over-tender returns change, exact/under returns none.
         change_due = Decimal('0')
         if method == Payment.METHOD_CASH and tendered is not None:
-            change_due = tendered - amount
+            settled = sum((p.amount for p in sale.payments.all()), Decimal('0'))
+            remaining = max(Decimal('0'), sale.total - settled)
+            change_due = max(Decimal('0'), tendered - min(tendered, remaining))
         
         payment = Payment.objects.create(
             sale=sale,
