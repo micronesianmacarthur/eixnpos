@@ -250,6 +250,27 @@
   background: rgba(124, 45, 18, 0.15);
 }
 
+/* Dark theme: the hardcoded role blues/ambers fall below 3:1 on the dark
+   surface, so swap them to token-driven (AA-accessible) variants. Light theme
+   is untouched. */
+html.dark .role-manager,
+html.dark .user-stat-value.role-manager {
+  color: var(--mm-info);
+}
+
+html.dark .role-manager {
+  background: var(--mm-info-soft);
+}
+
+html.dark .role-admin,
+html.dark .user-stat-value.role-admin {
+  color: var(--mm-warning-foreground);
+}
+
+html.dark .role-admin {
+  background: var(--mm-warning-soft);
+}
+
 /* Detail pane */
 
 .user-detail-panel {

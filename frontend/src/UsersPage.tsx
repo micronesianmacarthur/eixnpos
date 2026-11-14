@@ -3,42 +3,15 @@ import {
   useEffect,
   useMemo,
   useState,
-  type FormEvent,
 } from 'react';
 import { apiFetch, ApiError } from './api';
 import { useAuth } from './authContext';
+import UserFormModal from './UserFormModal';
+import { USER_ROLES, type User } from './users';
 import './UsersPage.css';
 
-interface User {
-  id: number;
-  email: string;
-  name: string;
-  role: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
-interface UserForm {
-  username: string;
-  email: string;
-  first_name: string;
-  last_name: string;
-  role: string;
-  password: string;
-}
-
-const EMPTY_FORM: UserForm = {
-  username: '',
-  email: '',
-  first_name: '',
-  last_name: '',
-  role: 'cashier',
-  password: '',
-};
-
-const ROLES = ['cashier', 'manager', 'admin'] as const;
-
-function formatDate(value: string): string {
+function formatDate(value: string | undefined): string {
+  if (!value) return '';
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString(undefined, { hour12: false });
 }
@@ -58,7 +31,6 @@ export default function UsersPage() {
   const [listError, setListError] = useState('');
 
   const [formMode, setFormMode] = useState<'closed' | 'create' | 'edit'>('closed');
-  const [form, setForm] = useState<UserForm>(EMPTY_FORM);
   const [formError, setFormError] = useState('');
   const [formSaving, setFormSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
@@ -83,21 +55,6 @@ export default function UsersPage() {
     void loadUsers();
   }, [loadUsers]);
 
-  useEffect(() => {
-    if (formMode === 'closed') {
-      return;
-    }
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setFormMode('closed');
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [formMode]);
-
   const filteredUsers = useMemo(() => {
     const query = search.trim().toLowerCase();
     return users.filter((user) => {
@@ -111,10 +68,10 @@ export default function UsersPage() {
     });
   }, [users, search, roleFilter]);
 
-  const roles = useMemo(() => ['All', ...ROLES], []);
+  const roles = useMemo(() => ['All', ...USER_ROLES], []);
 
   const openCreate = () => {
-    setForm({ ...EMPTY_FORM, password: '' });
+    setSelectedUser(null);
     setFormError('');
     setFormMode('create');
   };
@@ -129,16 +86,6 @@ export default function UsersPage() {
 
   const openEditWithUser = (user: User) => {
     setSelectedUser(user);
-    // Split name into first/last for the form - approximate since backend only returns combined name
-    const nameParts = user.name.trim().split(' ');
-    setForm({
-      username: nameParts[0] || '',
-      email: user.email,
-      first_name: nameParts[0] || '',
-      last_name: nameParts.slice(1).join(' ') || '',
-      role: user.role,
-      password: '',
-    });
     setFormError('');
     setFormMode('edit');
   };
@@ -170,53 +117,9 @@ export default function UsersPage() {
     }
   };
 
-  const handleFormSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-
-    const username = form.username.trim();
-    const email = form.email.trim();
-    const firstName = form.first_name.trim();
-    const lastName = form.last_name.trim();
-    const role = form.role;
-    const password = form.password;
-
-    if (!username) {
-      setFormError('Username is required.');
-      return;
-    }
-    if (!firstName && !lastName) {
-      setFormError('At least first name or last name is required.');
-      return;
-    }
-    if (!ROLES.includes(role as (typeof ROLES)[number])) {
-      setFormError('Invalid role selected.');
-      return;
-    }
-    if (formMode === 'create' && !password) {
-      setFormError('Password is required for new users.');
-      return;
-    }
-    if (password && password.length < 8) {
-      setFormError('Password must be at least 8 characters.');
-      return;
-    }
-
+  const handleUserSubmit = async (payload: Record<string, string>) => {
     setFormSaving(true);
     setFormError('');
-
-    const payload: Record<string, string> = {
-      email,
-      first_name: firstName,
-      last_name: lastName,
-      role,
-    };
-    if (formMode === 'create') {
-      payload.username = username;
-    }
-    if (password) {
-      payload.password = password;
-    }
-
     try {
       if (formMode === 'create') {
         await apiFetch<User>('/api/users/', {
@@ -230,6 +133,7 @@ export default function UsersPage() {
         });
       } else {
         setFormError('No user selected for editing.');
+        setFormSaving(false);
         return;
       }
 
@@ -385,182 +289,15 @@ export default function UsersPage() {
       </div>
 
       {formMode !== 'closed' && (
-        <div
-          className="mm-modal-backdrop"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              closeForm();
-            }
-          }}
-        >
-          <div
-            className="mm-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="user-form-title"
-          >
-            <header className="mm-modal-header">
-              <h2 id="user-form-title">
-                {formMode === 'create' ? 'New user' : 'Edit user'}
-              </h2>
-              <button
-                type="button"
-                className="mm-modal-close"
-                aria-label="Close"
-                onClick={closeForm}
-              >
-                &times;
-              </button>
-            </header>
-
-            <form className="mm-modal-body" onSubmit={handleFormSubmit}>
-              {formError && (
-                <p className="mm-alert mm-alert--danger" role="alert">
-                  {formError}
-                </p>
-              )}
-
-              <label className="mm-field">
-                <span className="mm-label">Username</span>
-                <input className="mm-input"
-                  type="text"
-                  value={form.username}
-                  onChange={(event) =>
-                    setForm((current) => ({
-                      ...current,
-                      username: event.target.value,
-                    }))
-                  }
-                  required
-                  autoFocus
-                  maxLength={150}
-                  disabled={formMode === 'edit'}
-                />
-                {formMode === 'edit' && (
-                  <span className="mm-hint">Username cannot be changed</span>
-                )}
-              </label>
-
-              <label className="mm-field">
-                <span className="mm-label">Email</span>
-                <input className="mm-input"
-                  type="email"
-                  value={form.email}
-                  onChange={(event) =>
-                    setForm((current) => ({
-                      ...current,
-                      email: event.target.value,
-                    }))
-                  }
-                  maxLength={254}
-                />
-              </label>
-
-              <div className="mm-field-row">
-                <label className="mm-field">
-                  <span className="mm-label">First name</span>
-                  <input className="mm-input"
-                    type="text"
-                    value={form.first_name}
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        first_name: event.target.value,
-                      }))
-                    }
-                    required
-                    maxLength={150}
-                  />
-                </label>
-
-                <label className="mm-field">
-                  <span className="mm-label">Last name</span>
-                  <input className="mm-input"
-                    type="text"
-                    value={form.last_name}
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        last_name: event.target.value,
-                      }))
-                    }
-                    maxLength={150}
-                    placeholder="Optional"
-                  />
-                </label>
-              </div>
-
-              <label className="mm-field">
-                <span className="mm-label">Role</span>
-                <select className="mm-select"
-                  value={form.role}
-                  onChange={(event) =>
-                    setForm((current) => ({
-                      ...current,
-                      role: event.target.value,
-                    }))
-                  }
-                  required
-                >
-                  {ROLES.map((role) => (
-                    <option key={role} value={role}>
-                      {role.charAt(0).toUpperCase() + role.slice(1)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="mm-field">
-                <span className="mm-label">Password</span>
-                <input className="mm-input"
-                  type="password"
-                  value={form.password}
-                  onChange={(event) =>
-                    setForm((current) => ({
-                      ...current,
-                      password: event.target.value,
-                    }))
-                  }
-                  minLength={8}
-                  maxLength={128}
-                  placeholder={
-                    formMode === 'edit'
-                      ? 'Leave blank to keep current password'
-                      : 'At least 8 characters'
-                  }
-                  required={formMode === 'create'}
-                />
-                {/*{formMode === 'edit' && (
-                  <span className="mm-hint">
-                    Leave blank to keep current password
-                  </span>
-                )}*/}
-              </label>
-
-              <footer className="mm-modal-footer">
-                <button
-                  type="button"
-                  className="mm-btn mm-btn--ghost"
-                  onClick={closeForm}
-                  disabled={formSaving}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="mm-btn mm-btn--primary"
-                  disabled={formSaving}
-                >
-                  {formSaving
-                    ? 'Saving...'
-                    : formMode === 'create'
-                    ? 'Create user'
-                    : 'Save changes'}
-                </button>
-              </footer>
-            </form>
-          </div>
-        </div>
+        <UserFormModal
+          mode={formMode}
+          user={selectedUser}
+          saving={formSaving}
+          error={formError}
+          titleId="user-form-title"
+          onSubmit={(payload) => void handleUserSubmit(payload)}
+          onClose={closeForm}
+        />
       )}
     </section>
   );

@@ -12,6 +12,7 @@ const SNAPSHOT = {
 interface NetworkMonitor {
   external: string[];
   failed: string[];
+  requests: Array<{ method: string; path: string; body?: string }>;
 }
 
 const AUTH_ME = {
@@ -30,9 +31,9 @@ const BUSINESS_INFO = {
 };
 
 const USERS = [
-  { id: 1, email: 'admin@eixn.test', name: 'Alex Admin', role: 'admin', active: true, createdAt: '2026-01-01T10:00:00Z', updatedAt: '2026-01-01T10:00:00Z' },
-  { id: 2, email: 'sam@eixn.test', name: 'Sam Manager', role: 'manager', active: true, createdAt: '2026-01-01T10:00:00Z', updatedAt: '2026-01-01T10:00:00Z' },
-  { id: 3, email: 'riley@eixn.test', name: 'Riley Cashier', role: 'cashier', active: false, createdAt: '2026-01-01T10:00:00Z', updatedAt: '2026-01-01T10:00:00Z' },
+  { id: 1, email: 'admin@eixn.test', name: 'Alex Admin', username: 'alex', first_name: 'Alex', last_name: 'Admin', role: 'admin', active: true, createdAt: '2026-01-01T10:00:00Z', updatedAt: '2026-01-01T10:00:00Z' },
+  { id: 2, email: 'sam@eixn.test', name: 'Sam Manager', username: 'sam', first_name: 'Sam', last_name: 'Manager', role: 'manager', active: true, createdAt: '2026-01-01T10:00:00Z', updatedAt: '2026-01-01T10:00:00Z' },
+  { id: 3, email: 'riley@eixn.test', name: 'Riley Cashier', username: 'riley', first_name: 'Riley', last_name: 'Cashier', role: 'cashier', active: false, createdAt: '2026-01-01T10:00:00Z', updatedAt: '2026-01-01T10:00:00Z' },
 ];
 
 function json(data: unknown, status = 200) {
@@ -40,7 +41,7 @@ function json(data: unknown, status = 200) {
 }
 
 async function installApiMocks(page: Page): Promise<NetworkMonitor> {
-  const monitor: NetworkMonitor = { external: [], failed: [] };
+  const monitor: NetworkMonitor = { external: [], failed: [], requests: [] };
 
   page.on('requestfailed', (request) => {
     const url = new URL(request.url());
@@ -70,6 +71,8 @@ async function installApiMocks(page: Page): Promise<NetworkMonitor> {
     const path = url.pathname;
     const method = request.method().toUpperCase();
 
+    monitor.requests.push({ method, path, body: request.postData() ?? undefined });
+
     if (path === '/api/auth/me/') {
       await route.fulfill(json(AUTH_ME));
       return;
@@ -89,6 +92,19 @@ async function installApiMocks(page: Page): Promise<NetworkMonitor> {
         return;
       }
       await route.fulfill(json(USERS));
+      return;
+    }
+    const userMatch = /^\/api\/users\/(\d+)\/$/.exec(path);
+    if (userMatch) {
+      if (method === 'PATCH') {
+        await route.fulfill(json({ ...USERS[0], ...JSON.parse(request.postData() || '{}') }));
+        return;
+      }
+      if (method === 'DELETE') {
+        await route.fulfill({ status: 204 });
+        return;
+      }
+      await route.fulfill(json({ detail: `No mock for ${method} ${path}` }, 404));
       return;
     }
     if (path === '/api/backups/trigger/') {
@@ -146,8 +162,8 @@ test('shows inactive users with a muted badge', async ({ page }) => {
   await page.getByRole('tab', { name: 'Users' }).click();
 
   await expect(page.getByRole('tab', { name: 'Users' })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByRole('cell', { name: 'Alex Admin' })).toBeVisible();
-  await expect(page.getByRole('cell', { name: /Riley Cashier/ })).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'Alex Admin', exact: true })).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'Riley Cashier', exact: true })).toBeVisible();
   await expect(page.locator('.mm-badge--success', { hasText: 'Active' })).toHaveCount(2);
   await expect(page.locator('.mm-badge--muted', { hasText: 'Inactive' })).toHaveCount(1);
   await expect(page.getByRole('button', { name: '+ Add user' })).toBeVisible();
@@ -273,12 +289,93 @@ test('navigates tabs with the arrow keys', async ({ page }) => {
   expectNoNetworkIssues(monitor);
 });
 
-test('closes the user modal with Escape', async ({ page }) => {
+test('closes the user modal with Escape and restores focus', async ({ page }) => {
   const monitor = await openSettings(page);
   await page.getByRole('tab', { name: 'Users' }).click();
   await page.getByRole('button', { name: '+ Add user' }).click();
   await expect(page.locator('.mm-modal')).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.locator('.mm-modal')).toBeHidden();
+  await expect(page.getByRole('button', { name: '+ Add user' })).toBeFocused();
+  expectNoNetworkIssues(monitor);
+});
+
+test('persists an unsaved backup path before triggering a backup', async ({ page }) => {
+  const monitor = await openSettings(page);
+  await page.getByRole('tab', { name: 'Backup' }).click();
+
+  await page.getByLabel('Backup path').fill('/usb/new-target');
+  await page.getByRole('button', { name: 'Back up now' }).click();
+
+  await expect(page.getByRole('status')).toHaveText(/Backup completed/);
+
+  const businessPatches = monitor.requests.filter(
+    (r) => r.method === 'PATCH' && r.path === '/api/business/',
+  );
+  const triggers = monitor.requests.filter(
+    (r) => r.method === 'POST' && r.path === '/api/backups/trigger/',
+  );
+
+  // The unsaved path is persisted (PATCH) before the manual trigger, so the
+  // session-close backup writes to the same destination the user saw.
+  expect(businessPatches).toHaveLength(1);
+  expect(JSON.parse(businessPatches[0].body ?? '{}')).toEqual({
+    backup_path: '/usb/new-target',
+  });
+  expect(triggers).toHaveLength(1);
+  const patchIndex = monitor.requests.indexOf(businessPatches[0]);
+  const triggerIndex = monitor.requests.indexOf(triggers[0]);
+  expect(patchIndex).toBeGreaterThanOrEqual(0);
+  expect(triggerIndex).toBeGreaterThan(patchIndex);
+
+  expectNoNetworkIssues(monitor);
+});
+
+test('editing a name-less user does not rewrite name fields', async ({ page }) => {
+  const monitor = await openSettings(page);
+  const nameLess = {
+    id: 95,
+    email: 'nameless@eixn.test',
+    name: 'sam',
+    username: 'sam',
+    first_name: '',
+    last_name: '',
+    role: 'cashier',
+    active: true,
+    createdAt: '2026-01-01T10:00:00Z',
+    updatedAt: '2026-01-01T10:00:00Z',
+  };
+  // This test needs a user who has no first/last name (server returns only the
+  // username-derived display name), so override just the users list.
+  await page.route('**/api/users/**', async (route) => {
+    const url = new URL(route.request().url());
+    if (
+      url.pathname === '/api/users/' &&
+      route.request().method().toUpperCase() === 'GET'
+    ) {
+      await route.fulfill(json([nameLess]));
+      return;
+    }
+    await route.fallback();
+  });
+
+  await page.getByRole('tab', { name: 'Users' }).click();
+  await expect(page.getByRole('cell', { name: 'sam', exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: /^Edit / }).first().click();
+  const modal = page.getByRole('dialog');
+  await expect(modal).toBeVisible();
+  await expect(modal.getByLabel('Username')).toHaveValue('sam');
+  await modal.getByLabel('Role').selectOption('manager');
+  await modal.getByRole('button', { name: 'Save changes' }).click();
+
+  await expect(page.locator('.mm-modal')).toBeHidden();
+
+  const patch = monitor.requests.find(
+    (r) => r.method === 'PATCH' && r.path === '/api/users/95/',
+  );
+  expect(patch).toBeTruthy();
+  // Only the changed field ships; the empty first/last names are not rewritten.
+  expect(JSON.parse(patch!.body ?? '{}')).toEqual({ role: 'manager' });
   expectNoNetworkIssues(monitor);
 });

@@ -5,6 +5,12 @@ User = get_user_model()
 
 
 class UserSerializer(serializers.ModelSerializer):
+    """Full read view of a user for managers/admins.
+
+    Exposes the raw `username`, `first_name` and `last_name` fields in addition
+    to the combined `name`, so clients can prefill edit forms from the real
+    source fields instead of trying to reverse the display string.
+    """
     name = serializers.SerializerMethodField()
     createdAt = serializers.DateTimeField(source='date_joined', read_only=True)
     updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
@@ -12,8 +18,8 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['id', 'email', 'name', 'role', 'active', 'createdAt', 'updatedAt']
-        read_only_fields = ['id', 'active', 'createdAt', 'updatedAt']
+        fields = ['id', 'email', 'name', 'username', 'first_name', 'last_name', 'role', 'active', 'createdAt', 'updatedAt']
+        read_only_fields = ['id', 'username', 'first_name', 'last_name', 'active', 'createdAt', 'updatedAt']
 
     def get_name(self, obj):
         """Combine first_name and last_name for display name."""

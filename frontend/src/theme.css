@@ -553,7 +553,7 @@ pre,
 }
 
 .mm-badge--muted {
-  color: var(--mm-text-muted);
+  color: var(--mm-text);
   background: var(--mm-surface-muted);
 }
 

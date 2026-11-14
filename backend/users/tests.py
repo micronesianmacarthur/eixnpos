@@ -100,6 +100,38 @@ class UserApiTests(TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
+    def test_retrieve_exposes_raw_identity_fields(self):
+        """The list/retrieve DTO must expose username and first/last name so the
+        edit form can prefill from source fields instead of the combined name."""
+        response = self.client.get(f'/api/users/{self.manager_user.id}/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['username'], 'manager_test')
+        self.assertEqual(response.data['first_name'], 'Manager')
+        self.assertEqual(response.data['last_name'], 'User')
+        self.assertEqual(response.data['name'], 'Manager User')
+
+    def test_edit_name_less_user_does_not_mutate_name_fields(self):
+        """Editing a user with no first/last name must never write the username
+        (or anything else) into first_name when only other fields change."""
+        nameless = User.objects.create_user(
+            username='alex',
+            password='pass',
+            email='alex@example.com',
+            role='cashier',
+            first_name='',
+            last_name='',
+        )
+        response = self.client.patch(
+            f'/api/users/{nameless.id}/',
+            {'role': 'manager'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        nameless.refresh_from_db()
+        self.assertEqual(nameless.first_name, '')
+        self.assertEqual(nameless.last_name, '')
+        self.assertEqual(nameless.role, 'manager')
+
     def test_update_user(self):
         response = self.client.patch(
             f'/api/users/{self.cashier_user.id}/',

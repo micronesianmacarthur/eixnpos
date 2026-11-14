@@ -9,6 +9,8 @@ import {
 import { apiFetch, ApiError } from './api';
 import { useAuth } from './authContext';
 import { useTheme } from './themeContext';
+import UserFormModal from './UserFormModal';
+import type { User } from './users';
 import './SettingsPage.css';
 
 type TabId = 'store' | 'users' | 'backup' | 'appearance';
@@ -28,34 +30,6 @@ interface BusinessInfo {
   website: string;
   backup_path: string;
 }
-
-interface User {
-  id: number;
-  email: string;
-  name: string;
-  role: string;
-  active: boolean;
-}
-
-interface UserForm {
-  username: string;
-  email: string;
-  first_name: string;
-  last_name: string;
-  role: string;
-  password: string;
-}
-
-const ROLES = ['cashier', 'manager', 'admin'] as const;
-
-const EMPTY_USER_FORM: UserForm = {
-  username: '',
-  email: '',
-  first_name: '',
-  last_name: '',
-  role: 'cashier',
-  password: '',
-};
 
 function normalizeList<T>(data: T[] | { results: T[] }): T[] {
   return Array.isArray(data) ? data : data.results;
@@ -93,7 +67,6 @@ export default function SettingsPage() {
   const [usersLoading, setUsersLoading] = useState(true);
   const [usersError, setUsersError] = useState('');
   const [userFormMode, setUserFormMode] = useState<'closed' | 'create' | 'edit'>('closed');
-  const [userForm, setUserForm] = useState<UserForm>(EMPTY_USER_FORM);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [userFormError, setUserFormError] = useState('');
   const [userFormSaving, setUserFormSaving] = useState(false);
@@ -102,6 +75,10 @@ export default function SettingsPage() {
   // Backup section --------------------------------------------------------
   const [backupState, setBackupState] = useState<'idle' | 'running' | 'success' | 'error'>('idle');
   const [backupMessage, setBackupMessage] = useState('');
+  const [backupError, setBackupError] = useState('');
+  const [backupSaved, setBackupSaved] = useState('');
+  /** The backup path as last confirmed by the server, used to detect unsaved edits. */
+  const [savedBackupPath, setSavedBackupPath] = useState('');
 
   const loadStore = useCallback(async () => {
     try {
@@ -114,8 +91,11 @@ export default function SettingsPage() {
         website: data.website || '',
         backup_path: data.backup_path || '',
       });
+      setSavedBackupPath(data.backup_path || '');
       setStoreError('');
       setStoreSaved('');
+      setBackupError('');
+      setBackupSaved('');
     } catch (err) {
       setStoreError(err instanceof ApiError ? err.message : 'Failed to load store details');
     } finally {
@@ -176,23 +156,13 @@ export default function SettingsPage() {
 
   // Users form ------------------------------------------------------------
   const openCreateUser = () => {
-    setUserForm({ ...EMPTY_USER_FORM });
     setSelectedUser(null);
     setUserFormError('');
     setUserFormMode('create');
   };
 
   const openEditUser = (user: User) => {
-    const nameParts = user.name.trim().split(' ');
     setSelectedUser(user);
-    setUserForm({
-      username: nameParts[0] || '',
-      email: user.email,
-      first_name: nameParts[0] || '',
-      last_name: nameParts.slice(1).join(' ') || '',
-      role: user.role,
-      password: '',
-    });
     setUserFormError('');
     setUserFormMode('edit');
   };
@@ -202,18 +172,6 @@ export default function SettingsPage() {
     setUserFormMode('closed');
     setSelectedUser(null);
   };
-
-  useEffect(() => {
-    if (userFormMode === 'closed') return;
-    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        closeUserForm();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userFormMode, userFormSaving]);
 
   const handleDeleteUser = async (user: User) => {
     if (user.id === currentUserId) {
@@ -236,42 +194,9 @@ export default function SettingsPage() {
     }
   };
 
-  const handleUserSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const username = userForm.username.trim();
-    const email = userForm.email.trim();
-    const firstName = userForm.first_name.trim();
-    const lastName = userForm.last_name.trim();
-    const role = userForm.role;
-
-    if (!username) {
-      setUserFormError('Username is required.');
-      return;
-    }
-    if (!firstName && !lastName) {
-      setUserFormError('At least first name or last name is required.');
-      return;
-    }
-    if (!ROLES.includes(role as (typeof ROLES)[number])) {
-      setUserFormError('Invalid role selected.');
-      return;
-    }
-    if (userFormMode === 'create' && !userForm.password) {
-      setUserFormError('Password is required for new users.');
-      return;
-    }
-    if (userForm.password && userForm.password.length < 8) {
-      setUserFormError('Password must be at least 8 characters.');
-      return;
-    }
-
+  const handleUserSubmit = async (payload: Record<string, string>) => {
     setUserFormSaving(true);
     setUserFormError('');
-
-    const payload: Record<string, string> = { email, first_name: firstName, last_name: lastName, role };
-    if (userFormMode === 'create') payload.username = username;
-    if (userForm.password) payload.password = userForm.password;
-
     try {
       if (userFormMode === 'create') {
         await apiFetch<User>('/api/users/', { method: 'POST', body: JSON.stringify(payload) });
@@ -296,19 +221,26 @@ export default function SettingsPage() {
   };
 
   // Backup ----------------------------------------------------------------
+  const handleBackupPathField = (value: string) => {
+    setStore((current) => ({ ...current, backup_path: value }));
+    setBackupSaved('');
+    setBackupError('');
+  };
+
   const handleSaveBackupPath = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setStoreSaving(true);
-    setStoreError('');
-    setStoreSaved('');
+    setBackupError('');
+    setBackupSaved('');
     try {
       await apiFetch<BusinessInfo>('/api/business/', {
         method: 'PATCH',
         body: JSON.stringify({ backup_path: store.backup_path }),
       });
-      setStoreSaved('Backup path saved.');
+      setSavedBackupPath(store.backup_path);
+      setBackupSaved('Backup path saved.');
     } catch (err) {
-      setStoreError(err instanceof ApiError ? err.message : 'Failed to save backup path');
+      setBackupError(err instanceof ApiError ? err.message : 'Failed to save backup path');
     } finally {
       setStoreSaving(false);
     }
@@ -317,7 +249,17 @@ export default function SettingsPage() {
   const handleBackupNow = async () => {
     setBackupState('running');
     setBackupMessage('');
+    setBackupSaved('');
     try {
+      // Persist an unsaved backup path before triggering so the manual backup
+      // and any later session-close backup write to the same destination.
+      if (store.backup_path !== savedBackupPath) {
+        await apiFetch<BusinessInfo>('/api/business/', {
+          method: 'PATCH',
+          body: JSON.stringify({ backup_path: store.backup_path }),
+        });
+        setSavedBackupPath(store.backup_path);
+      }
       const data = await apiFetch<{ path: string }>('/api/backups/trigger/', {
         method: 'POST',
         body: JSON.stringify({ path: store.backup_path }),
@@ -552,6 +494,7 @@ export default function SettingsPage() {
                           type="button"
                           className="mm-btn mm-btn--sm mm-btn--ghost"
                           onClick={() => openEditUser(user)}
+                          aria-label={`Edit ${user.name}`}
                         >
                           Edit
                         </button>
@@ -560,6 +503,7 @@ export default function SettingsPage() {
                           className="mm-btn mm-btn--sm mm-btn--danger"
                           onClick={() => void handleDeleteUser(user)}
                           disabled={deletingId === user.id || user.id === currentUserId}
+                          aria-label={`Delete ${user.name}`}
                         >
                           {deletingId === user.id
                             ? 'Deleting...'
@@ -609,7 +553,7 @@ export default function SettingsPage() {
                 type="text"
                 name="backup_path"
                 value={store.backup_path}
-                onChange={(event) => handleStoreField('backup_path', event.target.value)}
+                onChange={(event) => handleBackupPathField(event.target.value)}
                 placeholder="/backup"
                 autoComplete="off"
                 disabled={storeLoading}
@@ -618,14 +562,14 @@ export default function SettingsPage() {
             <p className="mm-hint settings-hint">
               Manual trigger + auto at session close. Keeps last 7.
             </p>
-            {storeError && (
+            {backupError && (
               <p className="mm-alert mm-alert--danger settings-notice" role="alert">
-                {storeError}
+                {backupError}
               </p>
             )}
-            {storeSaved && (
+            {backupSaved && (
               <p className="mm-alert mm-alert--success settings-notice" role="status">
-                {storeSaved}
+                {backupSaved}
               </p>
             )}
             <div className="settings-row settings-backup-actions">
@@ -686,139 +630,15 @@ export default function SettingsPage() {
       </div>
 
       {userFormMode !== 'closed' && (
-        <div
-          className="mm-modal-backdrop"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) closeUserForm();
-          }}
-        >
-          <div
-            className="mm-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="settings-user-form-title"
-          >
-            <header className="mm-modal-header">
-              <h2 id="settings-user-form-title">
-                {userFormMode === 'create' ? 'New user' : 'Edit user'}
-              </h2>
-              <button
-                type="button"
-                className="mm-modal-close"
-                aria-label="Close"
-                onClick={closeUserForm}
-              >
-                &times;
-              </button>
-            </header>
-            <form className="mm-modal-body" onSubmit={handleUserSubmit}>
-              {userFormError && (
-                <p className="mm-alert mm-alert--danger" role="alert">
-                  {userFormError}
-                </p>
-              )}
-              <label className="mm-field">
-                <span className="mm-label">Username</span>
-                <input
-                  className="mm-input"
-                  type="text"
-                  value={userForm.username}
-                  onChange={(event) => setUserForm((c) => ({ ...c, username: event.target.value }))}
-                  required
-                  autoFocus
-                  maxLength={150}
-                  disabled={userFormMode === 'edit'}
-                />
-                {userFormMode === 'edit' && (
-                  <span className="mm-hint">Username cannot be changed</span>
-                )}
-              </label>
-              <label className="mm-field">
-                <span className="mm-label">Email</span>
-                <input
-                  className="mm-input"
-                  type="email"
-                  value={userForm.email}
-                  onChange={(event) => setUserForm((c) => ({ ...c, email: event.target.value }))}
-                  maxLength={254}
-                />
-              </label>
-              <div className="settings-field-row">
-                <label className="mm-field">
-                  <span className="mm-label">First name</span>
-                  <input
-                    className="mm-input"
-                    type="text"
-                    value={userForm.first_name}
-                    onChange={(event) => setUserForm((c) => ({ ...c, first_name: event.target.value }))}
-                    required
-                    maxLength={150}
-                  />
-                </label>
-                <label className="mm-field">
-                  <span className="mm-label">Last name</span>
-                  <input
-                    className="mm-input"
-                    type="text"
-                    value={userForm.last_name}
-                    onChange={(event) => setUserForm((c) => ({ ...c, last_name: event.target.value }))}
-                    maxLength={150}
-                    placeholder="Optional"
-                  />
-                </label>
-              </div>
-              <label className="mm-field">
-                <span className="mm-label">Role</span>
-                <select
-                  className="mm-select"
-                  value={userForm.role}
-                  onChange={(event) => setUserForm((c) => ({ ...c, role: event.target.value }))}
-                  required
-                >
-                  {ROLES.map((role) => (
-                    <option key={role} value={role}>
-                      {role.charAt(0).toUpperCase() + role.slice(1)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="mm-field">
-                <span className="mm-label">Password</span>
-                <input
-                  className="mm-input"
-                  type="password"
-                  value={userForm.password}
-                  onChange={(event) => setUserForm((c) => ({ ...c, password: event.target.value }))}
-                  minLength={8}
-                  maxLength={128}
-                  placeholder={
-                    userFormMode === 'edit'
-                      ? 'Leave blank to keep current password'
-                      : 'At least 8 characters'
-                  }
-                  required={userFormMode === 'create'}
-                />
-              </label>
-              <footer className="mm-modal-footer">
-                <button
-                  type="button"
-                  className="mm-btn mm-btn--ghost"
-                  onClick={closeUserForm}
-                  disabled={userFormSaving}
-                >
-                  Cancel
-                </button>
-                <button type="submit" className="mm-btn mm-btn--primary" disabled={userFormSaving}>
-                  {userFormSaving
-                    ? 'Saving...'
-                    : userFormMode === 'create'
-                      ? 'Create user'
-                      : 'Save changes'}
-                </button>
-              </footer>
-            </form>
-          </div>
-        </div>
+        <UserFormModal
+          mode={userFormMode}
+          user={selectedUser}
+          saving={userFormSaving}
+          error={userFormError}
+          titleId="settings-user-form-title"
+          onSubmit={(payload) => void handleUserSubmit(payload)}
+          onClose={closeUserForm}
+        />
       )}
     </section>
   );
