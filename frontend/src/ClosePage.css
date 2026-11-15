@@ -177,6 +177,15 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Profit/Loss cell: positive value emphasized with success tones, negative
+   with error tones to make the day's result legible at a glance. */
+.close-pnl .close-summary-value {
+  color: var(--mm-success-foreground);
+}
+.close-pnl.neg .close-summary-value {
+  color: var(--mm-error-foreground);
+}
+
 .close-summary-section {
   margin-top: 18px;
 }

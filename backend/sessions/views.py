@@ -9,6 +9,7 @@ from .models import Session
 from .serializers import SessionSerializer
 from sales.models import Sale, Payment
 from sales.cash_count import calculate_totals, calculate_removal
+from sales.summary import compute_session_summary
 
 class SessionViewSet(viewsets.ModelViewSet):
     queryset = Session.objects.all()
@@ -58,6 +59,15 @@ class SessionViewSet(viewsets.ModelViewSet):
     def zreport(self, request, pk=None):
         session = self.get_object()
         return Response(SessionSerializer(session).data)
+
+    @action(detail=True, methods=['get'])
+    def summary(self, request, pk=None):
+        """Return the pandas-computed revenue/profit-loss summary for a session."""
+        session = self.get_object()
+        try:
+            return Response(compute_session_summary(session.id))
+        except Session.DoesNotExist:
+            return Response({'detail': 'session not found'}, status=404)
 
     @action(detail=True, methods=['post'])
     def removal(self, request, pk=None):
