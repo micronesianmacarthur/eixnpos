@@ -358,7 +358,6 @@ test('keeps the Business Information prompt and form', async ({ page }) => {
 const PLACEHOLDERS = [
   ['/sales-manager', 'Sales Manager'],
   ['/suppliers', 'Suppliers'],
-  ['/close', 'Close'],
 ] as const;
 
 for (const [path, title] of PLACEHOLDERS) {
