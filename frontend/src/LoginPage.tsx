@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { apiFetch, ApiError } from './api';
+import type { LoginResponse } from './authContext';
 import './AuthPages.css';
 
 function LoginPage() {
@@ -9,17 +10,21 @@ function LoginPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
+  const notice = (location.state as { notice?: string } | null)?.notice;
 
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setLoading(true);
     setError('');
     try {
-      await apiFetch('/api/auth/login/', {
+      const data = await apiFetch<LoginResponse>('/api/auth/login/', {
         method: 'POST',
         body: JSON.stringify({ username, password }),
       });
-      navigate('/', { replace: true });
+      const changeRequired =
+        data.password_change_required ?? data.must_change_password ?? false;
+      navigate(changeRequired ? '/change-password' : '/', { replace: true });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Network error');
     } finally {
@@ -43,6 +48,12 @@ function LoginPage() {
           <h1 className="auth-title">Welcome back</h1>
           <p className="auth-subtitle">Sign in to open your point of sale.</p>
         </header>
+
+        {notice && (
+          <div className="mm-alert mm-alert--info auth-alert" role="status">
+            {notice}
+          </div>
+        )}
 
         {error && (
           <div className="mm-alert mm-alert--danger auth-alert" role="alert">
