@@ -8,7 +8,7 @@ import { Navigate, Outlet } from 'react-router-dom';
 import { apiFetch, ApiError } from './api';
 import { AuthContext, useAuth, type MeResponse, type Role } from './authContext';
 
-export function AuthProvider({ children }: { children: ReactNode }) {
+export function AuthProvider() {
   const [me, setMe] = useState<MeResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -38,12 +38,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider value={{ me, loading, error, refresh }}>
-      {children}
+      <Outlet />
     </AuthContext.Provider>
   );
 }
 
-export function RequireAuth() {
+function AuthGate({ children }: { children: ReactNode }) {
   const { me, loading, error, refresh } = useAuth();
 
   if (loading) {
@@ -63,7 +63,57 @@ export function RequireAuth() {
     return <Navigate to="/login" replace />;
   }
 
+  return <>{children}</>;
+}
+
+export function RequireAuth() {
+  return (
+    <AuthGate>
+      <ForcedAuthOutlet />
+    </AuthGate>
+  );
+}
+
+/** Renders the protected shell only after the forced password change is done. */
+function ForcedAuthOutlet() {
+  const { me } = useAuth();
+
+  if (!me) {
+    return <Navigate to="/login" replace />;
+  }
+
+  if (me.must_change_password) {
+    return <Navigate to="/change-password" replace />;
+  }
+
   return <Outlet />;
+}
+
+/**
+ * The change-password screen. Only an authenticated user who still has the
+ * forced-change flag set may see it; anyone else is sent to the login screen
+ * (logged out) or the dashboard (flag already cleared).
+ */
+export function RequireForcedPasswordChange({ children }: { children: ReactNode }) {
+  return (
+    <AuthGate>
+      <ForcedChangeOutlet>{children}</ForcedChangeOutlet>
+    </AuthGate>
+  );
+}
+
+function ForcedChangeOutlet({ children }: { children: ReactNode }) {
+  const { me } = useAuth();
+
+  if (!me) {
+    return <Navigate to="/login" replace />;
+  }
+
+  if (!me.must_change_password) {
+    return <Navigate to="/" replace />;
+  }
+
+  return <>{children}</>;
 }
 
 export function RequireRole({ roles }: { roles: Role[] }) {
