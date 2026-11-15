@@ -10,6 +10,7 @@ import SalesPage from './SalesPage';
 import InventoryPage from './InventoryPage';
 import ProductPage from './ProductPage';
 import SettingsPage from './SettingsPage';
+import ClosePage from './ClosePage';
 import { AuthProvider, RequireAuth, RequireRole } from './auth';
 
 function AppRouter() {
@@ -49,15 +50,7 @@ function AppRouter() {
                 }
               />
               <Route path="inventory" element={<InventoryPage />} />
-              <Route
-                path="close"
-                element={
-                  <PlaceholderPage
-                    title="Close"
-                    description="Count the drawer and close the current session with a Z-report."
-                  />
-                }
-              />
+              <Route path="close" element={<ClosePage />} />
 
               <Route element={<RequireRole roles={['manager', 'admin']} />}>
                 <Route path="inventory/new" element={<ProductPage />} />
