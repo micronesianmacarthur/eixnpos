@@ -106,3 +106,21 @@ class ForcedPasswordChangeFlowTests(TestCase):
             format='json',
         )
         self.assertEqual(wrong.status_code, 403)
+
+    def test_default_credentials_stop_working_after_forced_change(self):
+        """After the forced change, the seeded admin/admin login must fail."""
+        self._login()
+        changed = self.client.post(
+            '/api/auth/change-password/',
+            {'current_password': 'admin', 'new_password': 'Str0ng!Passw0rd'},
+            format='json',
+        )
+        self.assertEqual(changed.status_code, 200)
+
+        self.client.logout()
+        stale = self._login(password='admin')
+        self.assertEqual(stale.status_code, 400)
+
+        fresh = self._login(password='Str0ng!Passw0rd')
+        self.assertEqual(fresh.status_code, 200)
+        self.assertFalse(fresh.data['password_change_required'])
