@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.http import HttpResponse
 from django.utils import timezone
+from django.db import IntegrityError
 from django.db.models import Sum
 from decimal import Decimal
 from .models import Session
@@ -29,6 +30,39 @@ class SessionViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(cashier=self.request.user)
+
+    def create(self, request, *args, **kwargs):
+        """Start a shift, rejecting the request if one is already open."""
+        if Session.objects.filter(status=Session.STATUS_OPEN).exists():
+            return Response(
+                {'detail': 'An open session already exists. Close it before starting a new one.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        try:
+            return super().create(request, *args, **kwargs)
+        except IntegrityError:
+            # Concurrent requests can both pass the check just above; the DB
+            # partial-unique constraint (only_one_open_session) guarantees only
+            # one open row, so treat this as the same 409 conflict.
+            return Response(
+                {'detail': 'An open session already exists. Close it before starting a new one.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+    @action(detail=False, methods=['get'])
+    def current(self, request):
+        """Report the current cashier's open session, or that none is open."""
+        session = Session.objects.filter(
+            cashier=request.user, status=Session.STATUS_OPEN
+        ).order_by('-opened_at').first()
+        if session is None:
+            return Response({'open': False})
+        return Response({
+            'open': True,
+            'sessionId': str(session.id),
+            'startedAt': session.opened_at.isoformat(),
+            'startingCash': str(session.starting_cash),
+        })
 
     @action(detail=True, methods=['post'])
     def close(self, request, pk=None):
