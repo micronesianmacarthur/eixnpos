@@ -140,6 +140,10 @@ async function installApiMocks(
       await route.fulfill(json(AUTH_ME));
       return;
     }
+    if (path === '/api/sessions/current/') {
+      await route.fulfill(json({ open: true }));
+      return;
+    }
     if (path === '/api/business/') {
       await route.fulfill(json(BUSINESS_INFO));
       return;
