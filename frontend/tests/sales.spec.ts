@@ -152,6 +152,20 @@ async function installApiMocks(
       await route.fulfill(json([CUSTOMER]));
       return;
     }
+    // RequireOpenSession checks for an open shift on mount; report no open
+    // session so the "Start your shift" modal appears, then accept the start
+    // POST so the Sales screen renders (see openSales below).
+    if (path === '/api/sessions/current/') {
+      await route.fulfill(json({ open: false }));
+      return;
+    }
+    if (path === '/api/sessions/' && method === 'POST') {
+      const payload = JSON.parse(request.postData() ?? '{}') as Record<string, unknown>;
+      await route.fulfill(
+        json({ id: 7, status: 'open', starting_cash: payload.starting_cash ?? '0.00' }, 201),
+      );
+      return;
+    }
     if (path === '/api/sales/' && method === 'POST') {
       await route.fulfill(json(SALE));
       return;
@@ -193,6 +207,16 @@ async function openSales(
   const monitor = await installApiMocks(page, opts);
   await page.goto(`${BASE_URL}/sales`);
   await expect(page.locator('.app-shell')).toBeVisible();
+
+  // With no open session the RequireOpenSession guard shows the start-shift
+  // modal first; start a session so the Sales screen renders.
+  const dialog = page.getByRole('dialog', { name: 'Start your shift' });
+  if (await dialog.isVisible()) {
+    await page.getByLabel('Starting cash').fill('100.00');
+    await page.getByRole('button', { name: /Start shift/i }).click();
+    await expect(dialog).toHaveCount(0);
+  }
+
   await page.evaluate(async () => {
     await document.fonts.ready;
   });
