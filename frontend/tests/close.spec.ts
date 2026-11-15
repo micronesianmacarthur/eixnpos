@@ -118,6 +118,15 @@ async function installApiMocks(page: Page): Promise<NetworkMonitor> {
       );
       return;
     }
+    const sessionZreport = /^\/api\/sessions\/(\d+)\/zreport\/$/.exec(path);
+    if (sessionZreport) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/pdf',
+        body: '%PDF-1.4 test zreport',
+      });
+      return;
+    }
     if (path === '/api/sales/') {
       await route.fulfill(json([]));
       return;
@@ -167,6 +176,22 @@ test('shows the three flow sections in order', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Count cash' })).toBeVisible();
   await expect(steps.nth(0)).toHaveAttribute('aria-current', 'step');
 
+  expectNoNetworkIssues(monitor);
+});
+
+test('provides a print link to the Z-report PDF after close', async ({ page, context }) => {
+  const monitor = await openClose(page);
+
+  await page.getByRole('button', { name: 'Continue to Summary' }).click();
+  await page.getByRole('button', { name: 'Continue to Close & Backup' }).click();
+  await page.getByRole('button', { name: 'Close Session & Print Z-Report' }).click();
+  await expect(page.locator('.close-closed-notice')).toBeVisible();
+
+  const popupPromise = context.waitForEvent('page');
+  await page.getByRole('button', { name: 'Print Z-report (PDF)' }).click();
+  const popup = await popupPromise;
+  await expect.poll(() => popup.url()).toContain('/api/sessions/7/zreport/');
+  await popup.close();
   expectNoNetworkIssues(monitor);
 });
 

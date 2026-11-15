@@ -140,15 +140,14 @@ class SessionApiTests(TestCase):
             backups = glob.glob(os.path.join(destination, 'backup_*.json'))
             self.assertEqual(len(backups), 1)
 
-    def test_zreport_returns_session_totals(self):
+    def test_zreport_returns_pdf(self):
         session = self.make_session(starting_cash=Decimal('25.00'))
 
         response = self.client.get(f'/api/sessions/{session.id}/zreport/')
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data['id'], session.id)
-        self.assertEqual(Decimal(response.data['starting_cash']), Decimal('25.00'))
-        self.assertEqual(response.data['status'], Session.STATUS_OPEN)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertTrue(response.content.startswith(b'%PDF'))
 
     def test_removal_uses_requested_available_counts(self):
         session = self.make_session(cash_counts={'twenties': 2, 'tens': 1})

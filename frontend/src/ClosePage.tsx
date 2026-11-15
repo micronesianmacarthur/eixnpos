@@ -431,7 +431,16 @@ export default function ClosePage() {
 
               {closed ? (
                 <div className="mm-alert mm-alert--success close-closed-notice">
-                  Session closed. The Z-report was saved and a backup was triggered.
+                  <div>Session closed. The Z-report was saved and a backup was triggered.</div>
+                  <button
+                    type="button"
+                    className="mm-btn close-zreport-btn"
+                    onClick={() => {
+                      window.open(`/api/sessions/${session.id}/zreport/`, '_blank');
+                    }}
+                  >
+                    Print Z-report (PDF)
+                  </button>
                 </div>
               ) : (
                 <form onSubmit={closeSession}>
