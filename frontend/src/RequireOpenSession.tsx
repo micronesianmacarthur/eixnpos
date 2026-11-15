@@ -9,11 +9,13 @@ import { useAuth } from './authContext';
  *
  * On mount it asks the backend `GET /api/sessions/current/` whether an open
  * shift already exists:
- *   - open session   -> redirect to the home/dashboard route `/`
- *                       (the Sales screen must not render while a shift is open).
+ *   - open session   -> render the Sales screen immediately (a cashier with an
+ *                       open shift must be able to keep taking orders).
  *   - no open session -> show a "start your shift" modal that collects the
  *                       starting cash and POSTs it to `/api/sessions/`; only
- *                       then does the Sales screen render.
+ *                       then does the Sales screen render. If the cashier
+ *                       dismisses the modal without completing the starting-cash
+ *                       set-up, redirect to the home/dashboard route `/`.
  *   - request failure -> never block or trap the user: fall through and render
  *                       the Sales screen with a non-fatal banner.
  */
@@ -87,7 +89,9 @@ function RequireOpenSession() {
       try {
         const data = await apiFetch<CurrentSession>('/api/sessions/current/');
         if (cancelled) return;
-        setPhase(data.open === true ? 'redirecting' : 'needs-session');
+        // An open session means the cashier is mid-shift and must be able to
+        // keep using the Sales screen — render it, do not redirect.
+        setPhase(data.open === true ? 'ready' : 'needs-session');
       } catch (error) {
         // A transient failure (403/404/network) must not redirect or trap the
         // user. Fall through to the Sales screen with a non-fatal banner.
@@ -141,10 +145,34 @@ function RequireOpenSession() {
 
   if (phase === 'needs-session') {
     return (
-      <div className="mm-modal-backdrop">
-        <div className="mm-modal" role="dialog" aria-modal="true" aria-labelledby="start-shift-title">
+      <div
+        className="mm-modal-backdrop"
+        onMouseDown={(event) => {
+          // Dismissing without completing the starting-cash set-up sends the
+          // cashier back to the dashboard rather than trapping them on /sales.
+          if (event.target === event.currentTarget) setPhase('redirecting');
+        }}
+      >
+        <div
+          className="mm-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="start-shift-title"
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') setPhase('redirecting');
+          }}
+        >
           <header className="mm-modal-header">
             <h2 id="start-shift-title">Start your shift</h2>
+            <button
+              type="button"
+              className="mm-modal-close"
+              aria-label="Close"
+              onClick={() => setPhase('redirecting')}
+              disabled={starting}
+            >
+              &times;
+            </button>
           </header>
           <form
             className="mm-modal-body"
