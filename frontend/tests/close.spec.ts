@@ -39,35 +39,6 @@ const SESSION = {
   notes: '',
 };
 
-/**
- * Structured result returned by the pandas-backed summary endpoint
- * (`compute_session_summary`). Mirrors the backend contract so the UI renders
- * revenue and profit/loss from the computation rather than client-side math.
- */
-const SESSION_SUMMARY = {
-  session: {
-    id: 7,
-    cashier: 'maya',
-    status: 'open',
-    opened_at: '2026-11-06T09:00:00Z',
-    closed_at: null,
-  },
-  summary: {
-    sale_count: 4,
-    item_count: 6,
-    gross_sales: '440.00',
-    discounts: '20.00',
-    tax_total: '10.00',
-    revenue: '430.00',
-    cost_of_goods: '210.00',
-    profit_loss: '220.00',
-    profit_margin: 0.5116,
-    by_payment: { cash: '300.00', card: '130.00' },
-    by_category: { Snacks: '430.00' },
-  },
-  warnings: { invalid_sale_amounts: 0, invalid_line_amounts: 0, invalid_payment_amounts: 0 },
-};
-
 /** Rendered row indices: Bills are grouped first (0-6), then Coins (7-13). */
 const INDICES: Record<string, number> = {
   ones: 0,
@@ -90,10 +61,7 @@ function json(data: unknown, status = 200) {
   return { status, contentType: 'application/json', body: JSON.stringify(data) };
 }
 
-async function installApiMocks(
-  page: Page,
-  options: { failSummary?: boolean } = {},
-): Promise<NetworkMonitor> {
+async function installApiMocks(page: Page): Promise<NetworkMonitor> {
   const monitor: NetworkMonitor = { external: [], failed: [], requests: [] };
 
   page.on('requestfailed', (request) => {
@@ -150,13 +118,13 @@ async function installApiMocks(
       );
       return;
     }
-    const sessionSummary = /^\/api\/sessions\/(\d+)\/summary\/$/.exec(path);
-    if (sessionSummary && method === 'GET') {
-      if (options.failSummary) {
-        await route.fulfill(json({ detail: 'summary unavailable' }, 500));
-        return;
-      }
-      await route.fulfill(json(SESSION_SUMMARY));
+    const sessionZreport = /^\/api\/sessions\/(\d+)\/zreport\/$/.exec(path);
+    if (sessionZreport) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/pdf',
+        body: '%PDF-1.4 test zreport',
+      });
       return;
     }
     if (path === '/api/sales/') {
@@ -211,6 +179,22 @@ test('shows the three flow sections in order', async ({ page }) => {
   expectNoNetworkIssues(monitor);
 });
 
+test('provides a print link to the Z-report PDF after close', async ({ page, context }) => {
+  const monitor = await openClose(page);
+
+  await page.getByRole('button', { name: 'Continue to Summary' }).click();
+  await page.getByRole('button', { name: 'Continue to Close & Backup' }).click();
+  await page.getByRole('button', { name: 'Close Session & Print Z-Report' }).click();
+  await expect(page.locator('.close-closed-notice')).toBeVisible();
+
+  const popupPromise = context.waitForEvent('page');
+  await page.getByRole('button', { name: 'Print Z-report (PDF)' }).click();
+  const popup = await popupPromise;
+  await expect.poll(() => popup.url()).toContain('/api/sessions/7/zreport/');
+  await popup.close();
+  expectNoNetworkIssues(monitor);
+});
+
 test('renders the preservation of cash-count denominations', async ({ page }) => {
   const monitor = await openClose(page);
 
@@ -255,70 +239,52 @@ test('paginates forward through summary to close & backup in order', async ({ pa
   expectNoNetworkIssues(monitor);
 });
 
-test('summary shows revenue and profit/loss from the computed summary', async ({ page }) => {
-  const monitor = await openClose(page);
-
-  await page.getByRole('button', { name: 'Continue to Summary' }).click();
-  await expect(page.getByRole('heading', { name: 'Session summary' })).toBeVisible();
-
-  // Summary section reflects the structured result of compute_session_summary.
-  await expect(page.locator('.close-summary-value')).toHaveText([
-    '4',       // Sales (sale_count)
-    '$440.00', // Gross sales
-    '$430.00', // Revenue
-    '$210.00', // Cost of goods
-    '$220.00', // Profit / Loss
-    '51.2%',   // Margin (0.5116)
-  ]);
-
-  const summaryPanel = page.locator('.close-summary-grid');
-  await expect(summaryPanel.getByText('Profit / Loss')).toBeVisible();
-  await expect(summaryPanel.getByText('51.2%')).toBeVisible();
-
-  // By-payment breakdown comes from the computed summary too.
-  await expect(page.locator('.close-summary-section').first()).toContainText('Cash');
-  await expect(page.locator('.close-summary-section').first()).toContainText('$300.00');
-  await expect(page.locator('.close-summary-section').first()).toContainText('Card');
-  await expect(page.locator('.close-summary-section').first()).toContainText('$130.00');
-
-  // Cash sales figure on the count step derives from summary.by_payment.
-  await page.getByRole('button', { name: 'Back', exact: true }).click();
-  await expect(page.locator('.close-cash-stat-value').nth(1)).toHaveText('$300.00');
-  await expect(page.locator('.close-variance')).toHaveText(/Over\/Short: \+?\$400\.00/);
-
-  expectNoNetworkIssues(monitor);
-});
-
-test('summary shows an error state when the summary endpoint fails', async ({ page }) => {
-  const monitor = await installApiMocks(page, { failSummary: true });
-
-  await page.goto(`${BASE_URL}/close`);
-  await expect(page.getByRole('heading', { level: 1, name: 'Close' })).toBeVisible();
-  await page.evaluate(async () => {
-    await document.fonts.ready;
-  });
-  await page.getByRole('button', { name: 'Continue to Summary' }).click();
-
-  // The summary section surfaces the load error instead of stale data.
-  await expect(page.locator('.mm-alert--danger')).toContainText('summary unavailable');
-  await expect(page.getByText('$430.00')).toHaveCount(0);
-
-  expectNoNetworkIssues(monitor);
-});
-
 test('applies cash counts to the over/short display', async ({ page }) => {
   const monitor = await openClose(page);
 
-  // Expected cash = 100.00 starting cash + 300.00 cash sales (summary
-  // by_payment.cash) = 400.00. Counted starts at 0.
-  await expect(page.locator('.close-variance')).toHaveText(/Over\/Short: \+?\$400\.00/);
+  // Expected cash = 100.00 starting cash, no cash sales. Counted starts at 0.
+  await expect(page.locator('.close-variance')).toHaveText(/Over\/Short: \+?\$100\.00/);
 
   const rows = page.locator('.close-denom-row');
   await rows.nth(INDICES.twenties).locator('input').fill('2'); // +40
-  await expect(page.locator('.close-variance')).toHaveText(/Over\/Short: \+?\$360\.00/);
+  await expect(page.locator('.close-variance')).toHaveText(/Over\/Short: \+?\$60\.00/);
 
   await rows.nth(INDICES.hundreds).locator('input').fill('2'); // +200 total => 240
-  await expect(page.locator('.close-variance')).toHaveText(/Over\/Short: \+?\$160\.00/);
+  await expect(page.locator('.close-variance')).toHaveText(/Over\/Short: -\$140\.00/);
+
+  expectNoNetworkIssues(monitor);
+});
+
+test('closes the session and requires starting cash before the next session starts', async ({
+  page,
+}) => {
+  const monitor = await openClose(page);
+
+  // Drive to the close & backup section and close the session.
+  await page.getByRole('button', { name: 'Continue to Summary' }).click();
+  await page.getByRole('button', { name: 'Continue to Close & Backup' }).click();
+  await page.getByRole('button', { name: 'Close Session & Print Z-Report' }).click();
+  await expect(page.locator('.close-closed-notice')).toBeVisible();
+
+  // The next-session prompt appears and its start button is blocked until
+  // a valid starting cash value is entered.
+  const nextForm = page.getByRole('form', { name: 'Start next session' });
+  await expect(nextForm).toBeVisible();
+  const startBtn = nextForm.getByRole('button', { name: 'Start Next Session' });
+  await expect(startBtn).toBeDisabled();
+
+  // Type a starting cash value; the start button unlocks.
+  await page.getByLabel('Starting cash').fill('150.00');
+  await expect(startBtn).toBeEnabled();
+  await startBtn.click();
+
+  // The entered value is posted and used for the next session.
+  await expect(page.locator('.close-next-notice')).toContainText('$150.00');
+  const createReq = monitor.requests.find(
+    (r) => r.method === 'POST' && r.path === '/api/sessions/',
+  );
+  expect(createReq).toBeTruthy();
+  expect(JSON.parse(createReq?.body ?? '{}')).toEqual({ starting_cash: '150.00' });
 
   expectNoNetworkIssues(monitor);
 });

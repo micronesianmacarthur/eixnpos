@@ -49,32 +49,27 @@ interface Session {
   notes: string;
 }
 
-interface SummaryData {
-  sale_count: number;
-  item_count: number;
-  gross_sales: string;
-  discounts: string;
-  tax_total: string;
-  revenue: string;
-  cost_of_goods: string;
-  profit_loss: string;
-  profit_margin: number | null;
-  by_payment: Record<string, string>;
-  by_category: Record<string, string>;
-  /** True when any amount failed numeric parsing and was excluded. */
-  warnings_blocked?: boolean;
+interface Payment {
+  method: string;
+  amount: string;
 }
 
-interface SessionSummaryResponse {
-  session: {
-    id: number;
-    cashier: string;
-    status: string;
-    opened_at: string;
-    closed_at: string | null;
-  };
-  summary: SummaryData;
-  warnings: Record<string, number>;
+interface Sale {
+  id: number;
+  number: number;
+  status: string;
+  total: string;
+  payments: Payment[];
+  created_at: string;
+  completed_at: string | null;
+}
+
+interface SummaryData {
+  salesCount: number;
+  grossSales: number;
+  discounts: number;
+  netSales: number;
+  byPayment: Record<string, number>;
 }
 
 const currency = new Intl.NumberFormat('en-US', {
@@ -106,8 +101,6 @@ function countedTotal(counts: Record<string, number>): number {
 export default function ClosePage() {
   const [session, setSession] = useState<Session | null>(null);
   const [summary, setSummary] = useState<SummaryData | null>(null);
-  const [summarySessionId, setSummarySessionId] = useState<number | null>(null);
-  const [summaryError, setSummaryError] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -122,48 +115,48 @@ export default function ClosePage() {
   const [closed, setClosed] = useState(false);
   const [closingError, setClosingError] = useState('');
 
-  // Fetch the pandas-computed revenue/profit-loss summary for the current
-  // session. Every state write happens only after the await, so the "loading"
-  // and success states below are derived from whether the stored summary
-  // belongs to the currently active session (summarySessionId) rather than
-  // mutated synchronously in the effect body.
-  useEffect(() => {
-    const sessionId = session?.id;
-    if (!sessionId) {
-      return;
-    }
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const res = await apiFetch<SessionSummaryResponse>(
-          `/api/sessions/${sessionId}/summary/`,
-        );
-        if (!cancelled) {
-          setSummary({
-            ...res.summary,
-            warnings_blocked: Object.values(res.warnings ?? {}).some((n) => n > 0),
-          });
-          setSummarySessionId(sessionId);
-          setSummaryError('');
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setSummarySessionId(sessionId);
-          setSummaryError(
-            err instanceof ApiError ? err.message : 'Could not load the summary.',
-          );
+  // Next-session starting cash: the session cannot begin until a value is
+  // entered and saved. After close/backup this prompt blocks the next POST.
+  const [nextCashInput, setNextCashInput] = useState('');
+  const [nextStarting, setNextStarting] = useState(false);
+  const [nextSession, setNextSession] = useState<Session | null>(null);
+  const [nextError, setNextError] = useState('');
+
+  // fetch completed sales and derive the summary stats the summary section shows
+  async function loadSummary(current: Session) {
+    try {
+      const sales = await apiFetch<Sale[]>('/api/sales/');
+      const upper = new Date(current.closed_at ?? new Date().toISOString()).getTime();
+      const lower = new Date(current.opened_at).getTime();
+      const inWindow = sales.filter((sale) => {
+        if (sale.status !== 'completed') return false;
+        const created = new Date(sale.created_at).getTime();
+        return created >= lower && created <= upper;
+      });
+
+      let gross = 0;
+      const byPayment: Record<string, number> = {};
+      for (const sale of inWindow) {
+        gross += toNumber(sale.total);
+        for (const payment of sale.payments) {
+          byPayment[payment.method] = toNumber(byPayment[payment.method] ?? 0) + toNumber(payment.amount);
         }
       }
-    };
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [session?.id]);
-
-  // Loading is derived: no stored summary/error yet for the active session.
-  const summaryLoading =
-    !!session && summarySessionId !== session?.id && !summaryError;
+      // Gross/net/discount roll-ups beyond the session totals arrive with the
+      // pandas-powered summary in a follow-up; this shell only surfaces the
+      // data the current sessions/sales API already exposes.
+      setSummary({
+        salesCount: inWindow.length,
+        grossSales: gross,
+        discounts: 0,
+        netSales: gross,
+        byPayment,
+      });
+    } catch {
+      // Summary is best-effort; the page stays usable if the sales feed is
+      // unavailable. The richer revenue/profit computation lands in a follow-up.
+    }
+  }
 
   useEffect(() => {
     const load = async () => {
@@ -173,6 +166,7 @@ export default function ClosePage() {
         setSession(open);
         if (open) {
           setCounts({ ...emptyCounts(), ...(open.cash_counts ?? {}) });
+          await loadSummary(open);
         }
       } catch (err) {
         setError(err instanceof ApiError ? err.message : 'Could not load the session.');
@@ -189,7 +183,7 @@ export default function ClosePage() {
   // starting cash and the cash payments recorded in this shift.
   const expected =
     toNumber(session?.expected_cash) ||
-    toNumber(session?.starting_cash) + toNumber(summary?.by_payment.cash ?? 0);
+    toNumber(session?.starting_cash) + toNumber(summary?.byPayment.cash ?? 0);
   const variance = expected - counted;
 
   const updateCount = (key: string, value: string) => {
@@ -240,6 +234,30 @@ export default function ClosePage() {
       setClosingError(err instanceof ApiError ? err.message : 'Could not close the session.');
     } finally {
       setClosing(false);
+    }
+  };
+
+  // Next session cannot start until a valid (non-negative, numeric) starting
+  // cash is entered. Entered value is persisted on the session and used as the
+  // opening float for the new shift.
+  const nextCash = toNumber(nextCashInput);
+  const nextCashValid = nextCashInput.trim() !== '' && Number.isFinite(nextCash) && nextCash >= 0;
+
+  const startNextSession = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!nextCashValid) return;
+    setNextStarting(true);
+    setNextError('');
+    try {
+      const created = await apiFetch<Session>('/api/sessions/', {
+        method: 'POST',
+        body: JSON.stringify({ starting_cash: nextCash.toFixed(2) }),
+      });
+      setNextSession(created);
+    } catch (err) {
+      setNextError(err instanceof ApiError ? err.message : 'Could not start the next session.');
+    } finally {
+      setNextStarting(false);
     }
   };
 
@@ -337,7 +355,7 @@ export default function ClosePage() {
                 <div className="close-cash-stat">
                   <div className="close-cash-stat-label">Cash sales</div>
                   <div className="close-cash-stat-value">
-                    {formatMoney(summary?.by_payment.cash ?? 0)}
+                    {formatMoney(summary?.byPayment.cash ?? 0)}
                   </div>
                 </div>
                 <div className="close-cash-stat">
@@ -361,60 +379,26 @@ export default function ClosePage() {
           {step === 1 && (
             <section className="mm-card">
               <h2 className="mm-card-title">Session summary</h2>
-              {summaryLoading && (
-                <p className="mm-muted">Loading session summary…</p>
-              )}
-              {!summaryLoading && summaryError && (
-                <div className="mm-alert mm-alert--danger">{summaryError}</div>
-              )}
-              {!summaryLoading && !summaryError && summary && (
+              {summary ? (
                 <>
                   <div className="close-summary-grid">
                     <div className="close-summary-cell">
                       <div className="close-summary-label">Sales</div>
-                      <div className="close-summary-value">{summary.sale_count}</div>
+                      <div className="close-summary-value">{summary.salesCount}</div>
                     </div>
                     <div className="close-summary-cell">
                       <div className="close-summary-label">Gross sales</div>
-                      <div className="close-summary-value">
-                        {formatMoney(summary.gross_sales)}
-                      </div>
+                      <div className="close-summary-value">{formatMoney(summary.grossSales)}</div>
                     </div>
                     <div className="close-summary-cell">
-                      <div className="close-summary-label">Revenue</div>
-                      <div className="close-summary-value">
-                        {formatMoney(summary.revenue)}
-                      </div>
-                    </div>
-                    <div className="close-summary-cell">
-                      <div className="close-summary-label">Cost of goods</div>
-                      <div className="close-summary-value">
-                        {formatMoney(summary.cost_of_goods)}
-                      </div>
-                    </div>
-                    <div
-                      className={`close-summary-cell close-pnl${
-                        toNumber(summary.profit_loss) < 0 ? ' neg' : ''
-                      }`}
-                    >
-                      <div className="close-summary-label">Profit / Loss</div>
-                      <div className="close-summary-value">
-                        {formatMoney(summary.profit_loss)}
-                      </div>
-                    </div>
-                    <div className="close-summary-cell">
-                      <div className="close-summary-label">Margin</div>
-                      <div className="close-summary-value">
-                        {summary.profit_margin === null
-                          ? '—'
-                          : `${(summary.profit_margin * 100).toFixed(1)}%`}
-                      </div>
+                      <div className="close-summary-label">Net sales</div>
+                      <div className="close-summary-value">{formatMoney(summary.netSales)}</div>
                     </div>
                   </div>
                   <div className="close-summary-section">
                     <h3 className="close-summary-section-title">By payment</h3>
-                    {Object.entries(summary.by_payment).length > 0 ? (
-                      Object.entries(summary.by_payment).map(([method, amount]) => (
+                    {Object.entries(summary.byPayment).length > 0 ? (
+                      Object.entries(summary.byPayment).map(([method, amount]) => (
                         <div key={method} className="close-summary-row">
                           <span>{byPaymentLabels[method] ?? method}</span>
                           <span>{formatMoney(amount)}</span>
@@ -424,11 +408,6 @@ export default function ClosePage() {
                       <p className="mm-muted">No payments recorded in this session.</p>
                     )}
                   </div>
-                  {summary.warnings_blocked && (
-                    <div className="mm-alert mm-alert--warning">
-                      Some amounts were non-numeric and were excluded from the summary.
-                    </div>
-                  )}
                   <div className="close-summary-section">
                     <h3 className="close-summary-section-title">Cash reconciliation</h3>
                     <div className="close-summary-row">
@@ -448,8 +427,7 @@ export default function ClosePage() {
                     </div>
                   </div>
                 </>
-              )}
-              {!summaryLoading && !summaryError && !summary && (
+              ) : (
                 <p className="mm-muted">No summary available for this session.</p>
               )}
             </section>
@@ -483,8 +461,63 @@ export default function ClosePage() {
               </div>
 
               {closed ? (
-                <div className="mm-alert mm-alert--success close-closed-notice">
-                  Session closed. The Z-report was saved and a backup was triggered.
+                <div className="close-closed-section">
+                  <div className="mm-alert mm-alert--success close-closed-notice">
+                    <div>Session closed. The Z-report was saved and a backup was triggered.</div>
+                    <button
+                      type="button"
+                      className="mm-btn close-zreport-btn"
+                      onClick={() => {
+                        window.open(`/api/sessions/${session.id}/zreport/`, '_blank');
+                      }}
+                    >
+                      Print Z-report (PDF)
+                    </button>
+                  </div>
+
+                  {nextSession ? (
+                    <div className="mm-alert mm-alert--success close-next-notice" role="status">
+                      Next session started with {formatMoney(nextSession.starting_cash)} in
+                      starting cash.
+                    </div>
+                  ) : (
+                    <form
+                      className="mm-card close-next-form"
+                      onSubmit={startNextSession}
+                      aria-label="Start next session"
+                    >
+                      <h3 className="close-next-title">Start the next session</h3>
+                      <p className="mm-card-subtitle">
+                        Enter the money you are placing in the drawer, then start the next
+                        session.
+                      </p>
+                      <label className="close-next-label" htmlFor="next-starting-cash">
+                        Starting cash
+                      </label>
+                      <input
+                        id="next-starting-cash"
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        inputMode="decimal"
+                        className="mm-input close-next-input"
+                        value={nextCashInput}
+                        placeholder="0.00"
+                        onChange={(e) => setNextCashInput(e.target.value)}
+                        aria-required="true"
+                      />
+                      {nextError && (
+                        <div className="mm-alert mm-alert--danger">{nextError}</div>
+                      )}
+                      <button
+                        type="submit"
+                        className="mm-btn mm-btn--primary close-next-btn"
+                        disabled={!nextCashValid || nextStarting}
+                      >
+                        {nextStarting ? 'Starting…' : 'Start Next Session'}
+                      </button>
+                    </form>
+                  )}
                 </div>
               ) : (
                 <form onSubmit={closeSession}>

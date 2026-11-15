@@ -115,16 +115,18 @@ class SessionCloseTests(TestCase):
         self.assertEqual(session.expected_cash, Decimal('0.00'))
         self.assertEqual(session.counted_cash, Decimal('0.00'))
 
-    def test_zreport_returns_persisted_totals_after_close(self):
+    def test_zreport_returns_pdf_after_close(self):
         session = self.make_session(starting_cash=Decimal('10.00'))
         self.close(session, {'tens': 1})
 
         response = self.client.get(f'/api/sessions/{session.id}/zreport/')
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data['status'], Session.STATUS_CLOSED)
-        self.assertEqual(Decimal(response.data['counted_cash']), Decimal('10.00'))
-        self.assertEqual(Decimal(response.data['expected_cash']), Decimal('10.00'))
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertTrue(response.content.startswith(b'%PDF'))
+        session.refresh_from_db()
+        self.assertEqual(session.status, Session.STATUS_CLOSED)
+        self.assertEqual(session.counted_cash, Decimal('10.00'))
 
     def test_closing_persists_the_denomination_counts(self):
         session = self.make_session()
