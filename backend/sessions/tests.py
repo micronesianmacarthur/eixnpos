@@ -56,6 +56,23 @@ class SessionApiTests(TestCase):
         self.assertEqual(session.starting_cash, Decimal('100.00'))
         self.assertEqual(session.status, Session.STATUS_OPEN)
 
+    def test_create_session_rejects_missing_starting_cash(self):
+        response = self.client.post('/api/sessions/', {}, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('starting_cash', response.data)
+        self.assertFalse(Session.objects.filter(cashier=self.manager).exists())
+
+    def test_create_session_rejects_negative_starting_cash(self):
+        response = self.client.post(
+            '/api/sessions/',
+            {'starting_cash': '-5.00'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(Session.objects.filter(cashier=self.manager).exists())
+
     def test_close_reconciles_cash_and_persists_zreport(self):
         session = self.make_session(starting_cash=Decimal('100.00'))
         self.make_completed_sale(Decimal('50.00'), method='cash', amount=Decimal('50.00'))

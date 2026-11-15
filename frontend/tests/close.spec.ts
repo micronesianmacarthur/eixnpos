@@ -255,6 +255,40 @@ test('applies cash counts to the over/short display', async ({ page }) => {
   expectNoNetworkIssues(monitor);
 });
 
+test('closes the session and requires starting cash before the next session starts', async ({
+  page,
+}) => {
+  const monitor = await openClose(page);
+
+  // Drive to the close & backup section and close the session.
+  await page.getByRole('button', { name: 'Continue to Summary' }).click();
+  await page.getByRole('button', { name: 'Continue to Close & Backup' }).click();
+  await page.getByRole('button', { name: 'Close Session & Print Z-Report' }).click();
+  await expect(page.locator('.close-closed-notice')).toBeVisible();
+
+  // The next-session prompt appears and its start button is blocked until
+  // a valid starting cash value is entered.
+  const nextForm = page.getByRole('form', { name: 'Start next session' });
+  await expect(nextForm).toBeVisible();
+  const startBtn = nextForm.getByRole('button', { name: 'Start Next Session' });
+  await expect(startBtn).toBeDisabled();
+
+  // Type a starting cash value; the start button unlocks.
+  await page.getByLabel('Starting cash').fill('150.00');
+  await expect(startBtn).toBeEnabled();
+  await startBtn.click();
+
+  // The entered value is posted and used for the next session.
+  await expect(page.locator('.close-next-notice')).toContainText('$150.00');
+  const createReq = monitor.requests.find(
+    (r) => r.method === 'POST' && r.path === '/api/sessions/',
+  );
+  expect(createReq).toBeTruthy();
+  expect(JSON.parse(createReq?.body ?? '{}')).toEqual({ starting_cash: '150.00' });
+
+  expectNoNetworkIssues(monitor);
+});
+
 test('runs a backup and closes the session from the final section', async ({ page }) => {
   const monitor = await openClose(page);
 

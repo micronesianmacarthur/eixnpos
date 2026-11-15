@@ -115,6 +115,13 @@ export default function ClosePage() {
   const [closed, setClosed] = useState(false);
   const [closingError, setClosingError] = useState('');
 
+  // Next-session starting cash: the session cannot begin until a value is
+  // entered and saved. After close/backup this prompt blocks the next POST.
+  const [nextCashInput, setNextCashInput] = useState('');
+  const [nextStarting, setNextStarting] = useState(false);
+  const [nextSession, setNextSession] = useState<Session | null>(null);
+  const [nextError, setNextError] = useState('');
+
   // fetch completed sales and derive the summary stats the summary section shows
   async function loadSummary(current: Session) {
     try {
@@ -227,6 +234,30 @@ export default function ClosePage() {
       setClosingError(err instanceof ApiError ? err.message : 'Could not close the session.');
     } finally {
       setClosing(false);
+    }
+  };
+
+  // Next session cannot start until a valid (non-negative, numeric) starting
+  // cash is entered. Entered value is persisted on the session and used as the
+  // opening float for the new shift.
+  const nextCash = toNumber(nextCashInput);
+  const nextCashValid = nextCashInput.trim() !== '' && Number.isFinite(nextCash) && nextCash >= 0;
+
+  const startNextSession = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!nextCashValid) return;
+    setNextStarting(true);
+    setNextError('');
+    try {
+      const created = await apiFetch<Session>('/api/sessions/', {
+        method: 'POST',
+        body: JSON.stringify({ starting_cash: nextCash.toFixed(2) }),
+      });
+      setNextSession(created);
+    } catch (err) {
+      setNextError(err instanceof ApiError ? err.message : 'Could not start the next session.');
+    } finally {
+      setNextStarting(false);
     }
   };
 
@@ -430,17 +461,63 @@ export default function ClosePage() {
               </div>
 
               {closed ? (
-                <div className="mm-alert mm-alert--success close-closed-notice">
-                  <div>Session closed. The Z-report was saved and a backup was triggered.</div>
-                  <button
-                    type="button"
-                    className="mm-btn close-zreport-btn"
-                    onClick={() => {
-                      window.open(`/api/sessions/${session.id}/zreport/`, '_blank');
-                    }}
-                  >
-                    Print Z-report (PDF)
-                  </button>
+                <div className="close-closed-section">
+                  <div className="mm-alert mm-alert--success close-closed-notice">
+                    <div>Session closed. The Z-report was saved and a backup was triggered.</div>
+                    <button
+                      type="button"
+                      className="mm-btn close-zreport-btn"
+                      onClick={() => {
+                        window.open(`/api/sessions/${session.id}/zreport/`, '_blank');
+                      }}
+                    >
+                      Print Z-report (PDF)
+                    </button>
+                  </div>
+
+                  {nextSession ? (
+                    <div className="mm-alert mm-alert--success close-next-notice" role="status">
+                      Next session started with {formatMoney(nextSession.starting_cash)} in
+                      starting cash.
+                    </div>
+                  ) : (
+                    <form
+                      className="mm-card close-next-form"
+                      onSubmit={startNextSession}
+                      aria-label="Start next session"
+                    >
+                      <h3 className="close-next-title">Start the next session</h3>
+                      <p className="mm-card-subtitle">
+                        Enter the money you are placing in the drawer, then start the next
+                        session.
+                      </p>
+                      <label className="close-next-label" htmlFor="next-starting-cash">
+                        Starting cash
+                      </label>
+                      <input
+                        id="next-starting-cash"
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        inputMode="decimal"
+                        className="mm-input close-next-input"
+                        value={nextCashInput}
+                        placeholder="0.00"
+                        onChange={(e) => setNextCashInput(e.target.value)}
+                        aria-required="true"
+                      />
+                      {nextError && (
+                        <div className="mm-alert mm-alert--danger">{nextError}</div>
+                      )}
+                      <button
+                        type="submit"
+                        className="mm-btn mm-btn--primary close-next-btn"
+                        disabled={!nextCashValid || nextStarting}
+                      >
+                        {nextStarting ? 'Starting…' : 'Start Next Session'}
+                      </button>
+                    </form>
+                  )}
                 </div>
               ) : (
                 <form onSubmit={closeSession}>
