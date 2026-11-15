@@ -11,6 +11,7 @@ import InventoryPage from './InventoryPage';
 import ProductPage from './ProductPage';
 import SettingsPage from './SettingsPage';
 import ClosePage from './ClosePage';
+import RequireOpenSession from './RequireOpenSession';
 import { AuthProvider, RequireAuth, RequireRole } from './auth';
 
 function AppRouter() {
@@ -29,16 +30,19 @@ function AppRouter() {
           >
             <Route element={<AppLayout />}>
               <Route index element={<DashboardPage />} />
-              <Route path="sales" element={<SalesPage />} />
-              <Route
-                path="sales-manager"
-                element={
-                  <PlaceholderPage
-                    title="Sales Manager"
-                    description="Manage open sales, line voids, and sale corrections."
-                  />
-                }
-              />
+              <Route element={<RequireOpenSession />}>
+                <Route path="sales" element={<SalesPage />} />
+                <Route
+                  path="sales-manager"
+                  element={
+                    <PlaceholderPage
+                      title="Sales Manager"
+                      description="Manage open sales, line voids, and sale corrections."
+                    />
+                  }
+                />
+                <Route path="close" element={<ClosePage />} />
+              </Route>
               <Route path="customers" element={<CustomersPage />} />
               <Route
                 path="suppliers"
@@ -50,7 +54,6 @@ function AppRouter() {
                 }
               />
               <Route path="inventory" element={<InventoryPage />} />
-              <Route path="close" element={<ClosePage />} />
 
               <Route element={<RequireRole roles={['manager', 'admin']} />}>
                 <Route path="inventory/new" element={<ProductPage />} />
