@@ -30,6 +30,34 @@ class StockMovementApiTests(TestCase):
         self.assertEqual(response.data[0]['id'], self.movement.id)
         self.assertEqual(response.data[0]['product_name'], 'Widget')
 
+    def test_list_filters_movements_by_product(self):
+        other_product = Product.objects.create(name='Gadget', price='5.00')
+        StockMovement.objects.create(
+            product=other_product,
+            movement_type='receive',
+            quantity=2,
+            note='for other product',
+        )
+        response = self.client.get(f'/api/inventory/?product={self.product.id}')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]['id'], self.movement.id)
+
+    def test_list_product_filter_excludes_unrelated_movements(self):
+        other_product = Product.objects.create(name='Gadget', price='5.00')
+        other_movement = StockMovement.objects.create(
+            product=other_product,
+            movement_type='receive',
+            quantity=2,
+            note='for other product',
+        )
+        response = self.client.get(f'/api/inventory/?product={other_product.id}')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]['id'], other_movement.id)
+
     def test_movements_are_read_only(self):
         response = self.client.post(
             '/api/inventory/',
