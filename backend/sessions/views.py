@@ -30,6 +30,21 @@ class SessionViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(cashier=self.request.user)
 
+    @action(detail=False, methods=['get'])
+    def current(self, request):
+        """Report the current cashier's open session, or that none is open."""
+        session = Session.objects.filter(
+            cashier=request.user, status=Session.STATUS_OPEN
+        ).order_by('-opened_at').first()
+        if session is None:
+            return Response({'open': False})
+        return Response({
+            'open': True,
+            'sessionId': str(session.id),
+            'startedAt': session.opened_at.isoformat(),
+            'startingCash': str(session.starting_cash),
+        })
+
     @action(detail=True, methods=['post'])
     def close(self, request, pk=None):
         session = self.get_object()
