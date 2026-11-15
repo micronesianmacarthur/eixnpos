@@ -5,7 +5,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from rest_framework.test import APIClient
 
-from sales.models import Payment, Sale
+from sales.models import Payment, Sale, SaleLine
 from sessions.models import Session
 
 User = get_user_model()
@@ -115,16 +115,18 @@ class SessionCloseTests(TestCase):
         self.assertEqual(session.expected_cash, Decimal('0.00'))
         self.assertEqual(session.counted_cash, Decimal('0.00'))
 
-    def test_zreport_returns_persisted_totals_after_close(self):
+    def test_zreport_returns_pdf_after_close(self):
         session = self.make_session(starting_cash=Decimal('10.00'))
         self.close(session, {'tens': 1})
 
         response = self.client.get(f'/api/sessions/{session.id}/zreport/')
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data['status'], Session.STATUS_CLOSED)
-        self.assertEqual(Decimal(response.data['counted_cash']), Decimal('10.00'))
-        self.assertEqual(Decimal(response.data['expected_cash']), Decimal('10.00'))
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertTrue(response.content.startswith(b'%PDF'))
+        session.refresh_from_db()
+        self.assertEqual(session.status, Session.STATUS_CLOSED)
+        self.assertEqual(session.counted_cash, Decimal('10.00'))
 
     def test_closing_persists_the_denomination_counts(self):
         session = self.make_session()
@@ -135,3 +137,46 @@ class SessionCloseTests(TestCase):
         self.assertEqual(response.status_code, 200)
         session.refresh_from_db()
         self.assertEqual(session.cash_counts, counts)
+
+
+class SessionSummaryEndpointTests(TestCase):
+    def setUp(self):
+        self.manager = User.objects.create_user(username='manager', password='pw', role='manager')
+        self.client = APIClient()
+        self.client.force_authenticate(self.manager)
+        self.session = Session.objects.create(cashier=self.manager, starting_cash=Decimal('50.00'))
+
+    def make_completed_sale(self, total, subtotal=None, cost=Decimal('4.00'), method='cash'):
+        from products.models import Product
+        from suppliers.models import Supplier
+        supplier = Supplier.objects.create(name='Acme')
+        product = Product.objects.create(name='Widget', price=Decimal('10.00'), cost=cost, supplier=supplier)
+        sale = Sale.objects.create(
+            cashier=self.manager,
+            status=Sale.STATUS_COMPLETED,
+            subtotal=subtotal if subtotal is not None else total,
+            total=total,
+        )
+        Payment.objects.create(sale=sale, method=method, amount=total)
+        SaleLine.objects.create(sale=sale, product=product, quantity=1, unit_price=product.price)
+        return sale
+
+    def test_summary_endpoint_returns_revenue_and_profit_loss(self):
+        self.make_completed_sale(Decimal('10.00'))
+
+        response = self.client.get(f'/api/sessions/{self.session.id}/summary/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['session']['id'], self.session.id)
+        self.assertEqual(Decimal(response.data['summary']['revenue']), Decimal('10.00'))
+        # revenue(10) - cost_of_goods(4) = profit 6
+        self.assertEqual(Decimal(response.data['summary']['profit_loss']), Decimal('6.00'))
+
+    def test_summary_endpoint_empty_session_returns_zeroes(self):
+        response = self.client.get(f'/api/sessions/{self.session.id}/summary/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Decimal(response.data['summary']['revenue']), Decimal('0.00'))
+        self.assertEqual(Decimal(response.data['summary']['profit_loss']), Decimal('0.00'))
+        self.assertEqual(response.data['summary']['sale_count'], 0)
+
