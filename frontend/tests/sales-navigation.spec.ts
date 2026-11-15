@@ -70,6 +70,10 @@ function json(data: unknown, status = 200) {
 interface SessionMonitor {
   currentRequests: number;
   startBodies: Array<Record<string, unknown>>;
+  /** When `holdStart` is set, the pending start route is parked here. */
+  pendingStart: Route | null;
+  /** Fulfill the parked start POST (requires `holdStart`). */
+  releaseStart(data?: Record<string, unknown>): Promise<void>;
 }
 
 interface SessionOptions {
@@ -77,10 +81,23 @@ interface SessionOptions {
   current: Record<string, unknown> | { fail: number };
   /** Response for POST /api/sessions/ (null -> fail with 400). */
   start?: Record<string, unknown> | null;
+  /** Park the POST /api/sessions/ response so the test can assert no
+   *  dismissal happens while the request is in flight, then release it. */
+  holdStart?: boolean;
 }
 
 async function installSessionMocks(page: Page, opts: SessionOptions): Promise<SessionMonitor> {
-  const monitor: SessionMonitor = { currentRequests: 0, startBodies: [] };
+  const monitor: SessionMonitor = {
+    currentRequests: 0,
+    startBodies: [],
+    pendingStart: null,
+    releaseStart: async (data) => {
+      const route = monitor.pendingStart;
+      if (!route) throw new Error('releaseStart() called but no start POST is parked');
+      monitor.pendingStart = null;
+      await route.fulfill(json(data ?? OPEN_SESSION));
+    },
+  };
 
   await page.route('**/*', async (route: Route) => {
     const request = route.request();
@@ -126,6 +143,12 @@ async function installSessionMocks(page: Page, opts: SessionOptions): Promise<Se
     if (path === '/api/sessions/' && method === 'POST') {
       const payload = JSON.parse(request.postData() ?? '{}') as Record<string, unknown>;
       monitor.startBodies.push(payload);
+      if (opts.holdStart) {
+        // Park the response so the test can exercise dismissal attempts while
+        // the start request is still in flight, then release it.
+        monitor.pendingStart = route;
+        return;
+      }
       if (opts.start === null) {
         await route.fulfill(
           json({ starting_cash: [{ message: 'A session is already open.', code: 'invalid' }] }, 400),
@@ -188,6 +211,59 @@ test('no open session, cash not completed: Escape dismisses the modal and redire
 
   await expect(page).toHaveURL(`${BASE_URL}/`);
   await expect(page.getByRole('heading', { level: 1, name: 'Dashboard' })).toBeVisible();
+});
+
+test('no open session: Escape dismisses regardless of where focus sits (focus on BODY)', async ({ page }) => {
+  await installSessionMocks(page, { current: NO_SESSION });
+
+  await page.goto(`${BASE_URL}/sales`);
+  const modal = startShiftModal(page);
+  await expect(modal).toBeVisible();
+
+  // Click the helper text (a non-focusable element) so focus leaves the
+  // autofocused input and falls back to the document body — the exact
+  // scenario that broke the old onKeyDown-on-the-dialog-div handler.
+  await modal.getByText(/There is no open session/).click();
+  await expect
+    .poll(() => page.evaluate(() => document.activeElement?.tagName))
+    .toBe('BODY');
+
+  await page.keyboard.press('Escape');
+
+  await expect(page).toHaveURL(`${BASE_URL}/`);
+  await expect(page.getByRole('heading', { level: 1, name: 'Dashboard' })).toBeVisible();
+});
+
+test('no open session: no dismissal while the start request is pending (Escape, backdrop, and close all ignored)', async ({ page }) => {
+  const monitor = await installSessionMocks(page, { current: NO_SESSION, holdStart: true });
+
+  await page.goto(`${BASE_URL}/sales`);
+  const modal = startShiftModal(page);
+  await expect(modal).toBeVisible();
+
+  // Submit the form; the POST is now parked in-flight by the mock.
+  await page.getByLabel('Starting cash').fill('100.00');
+  await modal.getByRole('button', { name: 'Start shift' }).click();
+  await expect(monitor.pendingStart).toBeTruthy();
+
+  // Escape while starting: must stay put (not redirect to /).
+  await page.keyboard.press('Escape');
+  await expect(page).toHaveURL(`${BASE_URL}/sales`);
+  await expect(modal).toBeVisible();
+
+  // Backdrop mousedown while starting: must stay put.
+  await page.locator('.mm-modal-backdrop').click({ position: { x: 4, y: 4 } });
+  await expect(modal).toBeVisible();
+  await expect(page).toHaveURL(`${BASE_URL}/sales`);
+  // The close button is disabled while starting.
+  await expect(page.getByRole('button', { name: 'Close' })).toBeDisabled();
+
+  // Release the response: the normal contract resumes — successful POST opens Sales.
+  await monitor.releaseStart();
+  await expect(page).toHaveURL(`${BASE_URL}/sales`);
+  await expect(page.getByRole('heading', { level: 1, name: 'Sale' })).toBeVisible();
+  await expect(startShiftModal(page)).toHaveCount(0);
+  expect(monitor.startBodies).toEqual([{ starting_cash: '100.00' }]);
 });
 
 test('no open session: clicking the backdrop redirects to the dashboard', async ({ page }) => {

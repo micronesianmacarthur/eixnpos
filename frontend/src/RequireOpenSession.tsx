@@ -111,6 +111,20 @@ function RequireOpenSession() {
     };
   }, [me, loading]);
 
+  // A document-level Escape listener (not on the dialog div, which is not
+  // focusable) so that dismissing works regardless of where focus sits while
+  // the start-shift modal is shown. It is attached only while the modal is up
+  // and is withheld while a start POST is in flight, mirroring the disabled
+  // close button so dismissal cannot race the request.
+  useEffect(() => {
+    if (phase !== 'needs-session' || starting) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPhase('redirecting');
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [phase, starting]);
+
   const handleStartSession = async (event: FormEvent) => {
     event.preventDefault();
     const validation = startingCashError(cash);
@@ -150,6 +164,9 @@ function RequireOpenSession() {
         onMouseDown={(event) => {
           // Dismissing without completing the starting-cash set-up sends the
           // cashier back to the dashboard rather than trapping them on /sales.
+          // Ignore backdrop clicks while a start POST is pending, consistent
+          // with the disabled close button.
+          if (starting) return;
           if (event.target === event.currentTarget) setPhase('redirecting');
         }}
       >
@@ -158,9 +175,6 @@ function RequireOpenSession() {
           role="dialog"
           aria-modal="true"
           aria-labelledby="start-shift-title"
-          onKeyDown={(event) => {
-            if (event.key === 'Escape') setPhase('redirecting');
-          }}
         >
           <header className="mm-modal-header">
             <h2 id="start-shift-title">Start your shift</h2>
