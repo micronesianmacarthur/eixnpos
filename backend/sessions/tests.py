@@ -1,7 +1,7 @@
 import glob
 import os
 import tempfile
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -350,6 +350,83 @@ class SessionApiTests(TestCase):
 
         self.assertEqual(response.status_code, 403)
         self.assertEqual(Session.objects.filter(register=restricted).count(), 0)
+
+    def test_different_cashier_cannot_duplicate_open_on_same_register_day(self):
+        """User B (a different cashier) also gets 409 for A's open session on
+        the same register/day — the duplicate rule is scoped, not per-user."""
+        self.make_session(starting_cash=Decimal('50.00'))
+        cashier_b = User.objects.create_user(username='cashier_b2', password='pw', role='cashier')
+        b_client = APIClient()
+        b_client.force_authenticate(cashier_b)
+
+        response = b_client.post(
+            '/api/sessions/', {'register': self.register.id, 'starting_cash': '100.00'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            Session.objects.filter(
+                register=self.register, business_day=self.today, status=Session.STATUS_OPEN
+            ).count(), 1,
+        )
+
+    def test_cashier_b_can_close_the_shared_session_and_free_the_register_day(self):
+        """A cashier with register access may close the session another cashier
+        opened; afterwards a new session can open on the same register/day."""
+        session = self.make_session(starting_cash=Decimal('50.00'))
+        cashier_b = User.objects.create_user(username='cashier_b3', password='pw', role='cashier')
+        b_client = APIClient()
+        b_client.force_authenticate(cashier_b)
+
+        close = b_client.post(
+            f'/api/sessions/{session.id}/close/', {'counts': {'fifties': 1}}, format='json'
+        )
+        self.assertEqual(close.status_code, 200)
+
+        current = b_client.get('/api/sessions/current/')
+        self.assertEqual(current.data, {'open': False})
+
+        reopen = self.client.post(
+            '/api/sessions/', {'register': self.register.id, 'starting_cash': '75.00'},
+            format='json',
+        )
+        self.assertEqual(reopen.status_code, 201)
+        self.assertEqual(
+            Session.objects.filter(
+                register=self.register, business_day=self.today, status=Session.STATUS_OPEN
+            ).count(), 1,
+        )
+
+    def test_open_session_from_a_previous_day_does_not_block_today(self):
+        """A session left open yesterday must not 409 today's open: scope is
+        register AND business day, not register alone."""
+        yesterday = self.today - timedelta(days=1)
+        self.make_session(starting_cash=Decimal('50.00'), business_day=yesterday)
+
+        response = self.client.post(
+            '/api/sessions/', {'register': self.register.id, 'starting_cash': '100.00'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        created = Session.objects.get(pk=response.data['id'])
+        self.assertEqual(created.business_day, self.today)
+
+        # And `current` on yesterday's explicit day still reports that session.
+        old = self.client.get(
+            f'/api/sessions/current/?register={self.register.id}&day={yesterday.isoformat()}'
+        )
+        self.assertTrue(old.data['open'])
+
+    def test_open_session_on_a_different_day_does_not_surface_as_current(self):
+        """The default (no params) `current` view resolves today's scope only."""
+        yesterday = self.today - timedelta(days=1)
+        self.make_session(starting_cash=Decimal('50.00'), business_day=yesterday)
+
+        response = self.client.get('/api/sessions/current/')
+
+        self.assertEqual(response.data, {'open': False})
 
     def test_registers_endpoint_lists_accessible_registers(self):
         """The register picker helper lists only registers the caller may use."""
