@@ -323,7 +323,7 @@ test('starting cash validation: empty input is rejected without a session POST',
   await expect(modal).toBeVisible();
 });
 
-test('starting cash validation: negative and over-cap amounts are rejected', async ({ page }) => {
+test('starting cash validation: negative rejected, values above $1,000 accepted (no client cap)', async ({ page }) => {
   const monitor = await installSessionMocks(page, { current: NO_SESSION, start: OPEN_SESSION });
 
   await page.goto(`${BASE_URL}/sales`);
@@ -338,8 +338,13 @@ test('starting cash validation: negative and over-cap amounts are rejected', asy
 
   await cash.fill('1001');
   await start.click();
-  await expect(page.getByRole('alert')).toContainText('cannot exceed $1,000.00');
-  expect(monitor.startBodies).toEqual([]);
+  // There is no client-side upper cap: the backend SessionSerializer allows
+  // up to 12 digits with 2 decimals, so a value above $1,000 is accepted and
+  // posted, with the server remaining the authority for the numeric boundary.
+  await expect(page).toHaveURL(`${BASE_URL}/sales`);
+  await expect(page.getByRole('heading', { level: 1, name: 'Sale' })).toBeVisible();
+  await expect(startShiftModal(page)).toHaveCount(0);
+  expect(monitor.startBodies).toEqual([{ starting_cash: '1001.00' }]);
 });
 
 test('starting cash rejected by the backend: error is shown and the cashier stays on /sales', async ({ page }) => {

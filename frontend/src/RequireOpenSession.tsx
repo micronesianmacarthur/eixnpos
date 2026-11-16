@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from './authContext';
 import { apiFetch, ApiError } from './api';
+import StartSessionModal, { type StartedSession } from './StartSessionModal';
 
 /**
  * Route guard for the transaction screens (`/sales`, `/sales-manager`,
@@ -12,14 +13,14 @@ import { apiFetch, ApiError } from './api';
  * cashier has an open shift:
  *   - `open: true`  -> render the child `<Outlet />` (the guarded screen).
  *   - `open: false` on first arrival -> show the "start your shift" modal
- *                      that collects the starting cash and POSTs it to
- *                      `/api/sessions/`; only then does the guarded screen
- *                      render. If the cashier dismisses the modal without
- *                      completing the starting-cash set-up, redirect to the
- *                      home/dashboard route `/`. This is what lets a cashier
- *                      who clicks, say, "Sales" while no shift is open get the
- *                      modal instead of being silently bounced to the
- *                      dashboard.
+ *                      (the reusable `StartSessionModal`, which collects the
+ *                      starting cash and POSTs it to `/api/sessions/`); only
+ *                      then does the guarded screen render. If the cashier
+ *                      dismisses the modal without completing the
+ *                      starting-cash set-up, redirect to the home/dashboard
+ *                      route `/`. This is what lets a cashier who clicks, say,
+ *                      "Sales" while no shift is open get the modal instead of
+ *                      being silently bounced to the dashboard.
  *   - A re-validation that finds a previously-open session now closed (e.g. a
  *     manager closed the shift in another tab) redirects to `/`, unmounting
  *     the guarded screen — the cashier no longer has an open shift and must
@@ -31,58 +32,14 @@ import { apiFetch, ApiError } from './api';
  * the same no-session treatment and can never render its content without an
  * open shift.
  */
-const MAX_STARTING_CASH = 1000;
-
-const currency = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-});
+/** `loading` -> first check in flight; otherwise see the named phase. */
+type Phase = 'loading' | 'needs-session' | 'ready';
 
 interface CurrentSessionResponse {
   open: boolean;
   sessionId?: string;
   startedAt?: string;
   startingCash?: string;
-}
-
-/** `loading` -> first check in flight; otherwise see the named phase. */
-type Phase = 'loading' | 'needs-session' | 'ready';
-
-/**
- * Extract a human-readable `starting_cash` validation message from the DRF
- * error payload. DRF returns per-field errors as an array of `ErrorDetail`
- * (either `[{ "message": ..., "code": ... }]` or plain strings).
- */
-function startingCashErrorMessage(error: unknown): string {
-  if (error instanceof ApiError) {
-    const data = error.data;
-    if (data && typeof data === 'object') {
-      const field = (data as Record<string, unknown>).starting_cash;
-      if (Array.isArray(field) && field.length > 0) {
-        const first = field[0];
-        if (first && typeof first === 'object' && 'message' in first) {
-          const message = (first as { message: unknown }).message;
-          if (typeof message === 'string' && message) return message;
-        }
-        if (typeof first === 'string' && first) return first;
-      }
-    }
-    return error.message;
-  }
-  return error instanceof Error ? error.message : 'Could not start the session.';
-}
-
-/** Validate starting cash locally; returns an error message or null when valid. */
-function startingCashError(value: string): string | null {
-  const trimmed = value.trim();
-  if (trimmed === '') return 'Enter a starting cash amount.';
-  const parsed = Number(trimmed);
-  if (!Number.isFinite(parsed)) return 'Starting cash must be a number.';
-  if (parsed < 0) return 'Starting cash cannot be negative.';
-  if (parsed > MAX_STARTING_CASH) {
-    return `Starting cash cannot exceed ${currency.format(MAX_STARTING_CASH)}.`;
-  }
-  return null;
 }
 
 export function RequireOpenSession() {
@@ -96,10 +53,6 @@ export function RequireOpenSession() {
   // the modal; after that, a re-validation reporting a closed session means the
   // shift was ended elsewhere and must evict the cashier to the dashboard.
   const entered = useRef(false);
-
-  const [cash, setCash] = useState('');
-  const [starting, setStarting] = useState(false);
-  const [startError, setStartError] = useState('');
 
   // Ask the backend whether an open shift exists. A transient failure (network,
   // 403 unauthenticated, 404) resolves as open (fail-open) with a warning so the
@@ -180,51 +133,18 @@ export function RequireOpenSession() {
   }, [me, loading, revalidate]);
 
   // Dismissing the start-shift modal, or the modal defining the session start
-  // (success), both leave the guard decision to the caller. Dismissal without a
-  // completed start returns the cashier to the dashboard.
+  // (success), both leave the guard decision to the caller. Dismissal without
+  // a completed start returns the cashier to the dashboard.
   const dismiss = useCallback(() => {
-    if (starting) return;
     navigate('/', { replace: true });
-  }, [navigate, starting]);
+  }, [navigate]);
 
-  // A document-level Escape listener (not on the non-focusable .mm-modal div)
-  // so dismissing works regardless of where focus sits while the start-shift
-  // modal is shown. Attached only while the modal is up and withheld while a
-  // start POST is in flight, mirroring the disabled close button so dismissal
-  // cannot race the request.
-  useEffect(() => {
-    if (phase !== 'needs-session' || starting) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') dismiss();
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [phase, starting, dismiss]);
-
-  const handleStartSession = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const validation = startingCashError(cash);
-    if (validation !== null) {
-      setStartError(validation);
-      return;
-    }
-
-    setStarting(true);
-    setStartError('');
-    try {
-      await apiFetch<unknown>('/api/sessions/', {
-        method: 'POST',
-        body: JSON.stringify({ starting_cash: Number(cash).toFixed(2) }),
-      });
-      // Session started: the guarded screen is now reachable.
-      setPhase('ready');
-      entered.current = true;
-    } catch (error) {
-      setStartError(startingCashErrorMessage(error));
-    } finally {
-      setStarting(false);
-    }
-  };
+  // A successful start (POST /api/sessions/) renders the guarded screen
+  // without leaving the route.
+  const handleStarted = useCallback((_session: StartedSession) => {
+    setPhase('ready');
+    entered.current = true;
+  }, []);
 
   if (loading || !me || phase === 'loading') {
     return (
@@ -235,81 +155,11 @@ export function RequireOpenSession() {
   }
 
   if (phase === 'needs-session') {
-    return (
-      <div
-        className="mm-modal-backdrop"
-        onMouseDown={(event) => {
-          // Dismissing without completing the starting-cash set-up sends the
-          // cashier back to the dashboard rather than trapping them on the
-          // guarded screen. Ignore backdrop clicks while a start POST is
-          // pending, consistent with the disabled close button.
-          if (starting) return;
-          if (event.target === event.currentTarget) dismiss();
-        }}
-      >
-        <div
-          className="mm-modal"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="start-shift-title"
-        >
-          <header className="mm-modal-header">
-            <h2 id="start-shift-title" className="mm-modal-title">
-              Start your shift
-            </h2>
-            <button
-              type="button"
-              className="mm-modal-close"
-              aria-label="Close"
-              onClick={dismiss}
-              disabled={starting}
-            >
-              &times;
-            </button>
-          </header>
-          <form
-            className="mm-modal-body"
-            onSubmit={(e) => void handleStartSession(e)}
-            noValidate
-          >
-            <p className="mm-muted">
-              There is no open session. Enter the cash you are placing in the
-              drawer to begin the shift.
-            </p>
-            {startError && (
-              <div className="mm-alert mm-alert--danger" role="alert">
-                {startError}
-              </div>
-            )}
-            <label className="mm-field">
-              <span>Starting cash</span>
-              <input
-                className="mm-input"
-                type="number"
-                min={0}
-                step="0.01"
-                inputMode="decimal"
-                value={cash}
-                onChange={(e) => setCash(e.target.value)}
-                placeholder="0.00"
-                aria-label="Starting cash"
-                aria-required="true"
-                autoFocus
-              />
-            </label>
-            <footer className="mm-modal-footer">
-              <button
-                type="submit"
-                className="mm-btn mm-btn--primary"
-                disabled={starting}
-              >
-                {starting ? 'Starting…' : 'Start shift'}
-              </button>
-            </footer>
-          </form>
-        </div>
-      </div>
-    );
+    // Dismissal without a completed start returns the cashier to the
+    // dashboard; a successful start renders the guarded screen in place. All
+    // dismissal modes (Escape, backdrop, close) and the disabled-while-starting
+    // contract are owned by the reusable modal.
+    return <StartSessionModal onSuccess={handleStarted} onClose={dismiss} />;
   }
 
   // 'ready': an open shift exists (we just started it) or the check failed open.
