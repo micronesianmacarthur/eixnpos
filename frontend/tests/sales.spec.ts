@@ -140,6 +140,15 @@ async function installApiMocks(
       await route.fulfill(json(AUTH_ME));
       return;
     }
+    if (path === '/api/sessions/current/') {
+      // An open shift is already running: RequireOpenSession renders the
+      // Sales screen directly instead of the start-shift modal / a warning
+      // banner from the generic 404 fallback below.
+      await route.fulfill(
+        json({ open: true, sessionId: '1001', startedAt: '2026-01-01T09:00:00Z', startingCash: '150.00' }),
+      );
+      return;
+    }
     if (path === '/api/business/') {
       await route.fulfill(json(BUSINESS_INFO));
       return;
