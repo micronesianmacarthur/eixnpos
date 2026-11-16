@@ -131,6 +131,19 @@ async function installApiMocks(
       await route.fulfill(json(AUTH_ME));
       return;
     }
+    if (path === '/api/sessions/current/') {
+      // /close is a guarded transaction screen behind RequireOpenSession, so it
+      // needs an open session for this cashier (mirrors SESSION above).
+      await route.fulfill(
+        json({
+          open: true,
+          sessionId: '7',
+          startedAt: '2026-11-06T09:00:00Z',
+          startingCash: '100.00',
+        }),
+      );
+      return;
+    }
     if (path === '/api/business/') {
       await route.fulfill(json(BUSINESS_INFO));
       return;

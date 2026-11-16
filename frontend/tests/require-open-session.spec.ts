@@ -3,8 +3,8 @@
  *
  * Covers the acceptance criteria of t_7a995b11:
  *   1. Open session  -> navigating to /sales renders the Sales screen.
- *   2. No open session -> navigating to /sales redirects to the dashboard '/'
- *      (replace).
+ *   2. No open session -> navigating to /sales opens the "Start your shift"
+ *      modal and stays on /sales (no dashboard redirect).
  *   3. Session closed while this tab is in the background -> returning to the
  *      tab (window focus / visibilitychange) re-checks and redirects to '/'.
  *   4. Transient failures of GET /api/sessions/current/ (network abort, 403,
@@ -139,14 +139,15 @@ test('exports the RequireOpenSession named export (module shape)', async ({
   expect(monitor.currentRequests).toBeGreaterThanOrEqual(1);
 });
 
-test('redirects to / when there is no open session', async ({ page }) => {
+test('no open session: opens the start-shift modal on /sales instead of redirecting', async ({ page }) => {
   await installMocks(page, { current: NO_SESSION });
   await openSales(page);
 
-  // The guard redirects (replace) to the dashboard, so the Sales heading must
-  // never appear and the dashboard must render instead.
-  await expect(page.getByRole('heading', { level: 1, name: /Dashboard/i })).toBeVisible();
-  await expect(page.getByRole('heading', { level: 1, name: 'Sale' })).toHaveCount(0);
+  // The guard must NOT bounce the cashier to the dashboard: it offers the
+  // "Start your shift" modal for starting cash and stays on /sales.
+  await expect(page.getByRole('dialog', { name: 'Start your shift' })).toBeVisible();
+  await expect(page).toHaveURL(`${BASE_URL}/sales`);
+  await expect(page.getByRole('heading', { level: 1, name: /Dashboard/i })).toHaveCount(0);
 });
 
 test('renders Sales when an open session exists', async ({ page }) => {
