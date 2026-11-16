@@ -7,7 +7,7 @@ import PlaceholderPage from './PlaceholderPage';
 import CustomersPage from './CustomersPage';
 import UsersPage from './UsersPage';
 import SalesPage from './SalesPage';
-import RequireOpenSession from './RequireOpenSession';
+import { RequireOpenSession } from './RequireOpenSession';
 import InventoryPage from './InventoryPage';
 import ProductPage from './ProductPage';
 import SettingsPage from './SettingsPage';
