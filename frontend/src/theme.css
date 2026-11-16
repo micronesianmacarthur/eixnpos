@@ -677,6 +677,10 @@ pre,
   border-color: rgba(255, 102, 146, 0.35);
 }
 
+.mm-alert--banner {
+  margin: 0 0 16px;
+}
+
 /* Loading / empty ------------------------------------------------------- */
 
 .mm-loading {

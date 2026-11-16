@@ -7,6 +7,7 @@ import PlaceholderPage from './PlaceholderPage';
 import CustomersPage from './CustomersPage';
 import UsersPage from './UsersPage';
 import SalesPage from './SalesPage';
+import RequireOpenSession from './RequireOpenSession';
 import InventoryPage from './InventoryPage';
 import ProductPage from './ProductPage';
 import SettingsPage from './SettingsPage';
@@ -29,7 +30,9 @@ function AppRouter() {
           >
             <Route element={<AppLayout />}>
               <Route index element={<DashboardPage />} />
-              <Route path="sales" element={<SalesPage />} />
+              <Route element={<RequireOpenSession />}>
+                <Route path="sales" element={<SalesPage />} />
+              </Route>
               <Route
                 path="sales-manager"
                 element={

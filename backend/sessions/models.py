@@ -1,4 +1,5 @@
 from django.db import models
+from django.db.models import Q, UniqueConstraint
 from django.contrib.auth import get_user_model
 from decimal import Decimal
 
@@ -23,6 +24,15 @@ class Session(models.Model):
 
     class Meta:
         ordering = ['-opened_at']
+        constraints = [
+            # Enforce the single-open-shift rule at the DB level so the check is
+            # atomic — only one `open` session can exist across all cashiers.
+            UniqueConstraint(
+                fields=['status'],
+                condition=Q(status='open'),
+                name='only_one_open_session',
+            ),
+        ]
 
     def __str__(self):
         return f'Session #{self.id}'
