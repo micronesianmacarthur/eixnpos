@@ -18,6 +18,13 @@ User = get_user_model()
 
 class ForcedPasswordChangeFlowTests(TestCase):
     def setUp(self):
+        # The S4-seeded admin is gated off in tests (DEBUG is forced False by
+        # the test runner), so create the default account explicitly the same
+        # way the post_migrate seed would: admin/admin, must_change_password.
+        if not User.objects.filter(username='admin').exists():
+            admin = User(username='admin', role='admin', must_change_password=True)
+            admin.set_password('admin')
+            admin.save()
         self.client = APIClient()
 
     def _login(self, username='admin', password='admin'):

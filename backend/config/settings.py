@@ -1,4 +1,5 @@
 """Django settings for eixnPOS."""
+import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -95,4 +96,69 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
+}
+
+# ---------------------------------------------------------------------------
+# Auth brute-force protection (S1)
+#
+# Failed-attempt budget per (username, client IP) before the auth endpoints
+# return HTTP 429. Counters reset on success and expire after the window, so a
+# legitimate user is never locked out indefinitely.
+# ---------------------------------------------------------------------------
+# 5 failed login attempts per 15-minute window, per username+IP.
+AUTH_LOGIN_FAIL_LIMIT = 5
+AUTH_LOGIN_FAIL_WINDOW = 15 * 60
+# 5 wrong-current-password attempts per 15-minute window, per user+IP.
+# New-password *policy* violations (weak value) do not count toward this.
+AUTH_CHANGE_PASSWORD_FAIL_LIMIT = 5
+AUTH_CHANGE_PASSWORD_FAIL_WINDOW = 15 * 60
+
+# ---------------------------------------------------------------------------
+# Admin seeding gate (S4)
+#
+# The ``post_migrate`` admin seed in ``accounts/apps.py`` only runs when the
+# deployment opts in via DEBUG (dev) or the ``EIXNPOS_SEED_ADMIN=1`` env flag.
+# It never resurrects a deleted admin on an existing database.
+# ---------------------------------------------------------------------------
+SEED_ADMIN_ENV_FLAG = os.environ.get('EIXNPOS_SEED_ADMIN', '') == '1'
+
+# ---------------------------------------------------------------------------
+# Audit logging (S2)
+#
+# ``auth.audit`` records login/password-change/guard events, minus passwords
+# and session keys, to the console and to SERVER_LOG_FILE.
+# ---------------------------------------------------------------------------
+SERVER_LOG_FILE = BASE_DIR / 'server.log'
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'auth': {
+            'format': '%(asctime)s level=%(levelname)s logger=%(name)s %(message)s',
+        },
+        'plain': {
+            'format': '%(levelname)s %(name)s %(message)s',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'auth',
+        },
+        'auth_file': {
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': str(SERVER_LOG_FILE),
+            'maxBytes': 5 * 1024 * 1024,
+            'backupCount': 3,
+            'formatter': 'auth',
+        },
+    },
+    'loggers': {
+        'auth.audit': {
+            'handlers': ['console', 'auth_file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
 }

@@ -26,7 +26,8 @@ class IsManagerTests(TestCase):
         self.assertTrue(is_manager(manager))
 
     def test_admin_role_is_manager(self):
-        admin = User.objects.get(username='admin')
+        admin = User.objects.get_or_create(
+            username='admin', defaults={'role': 'admin'})[0]
         self.assertTrue(is_manager(admin))
 
     def test_staff_is_manager(self):

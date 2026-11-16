@@ -205,7 +205,49 @@ password) is intentionally **not** implemented — kept to the minimum contract.
 - [ ] `admin`/`admin` login → forced change; `new_password='admin'` → 400.
 - [ ] Backend and frontend can implement independently from this document alone.
 
-## 9. Open items (for the coder phase — NOT decisions made here)
+## 9. Auth hardening (t_a749ce20 — S1/S2/S4)
+
+These follow-ups to the same auth surface are implemented alongside the flow:
+
+### 9.1 Brute-force throttling (S1)
+
+`POST /api/auth/login/` and `POST /api/auth/change-password/` are protected by a
+failed-attempt cache keyed by `(username, client IP)`. Once the budget is
+exhausted the endpoint returns **429** `{"detail": "Too many ... Try again later."}`.
+
+| Endpoint                | Budget                              | Counter reset                          |
+|-------------------------|-------------------------------------|----------------------------------------|
+| `/api/auth/login/`      | 5 failed logins / 15 min per user+IP| any successful login; window expiry    |
+| `/api/auth/change-password/` | 5 wrong-`current_password` / 15 min per user+IP | correct current password; window expiry |
+
+* Policy violations (e.g. weak `new_password`) do **not** consume the
+  change-password budget — they are not credential-guessing signals.
+* A successful attempt clears the counter, so a legitimate user is never locked
+  out as long as they can authenticate; the budget also expires on its own.
+
+### 9.2 Audit logging (S2)
+
+A dedicated `auth.audit` logger (wired to console + `backend/server.log` via
+`LOGGING` in `config/settings.py`) records, with no passwords and no session
+keys: login success/failure (`username`, `ip`, `outcome`), forced-change
+required, password-change success/failure (reason **class**, never the value),
+and each guard 403 (`guard_blocked`).
+
+### 9.3 Provisioning & the admin seed (S3/S4)
+
+* The development/provisioning SQLite database (`backend/db.sqlite3`) and
+  runtime logs are **no longer tracked by git**. Fresh installs provision their
+  DB with `manage.py migrate` (schema) and `manage.py seed_admin` (the admin
+  account, when the deployment wants the known default credential).
+* The `post_migrate` admin seed in `accounts/apps.py` is **gated**: it only runs
+  when the DB appears genuinely fresh (zero users), the deployment opted in via
+  `DEBUG` or the `EIXNPOS_SEED_ADMIN=1` env flag, and no `admin` exists.
+  * Explicitly run `EIXNPOS_SEED_ADMIN=1 python manage.py migrate` on a fresh DB
+    to create the default account in non-DEBUG (production-like) installs.
+  * On an existing DB with real users it is impossible for a migrate to
+    resurrect a deleted `admin` — deleting the default credential sticks.
+
+## 10. Open items (for the coder phase — NOT decisions made here)
 
 1. Existing `change_password_view` (accounts/views.py) reads only `new_password` and
    calls `update_session_auth_hash` (stays logged in). Per §4.2/§4.4 the new contract

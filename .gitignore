@@ -1,2 +1,13 @@
 __pycache__/
 *.pyc
+
+# Local/development databases must never be committed: they carry user
+# credential hashes and session rows, so any checkout/merge would silently
+# revert a deployed DB to whatever credential was committed. Fresh installs
+# provision their DB via `manage.py migrate` + the admin seed.
+*.sqlite3
+backend/db.sqlite3
+
+# Server runtime logs (audit trail lives here in dev; never commit them).
+server.log
+*.log
