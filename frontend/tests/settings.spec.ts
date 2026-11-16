@@ -182,6 +182,66 @@ test('saves store details and shows inline success', async ({ page }) => {
   expectNoNetworkIssues(monitor);
 });
 
+test('blocks saving store details when a required field is empty', async ({ page }) => {
+  const monitor = await openSettings(page);
+
+  await page.getByLabel('Company name').fill('');
+  await page.getByRole('button', { name: 'Save' }).click();
+
+  await expect(page.getByRole('alert')).toHaveText('Company name is required.');
+  // No PATCH should fire for an invalid submission.
+  expect(
+    monitor.requests.filter((r) => r.method === 'PATCH' && r.path === '/api/business/'),
+  ).toEqual([]);
+
+  await page.getByLabel('Company name').fill('eixn Corner Store');
+  await page.getByLabel('Phone').fill('');
+  await page.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByRole('alert')).toHaveText('Phone is required.');
+
+  await page.getByLabel('Phone').fill('555-0100');
+  await page.getByLabel('Email').fill('');
+  await page.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByRole('alert')).toHaveText('Email is required.');
+
+  expectNoNetworkIssues(monitor);
+});
+
+test('cancelling unsaved store edits restores the persisted values', async ({ page }) => {
+  const monitor = await openSettings(page);
+
+  await page.getByLabel('Company name').fill('Should Not Persist');
+  await page.getByLabel('Address').fill('99 Ghost Road');
+  await page.getByRole('button', { name: 'Cancel' }).click();
+
+  await expect(page.getByLabel('Company name')).toHaveValue('eixn Corner Store');
+  await expect(page.getByLabel('Address')).toHaveValue('12 Market Street');
+
+  // Cancelling did not touch the server.
+  expect(
+    monitor.requests.filter((r) => r.method === 'PATCH' && r.path === '/api/business/'),
+  ).toEqual([]);
+  expectNoNetworkIssues(monitor);
+});
+
+test('cancelling an unsaved backup path edit restores the persisted path', async ({ page }) => {
+  const monitor = await openSettings(page);
+  await page.getByRole('tab', { name: 'Backup' }).click();
+
+  await page.getByLabel('Backup path').fill('/usb/should-not-save');
+  await page.getByRole('button', { name: 'Cancel' }).click();
+
+  await expect(page.getByLabel('Backup path')).toHaveValue('/backup');
+  // No PATCH and no trigger fired on cancel.
+  expect(
+    monitor.requests.filter((r) => r.method === 'PATCH' && r.path === '/api/business/'),
+  ).toEqual([]);
+  expect(
+    monitor.requests.filter((r) => r.method === 'POST' && r.path === '/api/backups/trigger/'),
+  ).toEqual([]);
+  expectNoNetworkIssues(monitor);
+});
+
 test('triggers a backup and shows the resulting path', async ({ page }) => {
   const monitor = await openSettings(page);
   await page.getByRole('tab', { name: 'Backup' }).click();
@@ -332,6 +392,84 @@ test('persists an unsaved backup path before triggering a backup', async ({ page
   expect(patchIndex).toBeGreaterThanOrEqual(0);
   expect(triggerIndex).toBeGreaterThan(patchIndex);
 
+  expectNoNetworkIssues(monitor);
+});
+
+test('clearing the backup path disables "Back up now" and never PATCHes an empty path', async ({ page }) => {
+  const monitor = await openSettings(page);
+  await page.getByRole('tab', { name: 'Backup' }).click();
+
+  const backupButton = page.getByRole('button', { name: 'Back up now' });
+  await expect(backupButton).toBeEnabled();
+
+  await page.getByLabel('Backup path').fill('');
+  await expect(backupButton).toBeDisabled();
+
+  // No PATCH and no trigger fired: the configured destination is never erased.
+  expect(
+    monitor.requests.filter((r) => r.method === 'PATCH' && r.path === '/api/business/'),
+  ).toEqual([]);
+  expect(
+    monitor.requests.filter((r) => r.method === 'POST' && r.path === '/api/backups/trigger/'),
+  ).toEqual([]);
+  expectNoNetworkIssues(monitor);
+});
+
+test('rejects an invalid email address before it reaches the server', async ({ page }) => {
+  const monitor = await openSettings(page);
+
+  await page.getByLabel('Email').fill('not-an-email');
+  await page.getByRole('button', { name: 'Save' }).click();
+
+  await expect(page.getByRole('alert')).toHaveText('Enter a valid email address.');
+  expect(
+    monitor.requests.filter((r) => r.method === 'PATCH' && r.path === '/api/business/'),
+  ).toEqual([]);
+  expectNoNetworkIssues(monitor);
+});
+
+test('rejects an invalid website URL before it reaches the server', async ({ page }) => {
+  const monitor = await openSettings(page);
+
+  await page.getByLabel('Website').fill('not-a-url');
+  await page.getByRole('button', { name: 'Save' }).click();
+
+  await expect(page.getByRole('alert')).toHaveText(
+    'Enter a valid website URL starting with http:// or https://.',
+  );
+  expect(
+    monitor.requests.filter((r) => r.method === 'PATCH' && r.path === '/api/business/'),
+  ).toEqual([]);
+  expectNoNetworkIssues(monitor);
+});
+
+test('a failed user delete keeps the users table visible', async ({ page }) => {
+  const monitor = await openSettings(page);
+  await page.getByRole('tab', { name: 'Users' }).click();
+  await expect(page.getByRole('cell', { name: 'Alex Admin', exact: true })).toBeVisible();
+
+  // Simulate a 409 "referenced by sales history" on delete.
+  await page.route('**/api/users/2/', async (route) => {
+    if (route.request().method().toUpperCase() === 'DELETE') {
+      await route.fulfill(
+        json({ detail: 'Cannot delete user: referenced by sales history.' }, 409),
+      );
+      return;
+    }
+    await route.fallback();
+  });
+
+  await page.evaluate(() => {
+    // The delete flow uses window.confirm; accept it.
+    window.confirm = () => true;
+  });
+
+  await page.getByRole('button', { name: 'Delete Sam Manager' }).click();
+
+  // The action error shows, but the remaining users table stays rendered.
+  await expect(page.getByRole('alert')).toContainText('referenced by sales history');
+  await expect(page.getByRole('cell', { name: 'Alex Admin', exact: true })).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'Riley Cashier', exact: true })).toBeVisible();
   expectNoNetworkIssues(monitor);
 });
 

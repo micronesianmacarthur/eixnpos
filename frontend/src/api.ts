@@ -34,13 +34,18 @@ export function errorMessage(data: unknown, status: number): string {
     if (typeof record.error === 'string' && record.error.trim()) {
       return record.error;
     }
-    // DRF serializer field errors arrive as {"field": "msg"} or
-    // {"field": ["msg1", "msg2"]} (or nested under non_field_errors). Surface
-    // the first human-readable message so a rejected create/update shows the
-    // server's reason instead of "Request failed (400)".
-    const firstFieldError = firstNonEmptyError(record);
-    if (firstFieldError) {
-      return firstFieldError;
+    // DRF maps field errors to `{field: ["detail", ...]}`. Flatten the first
+    // field error so callers see the real cause instead of a generic 400.
+    for (const key of Object.keys(record)) {
+      const value = record[key];
+      if (Array.isArray(value)) {
+        const first = value.find((item): item is string => typeof item === 'string' && Boolean(item.trim()));
+        if (first) {
+          return `${key}: ${first}`;
+        }
+      } else if (typeof value === 'string' && value.trim()) {
+        return `${key}: ${value}`;
+      }
     }
   }
   return `Request failed (${status})`;
