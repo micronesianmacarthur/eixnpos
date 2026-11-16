@@ -200,3 +200,60 @@ class SessionApiTests(TestCase):
         response = anonymous.get('/api/sessions/')
 
         self.assertIn(response.status_code, (401, 403))
+
+    def test_current_returns_open_false_when_no_open_session(self):
+        response = self.client.get('/api/sessions/current/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {'open': False})
+
+    def test_current_returns_open_true_with_session_details(self):
+        session = self.make_session(starting_cash=Decimal('100.00'))
+
+        response = self.client.get('/api/sessions/current/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['open'], True)
+        self.assertEqual(response.data['sessionId'], str(session.id))
+        self.assertEqual(
+            response.data['startedAt'], session.opened_at.isoformat()
+        )
+        self.assertEqual(response.data['startingCash'], '100.00')
+
+    def test_current_ignores_closed_sessions(self):
+        session = self.make_session(starting_cash=Decimal('50.00'))
+        session.status = Session.STATUS_CLOSED
+        session.closed_at = '2026-11-16T00:00:00Z'
+        session.save()
+
+        response = self.client.get('/api/sessions/current/')
+
+        self.assertEqual(response.data, {'open': False})
+
+    def test_current_filters_by_cashier(self):
+        other = User.objects.create_user(
+            username='cashier_b', password='pw', role='cashier'
+        )
+        other_client = APIClient()
+        other_client.force_authenticate(other)
+        # Cashier B has an open session; cashier A (self.manager) has none.
+        Session.objects.create(
+            cashier=other, starting_cash=Decimal('20.00'), status=Session.STATUS_OPEN
+        )
+
+        response = self.client.get('/api/sessions/current/')
+        other_response = other_client.get('/api/sessions/current/')
+
+        self.assertEqual(response.data, {'open': False})
+        self.assertEqual(other_response.data['open'], True)
+        self.assertEqual(
+            other_response.data['sessionId'],
+            str(Session.objects.get(cashier=other).id),
+        )
+
+    def test_current_requires_authentication(self):
+        anonymous = APIClient()
+
+        response = anonymous.get('/api/sessions/current/')
+
+        self.assertIn(response.status_code, (401, 403))

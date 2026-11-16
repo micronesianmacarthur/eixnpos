@@ -31,24 +31,6 @@ class SessionViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(cashier=self.request.user)
 
-    def create(self, request, *args, **kwargs):
-        """Start a shift, rejecting the request if one is already open."""
-        if Session.objects.filter(status=Session.STATUS_OPEN).exists():
-            return Response(
-                {'detail': 'An open session already exists. Close it before starting a new one.'},
-                status=status.HTTP_409_CONFLICT,
-            )
-        try:
-            return super().create(request, *args, **kwargs)
-        except IntegrityError:
-            # Concurrent requests can both pass the check just above; the DB
-            # partial-unique constraint (only_one_open_session) guarantees only
-            # one open row, so treat this as the same 409 conflict.
-            return Response(
-                {'detail': 'An open session already exists. Close it before starting a new one.'},
-                status=status.HTTP_409_CONFLICT,
-            )
-
     @action(detail=False, methods=['get'])
     def current(self, request):
         """Report the current cashier's open session, or that none is open."""
