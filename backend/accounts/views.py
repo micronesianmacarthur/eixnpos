@@ -53,6 +53,14 @@ def login_view(request):
         user.must_change_password = True
         user.save(update_fields=['must_change_password'])
 
+    # A successful login clears the failure budget and is audited (with the
+    # forced-change state so operators can tell a working credential apart
+    # from a pending one).
+    throttling.reset('login', identity, ip)
+    audit.login_success(request, user.username, forced_change=user.must_change_password)
+    if user.must_change_password:
+        audit.forced_change_required(request, user.username)
+
     login(request, user)
     bi = BusinessInfo.get()
     return Response({

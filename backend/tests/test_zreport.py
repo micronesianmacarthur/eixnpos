@@ -1,8 +1,11 @@
 """Tests for the session Z-report PDF generation (sales.zreport)."""
+import os
+import tempfile
+
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from products.models import Product
 from sales.models import Payment, Sale, SaleLine
@@ -105,12 +108,15 @@ class ZReportApiTests(TestCase):
         self.assertEqual(response['Content-Type'], 'application/pdf')
         self.assertTrue(response.content.startswith(b'%PDF'))
 
+    @override_settings(BACKUP_ROOT=os.path.realpath(tempfile.mkdtemp(prefix='eixnpos-zreport-test-')))
     def test_close_persists_zreport_pdf_into_backup_dir(self):
         import glob
         import os
         import tempfile
 
-        with tempfile.TemporaryDirectory() as destination:
+        from django.conf import settings
+
+        with tempfile.TemporaryDirectory(dir=settings.BACKUP_ROOT) as destination:
             from business.models import BusinessInfo
             business = BusinessInfo.get()
             business.backup_path = destination
