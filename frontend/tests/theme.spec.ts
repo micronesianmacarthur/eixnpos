@@ -122,6 +122,10 @@ async function installApiMocks(
       '/api/inventory/': [],
       '/api/inventory/movements/': [],
       '/api/sales/': [],
+      // An open session so the guarded /sales-manager placeholder test above
+      // reaches the route deterministically through the open-session guard
+      // rather than its fail-open (404) path.
+      '/api/sessions/': [{ id: 1, starting_cash: '100.00', status: 'open' }],
     };
 
     if (path in listFixtures) {

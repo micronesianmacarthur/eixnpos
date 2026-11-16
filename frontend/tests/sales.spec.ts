@@ -42,6 +42,11 @@ const PRODUCT = {
 
 const CUSTOMER = { id: 1, name: 'Alice', balance: '0.00', credit_limit: '100.00' };
 
+// An open session for the guard's GET /api/sessions/ check, so the product-click
+// tests below reach the Sales screen deterministically through the open-session
+// route guard rather than depending on its fail-open path.
+const SESSION = { id: 1, starting_cash: '100.00', status: 'open' };
+
 const SALE = {
   id: 1,
   number: 1001,
@@ -150,6 +155,10 @@ async function installApiMocks(
     }
     if (path === '/api/customers/') {
       await route.fulfill(json([CUSTOMER]));
+      return;
+    }
+    if (path === '/api/sessions/') {
+      await route.fulfill(json([SESSION]));
       return;
     }
     if (path === '/api/sales/' && method === 'POST') {
