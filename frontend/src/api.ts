@@ -22,20 +22,45 @@ function getCookie(name: string): string | null {
   return match ? decodeURIComponent(match.slice(prefix.length)) : null;
 }
 
-function errorMessage(data: unknown, status: number): string {
+export function errorMessage(data: unknown, status: number): string {
   if (typeof data === 'string' && data.trim()) {
     return data;
   }
   if (data && typeof data === 'object') {
     const record = data as Record<string, unknown>;
-    if (typeof record.detail === 'string') {
+    if (typeof record.detail === 'string' && record.detail.trim()) {
       return record.detail;
     }
-    if (typeof record.error === 'string') {
+    if (typeof record.error === 'string' && record.error.trim()) {
       return record.error;
+    }
+    // DRF serializer field errors arrive as {"field": "msg"} or
+    // {"field": ["msg1", "msg2"]} (or nested under non_field_errors). Surface
+    // the first human-readable message so a rejected create/update shows the
+    // server's reason instead of "Request failed (400)".
+    const firstFieldError = firstNonEmptyError(record);
+    if (firstFieldError) {
+      return firstFieldError;
     }
   }
   return `Request failed (${status})`;
+}
+
+/** Return the first non-empty string error from a DRF error body, if any. */
+function firstNonEmptyError(
+  record: Record<string, unknown>,
+): string | undefined {
+  for (const key of Object.keys(record)) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (
+      Array.isArray(value) &&
+      value.some((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    ) {
+      return value.find((item): item is string => typeof item === 'string' && item.trim().length > 0)!.trim();
+    }
+  }
+  return undefined;
 }
 
 /**
