@@ -18,57 +18,58 @@ const ROUTES = createRoutesFromElements(
   <>
     <Route path="/login" element={<LoginPage />} />
 
-    <Route
-      element={
-        <AuthProvider>
-          <RequireAuth />
-        </AuthProvider>
-      }
-    >
-      <Route element={<AppLayout />}>
-        <Route index element={<DashboardPage />} />
-        <Route path="sales" element={<SalesPage />} />
-        <Route
-          path="sales-manager"
-          element={
-            <PlaceholderPage
-              title="Sales Manager"
-              description="Manage open sales, line voids, and sale corrections."
-            />
-          }
-        />
-        <Route path="customers" element={<CustomersPage />} />
-        <Route
-          path="suppliers"
-          element={
-            <PlaceholderPage
-              title="Suppliers"
-              description="Manage supplier contacts and their linked products."
-            />
-          }
-        />
-        <Route path="inventory" element={<InventoryPage />} />
-        <Route
-          path="close"
-          element={
-            <PlaceholderPage
-              title="Close"
-              description="Count the drawer and close the current session with a Z-report."
-            />
-          }
-        />
+    <Route element={<AuthProvider />}>
+      <Route
+        path="/change-password"
+        element={
+          <RequireForcedPasswordChange>
+            <ChangePasswordPage />
+          </RequireForcedPasswordChange>
+        }
+      />
 
-        <Route element={<RequireRole roles={['manager', 'admin']} />}>
-          <Route path="inventory/new" element={<ProductPage />} />
-          <Route path="inventory/product/:id" element={<ProductPage />} />
+      <Route element={<RequireAuth />}>
+        <Route element={<AppLayout />}>
+          <Route index element={<DashboardPage />} />
+
+          <Route element={<RequireOpenSession />}>
+            <Route path="sales" element={<SalesPage />} />
+            <Route
+              path="sales-manager"
+              element={
+                <PlaceholderPage
+                  title="Sales Manager"
+                  description="Manage open sales, line voids, and sale corrections."
+                />
+              }
+            />
+            <Route path="close" element={<ClosePage />} />
+          </Route>
+
+          <Route path="customers" element={<CustomersPage />} />
+          <Route
+            path="suppliers"
+            element={
+              <PlaceholderPage
+                title="Suppliers"
+                description="Manage supplier contacts and their linked products."
+              />
+            }
+          />
+          <Route path="inventory" element={<InventoryPage />} />
+
+          <Route element={<RequireRole roles={['manager', 'admin']} />}>
+            <Route path="inventory/new" element={<ProductPage />} />
+            <Route path="inventory/product/:id" element={<ProductPage />} />
+          </Route>
+
+          <Route element={<RequireRole roles={['manager', 'admin']} />}>
+            <Route path="users" element={<UsersPage />} />
+            <Route path="settings" element={<SettingsPage />} />
+          </Route>
+
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
-
-        <Route element={<RequireRole roles={['manager', 'admin']} />}>
-          <Route path="users" element={<UsersPage />} />
-          <Route path="settings" element={<SettingsPage />} />
-        </Route>
-
-        <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Route>
   </>,

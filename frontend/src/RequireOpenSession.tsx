@@ -88,124 +88,13 @@ export function RequireOpenSession() {
     };
   }, [revalidate]);
 
-  // A document-level Escape listener (not on the dialog div, which is not
-  // focusable) so that dismissing works regardless of where focus sits while
-  // the start-shift modal is shown. It is attached only while the modal is up
-  // and is withheld while a start POST is in flight, mirroring the disabled
-  // close button so dismissal cannot race the request.
-  useEffect(() => {
-    if (phase !== 'needs-session' || starting) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setPhase('redirecting');
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [phase, starting]);
-
-  const handleStartSession = async (event: FormEvent) => {
-    event.preventDefault();
-    const validation = startingCashError(cash);
-    if (validation !== null) {
-      setStartError(validation);
-      return;
-    }
-
-    setStarting(true);
-    setStartError('');
-    try {
-      await apiFetch<unknown>('/api/sessions/', {
-        method: 'POST',
-        body: JSON.stringify({ starting_cash: Number(cash).toFixed(2) }),
-      });
-      // Session started: the Sales screen is now reachable.
-      setPhase('ready');
-    } catch (error) {
-      setStartError(startingCashErrorMessage(error));
-    } finally {
-      setStarting(false);
-    }
-  };
-
-  if (phase === 'loading') {
-    return <div className="mm-loading" role="status">Checking for an open session…</div>;
-  }
-
-  if (phase === 'redirecting') {
-    return <Navigate to="/" replace />;
-  }
-
-  if (phase === 'needs-session') {
+  // While the first check is in flight (or auth isn't resolved yet), render a
+  // lightweight placeholder instead of the guarded screen, so the redirect
+  // (or the confirmed allow) lands before the Sales screen mounts.
+  if (loading || !me || open === null) {
     return (
-      <div
-        className="mm-modal-backdrop"
-        onMouseDown={(event) => {
-          // Dismissing without completing the starting-cash set-up sends the
-          // cashier back to the dashboard rather than trapping them on /sales.
-          // Ignore backdrop clicks while a start POST is pending, consistent
-          // with the disabled close button.
-          if (starting) return;
-          if (event.target === event.currentTarget) setPhase('redirecting');
-        }}
-      >
-        <div
-          className="mm-modal"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="start-shift-title"
-        >
-          <header className="mm-modal-header">
-            <h2 id="start-shift-title">Start your shift</h2>
-            <button
-              type="button"
-              className="mm-modal-close"
-              aria-label="Close"
-              onClick={() => setPhase('redirecting')}
-              disabled={starting}
-            >
-              &times;
-            </button>
-          </header>
-          <form
-            className="mm-modal-body"
-            onSubmit={(e) => void handleStartSession(e)}
-            noValidate
-          >
-            <p className="mm-muted">
-              There is no open session. Enter the cash you are placing in the
-              drawer to begin the shift.
-            </p>
-            {startError && (
-              <div className="mm-alert mm-alert--danger" role="alert">
-                {startError}
-              </div>
-            )}
-            <label className="mm-field">
-              <span>Starting cash</span>
-              <input
-                className="mm-input"
-                type="number"
-                min={0}
-                step="0.01"
-                inputMode="decimal"
-                value={cash}
-                onChange={(e) => setCash(e.target.value)}
-                placeholder="0.00"
-                aria-label="Starting cash"
-                aria-required="true"
-                autoFocus
-              />
-            </label>
-            <footer className="mm-modal-footer">
-              <button
-                type="submit"
-                className="mm-btn mm-btn--primary"
-                disabled={starting}
-              >
-                {starting ? 'Starting…' : 'Start shift'}
-              </button>
-            </footer>
-          </form>
-        </div>
+      <div className="mm-loading" role="status">
+        Checking for an open session…
       </div>
     );
   }
