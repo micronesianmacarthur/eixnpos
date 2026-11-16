@@ -357,6 +357,78 @@ test('starting cash rejected by the backend: error is shown and the cashier stay
   await expect(modal).toBeVisible();
 });
 
+// --- Guarded-menu path (t_fbf07018) -----------------------------------------
+// The merge regression this suite guards against fired when the cashier
+// OPENED a guarded screen through the dashboard menu: the old modal-less
+// guard replace-navigated to '/' on mount, so the menu click silently
+// bounced back to the dashboard and the start-shift modal never appeared.
+// These tests drive the menu click itself, not a direct /sales URL.
+
+test('guarded menu, no session: clicking Sales opens the start-shift modal and does not redirect (previously failing path)', async ({ page }) => {
+  await installSessionMocks(page, { current: NO_SESSION });
+  await gotoDashboard(page);
+
+  await clickSalesInSidebar(page);
+
+  // The modal opens in place on /sales; the cashier is NOT bounced back to
+  // the dashboard.
+  await expect(startShiftModal(page)).toBeVisible();
+  await expect(page).toHaveURL(`${BASE_URL}/sales`);
+  await expect(page.getByRole('heading', { level: 1, name: 'Dashboard' })).toHaveCount(0);
+});
+
+test('guarded menu, no session: every guarded menu item opens the start-shift modal instead of redirecting', async ({ page }) => {
+  for (const label of ['Sales', 'Sales Manager', 'Close']) {
+    await installSessionMocks(page, { current: NO_SESSION });
+    await gotoDashboard(page);
+
+    await page.getByRole('link', { name: label, exact: true }).click();
+
+    await expect(startShiftModal(page)).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`${BASE_URL}/(sales|sales-manager|close)$`));
+    await expect(page.getByRole('heading', { level: 1, name: 'Dashboard' })).toHaveCount(0);
+  }
+});
+
+test('guarded menu, no session: completing starting cash from the menu path opens the Sales page', async ({ page }) => {
+  const monitor = await installSessionMocks(page, { current: NO_SESSION, start: OPEN_SESSION });
+  await gotoDashboard(page);
+
+  await clickSalesInSidebar(page);
+  await expect(startShiftModal(page)).toBeVisible();
+
+  await page.getByLabel('Starting cash').fill('75.00');
+  await startShiftModal(page).getByRole('button', { name: 'Start shift' }).click();
+
+  await expect(page).toHaveURL(`${BASE_URL}/sales`);
+  await expect(page.getByRole('heading', { level: 1, name: 'Sale' })).toBeVisible();
+  await expect(startShiftModal(page)).toHaveCount(0);
+  expect(monitor.startBodies).toEqual([{ starting_cash: '75.00' }]);
+});
+
+test('guarded menu, no session: dismissing the modal from the menu path returns to the dashboard', async ({ page }) => {
+  await installSessionMocks(page, { current: NO_SESSION });
+  await gotoDashboard(page);
+
+  await clickSalesInSidebar(page);
+  await expect(startShiftModal(page)).toBeVisible();
+
+  await page.getByRole('button', { name: 'Close' }).click();
+
+  await expect(page).toHaveURL(`${BASE_URL}/`);
+  await expect(page.getByRole('heading', { level: 1, name: 'Dashboard' })).toBeVisible();
+});
+
+test('guarded menu with an open session: clicking Close opens the Close page without the modal', async ({ page }) => {
+  await installSessionMocks(page, { current: OPEN_SESSION });
+  await gotoDashboard(page);
+
+  await page.getByRole('link', { name: 'Close', exact: true }).click();
+
+  await expect(page).toHaveURL(`${BASE_URL}/close`);
+  await expect(startShiftModal(page)).toHaveCount(0);
+});
+
 test('session check fails: Sales still renders with a non-fatal banner', async ({ page }) => {
   await installSessionMocks(page, { current: { fail: 1 } });
 
