@@ -30,6 +30,16 @@ export interface UserForm {
 
 export const USER_ROLES = ['cashier', 'manager', 'admin'] as const;
 
+/** Mirror of the backend `accounts.validators` password policy. */
+export const PASSWORD_MIN_LENGTH = 8;
+
+/**
+ * Values that may never be chosen as a password (the seeded default admin
+ * credential is the canonical member). Compared case/whitespace-insensitively,
+ * exactly as `accounts.validators.is_reserved_password` does server-side.
+ */
+export const RESERVED_PASSWORDS = ['admin'] as const;
+
 export const EMPTY_USER_FORM: UserForm = {
   username: '',
   email: '',
@@ -58,6 +68,36 @@ export function userFormFromUser(user: User): UserForm {
 export interface UserSaveResult {
   payload: Record<string, string>;
   error?: string;
+}
+
+/** Inline messages mirroring `accounts.validators` server messages. */
+const RESERVED_MESSAGE = "New password must not be the default or reserved value 'admin'.";
+const MIX_MESSAGE =
+  'New password must be at least 8 characters long and contain both letters and digits.';
+
+function isReservedPassword(password: string): boolean {
+  return (RESERVED_PASSWORDS as readonly string[]).includes(password.trim().toLowerCase());
+}
+
+/**
+ * Return the policy error for *password*, or `null` when it satisfies the
+ * server's policy. Mirrors `accounts.validators` exactly: reserved values are
+ * rejected case/whitespace-insensitively and take precedence over the
+ * character-mix rule, which requires >= 8 chars with at least one letter and
+ * one digit. Empty passwords are not flagged here ("" means "unchanged" on
+ * edit); callers decide when a password is required.
+ */
+export function passwordPolicyError(password: string): string | null {
+  if (!password) return null;
+  if (isReservedPassword(password)) return RESERVED_MESSAGE;
+  if (
+    password.length < PASSWORD_MIN_LENGTH ||
+    !/\p{L}/u.test(password) ||
+    !/\p{Nd}/u.test(password)
+  ) {
+    return MIX_MESSAGE;
+  }
+  return null;
 }
 
 /**
@@ -89,9 +129,8 @@ export function buildUserSaveRequest(
   if (!USER_ROLES.includes(role as (typeof USER_ROLES)[number])) {
     return { payload: {}, error: 'Invalid role selected.' };
   }
-  if (password && password.length < 8) {
-    return { payload: {}, error: 'Password must be at least 8 characters.' };
-  }
+  const passwordError = passwordPolicyError(password);
+  if (passwordError) return { payload: {}, error: passwordError };
 
   const payload: Record<string, string> = {};
   if (mode === 'create') {
