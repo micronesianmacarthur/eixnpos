@@ -67,3 +67,42 @@ class BusinessApiTests(TestCase):
         response = anonymous.get('/api/business/')
 
         self.assertIn(response.status_code, (401, 403))
+
+
+class BusinessApiAuthorizationTests(TestCase):
+    def setUp(self):
+        self.cashier = User.objects.create_user(username='cashier', password='pw', role='cashier')
+        self.client = APIClient()
+        self.client.force_authenticate(self.cashier)
+
+    def test_cashier_can_get_business_info(self):
+        response = self.client.get('/api/business/')
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_cashier_cannot_patch_business_info(self):
+        response = self.client.patch(
+            '/api/business/',
+            {'company_name': 'Hacked'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_cashier_cannot_post_business_info(self):
+        response = self.client.post(
+            '/api/business/',
+            {'company_name': 'Hacked'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_cashier_cannot_change_backup_path(self):
+        response = self.client.patch(
+            '/api/business/',
+            {'backup_path': '/tmp/evil'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 403)
