@@ -11,6 +11,8 @@ from .permissions import IsManagerOrAdmin
 from business.models import BusinessInfo
 from django.contrib.auth import get_user_model
 
+from . import audit, throttling
+
 User = get_user_model()
 
 @api_view(['GET'])
@@ -21,11 +23,32 @@ def csrf_view(request):
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def login_view(request):
-    username = request.data.get('username')
+    username = request.data.get('username') or ''
     password = request.data.get('password')
+    ip = throttling.client_ip(request)
+
+    # S1: reject once the username+IP has exhausted its failed-attempt budget.
+    identity = username or ip
+    if throttling.is_blocked('login', identity, ip):
+        audit.login_failure(request, username, blocked=True)
+        return Response(
+            {'detail': 'Too many failed login attempts. Try again later.'},
+            status=429,
+        )
+
     user = authenticate(request, username=username, password=password)
     if not user:
+        throttling.register_failure('login', identity, ip)
+        audit.login_failure(request, username)
         return Response({'detail': 'Invalid credentials'}, status=400)
+
+    # A successful login clears the failure budget and is audited (with the
+    # forced-change state so operators can tell a working credential apart
+    # from a pending one).
+    throttling.reset('login', identity, ip)
+    audit.login_success(request, user.username, forced_change=user.must_change_password)
+    if user.must_change_password:
+        audit.forced_change_required(request, user.username)
     login(request, user)
     bi = BusinessInfo.get()
     return Response({
@@ -73,7 +96,21 @@ def admin_dashboard_view(request):
 def change_password_view(request):
     current_pw = request.data.get('current_password')
     new_pw = request.data.get('new_password')
+    ip = throttling.client_ip(request)
+    username = request.user.username
+
+    # S1: throttle wrong-current-password attempts per user+IP. New-password
+    # *policy* violations do not exhaust the budget (they are not the signal a
+    # credential is being guessed), so we check the current password first.
+    if throttling.is_blocked('change_password', username, ip):
+        audit.password_change_failure(request, username, 'blocked', blocked=True)
+        return Response(
+            {'detail': 'Too many failed change attempts. Try again later.'},
+            status=429,
+        )
+
     if not current_pw or not new_pw:
+        audit.password_change_failure(request, username, 'missing_fields')
         return Response(
             {'detail': 'current_password and new_password are required'},
             status=400,
@@ -81,6 +118,8 @@ def change_password_view(request):
 
     # Verify the caller knows the current password before touching anything.
     if not request.user.check_password(current_pw):
+        throttling.register_failure('change_password', username, ip)
+        audit.password_change_failure(request, username, 'incorrect_current_password')
         return Response(
             {
                 'password_change_required': True,
@@ -89,14 +128,21 @@ def change_password_view(request):
             status=403,
         )
 
+    # A correct current password clears any previous failure budget.
+    throttling.reset('change_password', username, ip)
+
     # Enforce the policy (length, letter+digit mix, reserved value).
     try:
         validate_password(new_pw, user=request.user)
     except ValidationError as e:
+        # Log a stable *reason class*, never the message (which may embed the
+        # rejected value) or the value itself.
+        audit.password_change_failure(request, username, 'policy_violation')
         return Response({'detail': e.messages[0]}, status=400)
 
     # The new password must differ from the current one.
     if new_pw == current_pw:
+        audit.password_change_failure(request, username, 'same_as_current')
         return Response(
             {'detail': 'New password must be different from the current password.'},
             status=400,
@@ -106,6 +152,8 @@ def change_password_view(request):
     request.user.must_change_password = False
     request.user.password_changed = True
     request.user.save()
+
+    audit.password_change_success(request, username)
 
     # Invalidate the current session/token so the client must re-login with the
     # new password (per design §4.4).

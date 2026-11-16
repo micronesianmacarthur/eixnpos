@@ -46,5 +46,10 @@ class PasswordChangeRequiredMiddleware:
             and getattr(user, 'is_authenticated', False)
             and user.must_change_password
         ):
+            # Low-level audit: every guard rejection is recorded with the user
+            # and client IP (never session keys). Done here at the middleware
+            # level so every protected path variant is covered uniformly.
+            from accounts import audit
+            audit.guard_blocked(request, getattr(user, 'username', None))
             return JsonResponse(BLOCKED_PAYLOAD, status=403)
         return self.get_response(request)
