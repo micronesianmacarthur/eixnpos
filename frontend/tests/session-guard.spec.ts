@@ -217,6 +217,71 @@ test('open session: navigation to Sales works normally', async ({ page }) => {
   expectNoNetworkIssues(monitor);
 });
 
+/**
+ * Starting cash validation: an empty or invalid amount must keep the submit
+ * disabled and must never POST /api/sessions/ — the user stays blocked.
+ */
+test('starting cash validation: empty and negative amounts are rejected without a POST', async ({
+  page,
+}) => {
+  const monitor = await installApiMocks(page, { sessions: [] });
+  await page.goto(`${BASE_URL}/sales`);
+
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  const cash = page.getByLabel('Starting cash');
+  const startButton = page.getByRole('button', { name: 'Start Session' });
+
+  // Empty input: the submit stays disabled and no session is created.
+  await expect(startButton).toBeDisabled();
+  await expect(monitor.createSessionBodies).toEqual([]);
+
+  // Negative amount: rejected with an inline error, still no POST.
+  await cash.fill('-5');
+  await expect(dialog.getByText('Starting cash cannot be negative.')).toBeVisible();
+  await expect(cash).toHaveAttribute('aria-invalid', 'true');
+  await expect(startButton).toBeDisabled();
+  await expect(monitor.createSessionBodies).toEqual([]);
+
+  // Correcting to a valid amount clears the error and enables the submit
+  // (and the user is no longer blocked).
+  await cash.fill('40');
+  await expect(dialog.getByText('Starting cash cannot be negative.')).toHaveCount(0);
+  await expect(startButton).toBeEnabled();
+  await startButton.click();
+  await expect(page.getByRole('heading', { level: 1, name: 'Sale' })).toBeVisible();
+  expect(monitor.createSessionBodies).toEqual([{ starting_cash: '40.00' }]);
+
+  expectNoNetworkIssues(monitor);
+});
+
+/** Escape and the backdrop are dismissals too: no session, still blocked. */
+test('dismissing via Escape or backdrop leaves the user blocked with no session created', async ({
+  page,
+}) => {
+  const monitor = await installApiMocks(page, { sessions: [] });
+  await page.goto(`${BASE_URL}/`);
+  await clickNav(page, 'Sales');
+  await expect(page.getByRole('dialog')).toBeVisible();
+
+  // Escape returns to the dashboard and creates nothing.
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByRole('heading', { level: 1, name: 'Dashboard' })).toBeVisible();
+  expect(monitor.createSessionBodies).toEqual([]);
+
+  // Clicking the backdrop from a fresh navigation behaves the same.
+  await clickNav(page, 'Sales');
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  await page.locator('.mm-modal-backdrop').click({ position: { x: 4, y: 4 } });
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole('heading', { level: 1, name: 'Dashboard' })).toBeVisible();
+  expect(monitor.createSessionBodies).toEqual([]);
+
+  expectNoNetworkIssues(monitor);
+});
+
 test('no open session: Sales Manager and Close are gated too', async ({ page }) => {
   const monitor = await installApiMocks(page, { sessions: [] });
   await page.goto(`${BASE_URL}/`);
