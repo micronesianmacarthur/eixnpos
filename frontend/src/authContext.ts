@@ -8,6 +8,18 @@ export interface CurrentUser {
   role: Role;
 }
 
+export interface LoginResponse {
+  user: CurrentUser;
+  password_change_required: boolean;
+  /**
+   * Transitional fallback for servers that still echo the bare
+   * `must_change_password` field in the login payload instead of the
+   * contracted `password_change_required`. Remove once the rename lands.
+   */
+  must_change_password?: boolean;
+  business_info_complete: boolean;
+}
+
 export interface MeResponse {
   user: CurrentUser;
   must_change_password: boolean;
