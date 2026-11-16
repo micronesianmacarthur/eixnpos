@@ -1,7 +1,28 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
+
+from accounts.validators import is_reserved_password
 
 User = get_user_model()
+
+
+def _run_password_validation(password, user=None):
+    """Run the project password policy against *password*.
+
+    The default Django validators are replaced in settings by the app's own
+    ``accounts.validators`` policy (reserved value + character mix), so calling
+    ``validate_password`` here enforces the same policy the change-password
+    endpoint uses. A ``ValidationError`` is surfaced as a DRF 400 with the
+    first message only (``e.messages[0]``), matching the API's flat error
+    shape.
+    """
+    try:
+        validate_password(password, user=user)
+    except DjangoValidationError as e:
+        raise serializers.ValidationError(e.messages[0])
+    return password
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -36,10 +57,17 @@ class UserCreateSerializer(serializers.ModelSerializer):
         fields = ['id', 'username', 'email', 'first_name', 'last_name', 'role', 'password']
         read_only_fields = ['id']
 
+    def validate_password(self, value):
+        return _run_password_validation(value)
+
     def create(self, validated_data):
         password = validated_data.pop('password')
         user = User.objects.create_user(**validated_data)
         user.set_password(password)
+        # A reserved/default password must not be allowed to persist silently:
+        # flag the account so it is forced to change on first login.
+        if is_reserved_password(password):
+            user.must_change_password = True
         user.save()
         return user
 
@@ -53,11 +81,16 @@ class UserUpdateSerializer(serializers.ModelSerializer):
         fields = ['id', 'username', 'email', 'first_name', 'last_name', 'role', 'password']
         read_only_fields = ['id', 'username']
 
+    def validate_password(self, value):
+        return _run_password_validation(value, user=self.instance)
+
     def update(self, instance, validated_data):
         password = validated_data.pop('password', None)
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         if password:
             instance.set_password(password)
+            if is_reserved_password(password):
+                instance.must_change_password = True
         instance.save()
         return instance

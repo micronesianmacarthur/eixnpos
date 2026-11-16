@@ -10,6 +10,7 @@ from .serializers import UserSerializer
 from .permissions import IsManagerOrAdmin
 from business.models import BusinessInfo
 from django.contrib.auth import get_user_model
+from .validators import is_reserved_password
 
 from . import audit, throttling
 
@@ -42,18 +43,21 @@ def login_view(request):
         audit.login_failure(request, username)
         return Response({'detail': 'Invalid credentials'}, status=400)
 
-    # A successful login clears the failure budget and is audited (with the
-    # forced-change state so operators can tell a working credential apart
-    # from a pending one).
-    throttling.reset('login', identity, ip)
-    audit.login_success(request, user.username, forced_change=user.must_change_password)
-    if user.must_change_password:
-        audit.forced_change_required(request, user.username)
+    # Enforcement is keyed on the credential itself, not only the flag: any
+    # account still holding a reserved/default password (e.g. the seeded
+    # ``admin`` value) must be forced to change it, even if a buggy or legacy
+    # path left ``must_change_password=False``. Persist the flag so the
+    # middleware guard blocks protected routes on the very next request.
+    uses_reserved_password = is_reserved_password(password)
+    if uses_reserved_password:
+        user.must_change_password = True
+        user.save(update_fields=['must_change_password'])
+
     login(request, user)
     bi = BusinessInfo.get()
     return Response({
         'user': UserSerializer(user).data,
-        'password_change_required': user.must_change_password,
+        'password_change_required': user.must_change_password or uses_reserved_password,
         'business_info_complete': bi.is_complete(),
     })
 

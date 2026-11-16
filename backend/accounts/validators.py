@@ -10,8 +10,20 @@ from django.core.exceptions import ValidationError
 MIN_LENGTH = 8
 
 #: Values that may never be chosen as a password (the seeded default admin
-#: credential is the canonical member).
+#: credential is the canonical member). Normalized to a lowercase tuple.
 RESERVED_VALUES = ('admin',)
+
+
+def is_reserved_password(password):
+    """Return True if *password* matches any reserved/default value.
+
+    Shared by the validator, ``login_view`` and the user serializers so the
+    reserved-value definition lives in exactly one place; comparison follows
+    Django's own forgiving password semantics (trim, case-insensitive).
+    """
+    if not password:
+        return False
+    return password.strip().lower() in RESERVED_VALUES
 
 #: Exact response message mandated by the API contract (§4.2).
 MIX_MESSAGE = (
@@ -34,7 +46,7 @@ class ReservedPasswordValidator:
     """
 
     def validate(self, password, user=None):
-        if password.strip().lower() in RESERVED_VALUES:
+        if is_reserved_password(password):
             raise ValidationError(
                 RESERVED_MESSAGE,
                 code='password_reserved',
