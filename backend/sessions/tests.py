@@ -1,6 +1,7 @@
 import glob
 import os
 import tempfile
+from datetime import date
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -12,7 +13,7 @@ from products.models import Product
 from sales.models import Payment, Sale
 from suppliers.models import Supplier
 
-from .models import Session
+from .models import Register, Session
 
 User = get_user_model()
 
@@ -25,8 +26,14 @@ class SessionApiTests(TestCase):
 
         supplier = Supplier.objects.create(name='Acme')
         self.product = Product.objects.create(name='Widget', price=Decimal('10.00'), supplier=supplier)
+        # The register/day scope: default to the seeded register so helper
+        # sessions line up with the default register/day the endpoints resolve.
+        self.register = Register.objects.order_by('id').first() or Register.objects.create(name='Test Register')
+        self.today = date.today()
 
     def make_session(self, starting_cash=Decimal('0.00'), **kwargs):
+        kwargs.setdefault('register', self.register)
+        kwargs.setdefault('business_day', self.today)
         return Session.objects.create(cashier=self.manager, starting_cash=starting_cash, **kwargs)
 
     def make_completed_sale(self, total, method='cash', amount=None):
@@ -230,26 +237,56 @@ class SessionApiTests(TestCase):
 
         self.assertEqual(response.data, {'open': False})
 
-    def test_current_filters_by_cashier(self):
+    def test_current_session_is_shared_across_cashiers_on_same_register_day(self):
+        """A session opened by User A is visible to any cashier with access to
+        the same register/day — not just the cashier who opened it."""
+        session = self.make_session(starting_cash=Decimal('20.00'))
         other = User.objects.create_user(
-            username='cashier_b', password='pw', role='cashier'
+            username='cashier_b', password='***', role='cashier'
         )
         other_client = APIClient()
         other_client.force_authenticate(other)
-        # Cashier B has an open session; cashier A (self.manager) has none.
-        Session.objects.create(
-            cashier=other, starting_cash=Decimal('20.00'), status=Session.STATUS_OPEN
-        )
 
-        response = self.client.get('/api/sessions/current/')
+        manager_response = self.client.get('/api/sessions/current/')
         other_response = other_client.get('/api/sessions/current/')
 
+        self.assertTrue(manager_response.data['open'])
+        self.assertTrue(other_response.data['open'])
+        self.assertEqual(other_response.data['sessionId'], str(session.id))
+
+    def test_current_ignores_sessions_on_a_different_register(self):
+        """The open session on another register must not surface as 'current'."""
+        other_register = Register.objects.create(name='Bar Register')
+        self.make_session(starting_cash=Decimal('20.00'), register=other_register)
+
+        response = self.client.get('/api/sessions/current/')
+
         self.assertEqual(response.data, {'open': False})
-        self.assertEqual(other_response.data['open'], True)
-        self.assertEqual(
-            other_response.data['sessionId'],
-            str(Session.objects.get(cashier=other).id),
+
+    def test_current_with_explicit_register_param(self):
+        session = self.make_session(starting_cash=Decimal('30.00'))
+
+        response = self.client.get(
+            f'/api/sessions/current/?register={self.register.id}&day={self.today.isoformat()}'
         )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data['open'])
+        self.assertEqual(response.data['sessionId'], str(session.id))
+        self.assertEqual(response.data['day'], self.today.isoformat())
+
+    def test_current_rejects_access_to_unknown_or_restricted_register(self):
+        unknown = self.client.get('/api/sessions/current/?register=999999')
+        self.assertEqual(unknown.status_code, 404)
+
+        restricted = Register.objects.create(name='Private')
+        owner = User.objects.create_user(username='register_owner', password='***', role='cashier')
+        restricted.cashiers.add(owner)
+        other = User.objects.create_user(username='cashier_c', password='***', role='cashier')
+        other_client = APIClient()
+        other_client.force_authenticate(other)
+        denied = other_client.get(f'/api/sessions/current/?register={restricted.id}')
+        self.assertEqual(denied.status_code, 403)
 
     def test_current_requires_authentication(self):
         anonymous = APIClient()
@@ -257,3 +294,76 @@ class SessionApiTests(TestCase):
         response = anonymous.get('/api/sessions/current/')
 
         self.assertIn(response.status_code, (401, 403))
+
+    def test_duplicate_open_on_same_register_day_is_rejected(self):
+        """A second cashier cannot open a session on an already-open register/day."""
+        self.make_session(starting_cash=Decimal('50.00'))
+
+        response = self.client.post(
+            '/api/sessions/',
+            {'register': self.register.id, 'starting_cash': '100.00'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            Session.objects.filter(
+                register=self.register, business_day=self.today, status=Session.STATUS_OPEN
+            ).count(), 1,
+        )
+
+    def test_two_cashiers_can_open_on_different_registers_same_day(self):
+        """The old global one-open-session limit is gone: each register/day is
+        independent, so two registers can both hold an open session today."""
+        register_a = self.register
+        register_b = Register.objects.create(name='Register B')
+
+        first = self.client.post(
+            '/api/sessions/', {'register': register_a.id, 'starting_cash': '10.00'}, format='json'
+        )
+        second = self.client.post(
+            '/api/sessions/', {'register': register_b.id, 'starting_cash': '20.00'}, format='json'
+        )
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(Session.objects.filter(status=Session.STATUS_OPEN).count(), 2)
+
+    def test_create_without_register_defaults_to_accessible_register(self):
+        response = self.client.post(
+            '/api/sessions/', {'starting_cash': '60.00'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, 201)
+        created = Session.objects.get(pk=response.data['id'])
+        self.assertEqual(created.register, self.register)
+        self.assertEqual(created.business_day, self.today)
+
+    def test_create_rejects_access_to_restricted_register(self):
+        restricted = Register.objects.create(name='Private Only')
+        other = User.objects.create_user(username='cashier_d', password='***', role='cashier')
+        restricted.cashiers.add(other)
+
+        response = self.client.post(
+            '/api/sessions/', {'register': restricted.id, 'starting_cash': '5.00'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(Session.objects.filter(register=restricted).count(), 0)
+
+    def test_registers_endpoint_lists_accessible_registers(self):
+        """The register picker helper lists only registers the caller may use."""
+        hidden = Register.objects.create(name='Hidden Register')
+        other = User.objects.create_user(username='cashier_hidden', password='***', role='cashier')
+        hidden.cashiers.add(other)
+
+        response = self.client.get('/api/sessions/registers/')
+
+        self.assertEqual(response.status_code, 200)
+        ids = [r['id'] for r in response.data]
+        self.assertIn(self.register.id, ids)
+        self.assertNotIn(hidden.id, ids)
+        self.assertEqual(
+            next(r for r in response.data if r['id'] == self.register.id)['name'],
+            self.register.name,
+        )

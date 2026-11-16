@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -7,7 +7,7 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from sales.models import Payment, Sale, SaleLine
-from sessions.models import Session
+from sessions.models import Register, Session
 
 User = get_user_model()
 
@@ -17,9 +17,14 @@ class SessionCloseTests(TestCase):
         self.manager = User.objects.create_user(username='manager', password='pw', role='manager')
         self.client = APIClient()
         self.client.force_authenticate(self.manager)
+        self.register = Register.objects.order_by('id').first() or Register.objects.create(name='Test Register')
+        self.today = date.today()
 
     def make_session(self, starting_cash=Decimal('0.00')):
-        return Session.objects.create(cashier=self.manager, starting_cash=starting_cash)
+        return Session.objects.create(
+            cashier=self.manager, starting_cash=starting_cash,
+            register=self.register, business_day=self.today,
+        )
 
     def make_completed_sale(self, total, method='cash', amount=None):
         sale = Sale.objects.create(
@@ -145,7 +150,11 @@ class SessionSummaryEndpointTests(TestCase):
         self.manager = User.objects.create_user(username='manager', password='pw', role='manager')
         self.client = APIClient()
         self.client.force_authenticate(self.manager)
-        self.session = Session.objects.create(cashier=self.manager, starting_cash=Decimal('50.00'))
+        self.register = Register.objects.order_by('id').first() or Register.objects.create(name='Test Register')
+        self.session = Session.objects.create(
+            cashier=self.manager, starting_cash=Decimal('50.00'),
+            register=self.register, business_day=date.today(),
+        )
 
     def make_completed_sale(self, total, subtotal=None, cost=Decimal('4.00'), method='cash'):
         from products.models import Product
@@ -187,6 +196,8 @@ class SessionCurrentTests(TestCase):
         self.manager = User.objects.create_user(username='manager', password='pw', role='manager')
         self.client = APIClient()
         self.client.force_authenticate(self.manager)
+        self.register = Register.objects.order_by('id').first() or Register.objects.create(name='Test Register')
+        self.today = date.today()
 
     def test_current_returns_not_open_when_no_session(self):
         response = self.client.get('/api/sessions/current/')
@@ -199,7 +210,8 @@ class SessionCurrentTests(TestCase):
 
     def test_current_reports_open_session_details(self):
         session = Session.objects.create(
-            cashier=self.manager, starting_cash=Decimal('150.00')
+            cashier=self.manager, starting_cash=Decimal('150.00'),
+            register=self.register, business_day=self.today,
         )
 
         response = self.client.get('/api/sessions/current/')
@@ -212,6 +224,7 @@ class SessionCurrentTests(TestCase):
 
     def test_current_ignores_closed_sessions(self):
         Session.objects.create(cashier=self.manager, starting_cash=Decimal('10.00'),
+                               register=self.register, business_day=self.today,
                                status=Session.STATUS_CLOSED)
 
         response = self.client.get('/api/sessions/current/')
@@ -233,9 +246,12 @@ class SessionStartTests(TestCase):
         self.manager = User.objects.create_user(username='manager', password='pw', role='manager')
         self.client = APIClient()
         self.client.force_authenticate(self.manager)
+        self.register = Register.objects.order_by('id').first() or Register.objects.create(name='Test Register')
+        self.today = date.today()
 
     def _post(self, payload):
         return self.client.post('/api/sessions/', payload, format='json')
+
 
     def test_creates_an_open_session_for_the_cashier(self):
         response = self._post({'starting_cash': '100.00'})
@@ -268,17 +284,22 @@ class SessionStartTests(TestCase):
         self.assertEqual(Session.objects.count(), 0)
 
     def test_rejects_when_a_session_is_already_open(self):
-        Session.objects.create(cashier=self.manager, starting_cash=Decimal('50.00'))
+        Session.objects.create(cashier=self.manager, starting_cash=Decimal('50.00'),
+                               register=self.register, business_day=self.today)
 
         response = self._post({'starting_cash': '100.00'})
 
         self.assertEqual(response.status_code, 409)
-        self.assertIn('open session already exists', response.data['detail'])
-        # No second session may be persisted.
-        self.assertEqual(Session.objects.filter(status=Session.STATUS_OPEN).count(), 1)
+        self.assertIn('already open', response.data['detail'])
+        # No second session may be persisted on the same register/day.
+        self.assertEqual(
+            Session.objects.filter(register=self.register, business_day=self.today,
+                                   status=Session.STATUS_OPEN).count(), 1,
+        )
 
     def test_new_session_allowed_after_closing_the_open_one(self):
-        session = Session.objects.create(cashier=self.manager, starting_cash=Decimal('50.00'))
+        session = Session.objects.create(cashier=self.manager, starting_cash=Decimal('50.00'),
+                                         register=self.register, business_day=self.today)
         self.client.post(
             f'/api/sessions/{session.id}/close/', {'counts': {'fifties': 1}}, format='json'
         )
@@ -287,7 +308,8 @@ class SessionStartTests(TestCase):
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(
-            Session.objects.filter(status=Session.STATUS_OPEN).count(), 1
+            Session.objects.filter(register=self.register, business_day=self.today,
+                                   status=Session.STATUS_OPEN).count(), 1,
         )
 
     def test_create_requires_authentication(self):
@@ -298,9 +320,23 @@ class SessionStartTests(TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertEqual(Session.objects.count(), 0)
 
-    def test_db_constraint_enforces_single_open_session(self):
-        Session.objects.create(cashier=self.manager, starting_cash=Decimal('50.00'))
+    def test_db_constraint_enforces_one_open_per_register_day(self):
+        Session.objects.create(cashier=self.manager, starting_cash=Decimal('50.00'),
+                               register=self.register, business_day=self.today)
 
+        # A second open on the same register/day is rejected at the DB layer.
+        # The inner atomic isolates the failed insert so the outer test
+        # transaction stays usable for the assertions below.
+        from django.db import transaction
         with self.assertRaises(IntegrityError):
-            Session.objects.create(cashier=self.manager, starting_cash=Decimal('60.00'))
+            with transaction.atomic():
+                Session.objects.create(cashier=self.manager, starting_cash=Decimal('60.00'),
+                                       register=self.register, business_day=self.today)
+
+        # But another register/day is unaffected — the global one-session limit
+        # is gone.
+        other_register = Register.objects.create(name='Other')
+        s2 = Session.objects.create(cashier=self.manager, starting_cash=Decimal('60.00'),
+                                    register=other_register, business_day=self.today)
+        self.assertEqual(s2.status, Session.STATUS_OPEN)
 

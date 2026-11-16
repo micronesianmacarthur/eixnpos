@@ -8,6 +8,12 @@ class BusinessInfo(models.Model):
     address = models.TextField(blank=True, default='')
     website = models.URLField(blank=True, default='')
     backup_path = models.CharField(max_length=500, blank=True, default='')
+    timezone = models.CharField(
+        max_length=50,
+        blank=True,
+        default='',
+        help_text='IANA timezone for the business day (e.g. America/Los_Angeles). Empty = UTC.',
+    )
     singleton = models.BooleanField(default=True, unique=True)
 
     @classmethod
