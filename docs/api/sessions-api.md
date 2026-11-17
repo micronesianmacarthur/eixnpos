@@ -12,7 +12,7 @@ Determine whether a cashier has an open shift session and, if so, which one. The
 
 | Parameter | Type | Description |
 |---|---|---|
-| `register` | integer | **Optional.** The ID of the register to query. Defaults to the caller's first accessible register when omitted. |
+| `register` | integer | **Optional.** The ID of the register to query. Defaults to the caller's lowest-pk accessible register when omitted. |
 | `day` | string (YYYY-MM-DD) | **Optional.** The business day to query. Defaults to the business-local date of the request instant. |
 
 ### Response (when an open session exists)
@@ -83,7 +83,7 @@ Determine whether a cashier has an open shift session and, if so, which one. The
 
 The `RequireOpenSession` frontend guard (used on `/sales`, `/sales-manager`, and `/close` pages) operates as follows:
 
-1. On mount (and on tab-focus/visibility revalidation), it calls `GET /api/sessions/current/?register=<id>[&day=<date>]`, where the register ID is read from the route's search params/context.
+1. On mount (and on tab-focus/visibility revalidation), it calls `GET /api/sessions/current/?day=<date>`, where the register is derived from the route context (the lowest-pk accessible register the cashier can use). On `open:false` → `navigate('/', { replace: true })`; revalidates on focus/visibility as today. If the route has no register context, the guard defaults to the cashier's lowest-pk accessible register.
 2. If the response is `{open: false}`, the guard navigates away to `/` (replacing the URL) so the cashier does not land on a transaction screen without an open shift.
 3. If the response is `{open: true}`, the guard permits the page to render normally.
 4. The guard **revalidates on focus/visibility** as "today", meaning a session opened yesterday will not be considered "current" unless the `day` query param is explicitly set.

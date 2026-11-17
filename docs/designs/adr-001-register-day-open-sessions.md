@@ -109,9 +109,11 @@ Exactly one open session per `(register, business_day)`; closing frees the slot 
 
 ### 5. Frontend changes
 
-- **`RequireOpenSession`** — reads the register + day from the route's search params/context (the guard renders `/sales`, `/sales-manager`, `/close`, all of which sit on a register), then calls `GET /api/sessions/current/?register=<id>[&day=<date>]`. On `open:false` → `navigate('/', { replace: true })`; revalidates on focus/visibility as today.
-- **`SalesPage` + `ClosePage`** — must expose a **register selector** (new for v1) and carry the chosen register through URL search params so the guard and all session calls agree. `ClosePage` must **not** keep picking "the first open session globally" — it resolves the open session for the selected register + business day via the `current` endpoint.
-- **`StartSessionModal`** — `POST /api/sessions/` with `{ register, starting_cash }`.
+- **`RequireOpenSession`** — reads the register from the route's search params/context (the guard renders `/sales`, `/sales-manager`, `/close`, all of which sit on a register), then calls `GET /api/sessions/current/?day=<date>`. On `open:false` → `navigate('/', { replace: true })`; revalidates on focus/visibility as today. The register is derived from the route context (the lowest-pk accessible register the cashier can use), not from a URL search param. If the route has no register context, the guard defaults to the cashier's lowest-pk accessible register.
+
+- **`SalesPage` + `ClosePage`** — must expose a **register selector** (new for v1) and carry the chosen register through URL search params so the guard and all session calls agree. `ClosePage` must **not** keep picking "the first open session globally" — it resolves the open session for the selected register + business day via the `current` endpoint. When no register is selected, ClosePage falls back to the lowest-pk accessible register.
+
+- **`StartSessionModal`** — `POST /api/sessions/` with `{ register, starting_cash }`. The register must be selected via the register selector before starting a session.
 
 ### 6. Edge cases
 
@@ -119,7 +121,7 @@ Exactly one open session per `(register, business_day)`; closing frees the slot 
 |---|---|
 | **Shift handoff across midnight** | Session A opened day `D` at 23:5x is day-`D`'s session; a new session opened day `D+1` at 00:1x is day-`D+1`'s. "Current" for day `D` returns A, for `D+1` returns the new session. Outgoing cashier closes `D`'s session; incoming opens `D+1`'s. |
 | **Close then reopen** | Closing frees the `(register, day)` slot; `POST` immediately recreates an open session successfully. |
-| **Multiple registers** | Each register has an independent open session for the same day; crosstalk is prevented by register-scoped access everywhere. |
+| **Multiple registers** | Each register has an independent open session for the same day. Register-scoped access prevents concurrent session interference between registers, but sales attribution (linking payments to registers) remains a separate blocker (card t_faa41dca). Until Sale.session registration lands, revenue from sessions across registers is aggregated by time window only, and register-level sales reporting cannot be guaranteed accurate. |
 | **Permissions** | `register.cashiers`; empty M2M ⇒ every authenticated cashier is granted access (`cashiers.filter(pk=user).exists() or not register.cashiers.exists()`). No per-user open-session check. |
 | **Transient state / stale tab** | Unchanged behavior partner: closing a session in tab A makes tab B's guard revalidate and redirect to `/`. |
 | **Legacy data** | Already-open sessions (from the old global model) must be assigned to a register and have `business_day` backfilled before new code ships. |
