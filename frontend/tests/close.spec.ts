@@ -131,19 +131,6 @@ async function installApiMocks(
       await route.fulfill(json(AUTH_ME));
       return;
     }
-    if (path === '/api/sessions/current/') {
-      // /close is a guarded transaction screen behind RequireOpenSession, so it
-      // needs an open session for this cashier (mirrors SESSION above).
-      await route.fulfill(
-        json({
-          open: true,
-          sessionId: '7',
-          startedAt: '2026-11-06T09:00:00Z',
-          startingCash: '100.00',
-        }),
-      );
-      return;
-    }
     if (path === '/api/business/') {
       await route.fulfill(json(BUSINESS_INFO));
       return;
@@ -461,9 +448,17 @@ test('two accessible registers: only the non-default one open -> guard and Close
   const monitor = await installApiMocks(page, { noOpenSession: true });
 
   // The /close route is behind RequireOpenSession, which resolves the same
-  // default register/day. With no open session there it must redirect once to
-  // the dashboard — ClosePage must never mount against a sibling's shift.
+  // default register/day. With no open session there it must show the
+  // start-shift modal (not redirect) — ClosePage must never mount against a
+  // sibling's shift. If the cashier dismisses the modal, they land on the
+  // dashboard.
   await page.goto(`${BASE_URL}/close`);
+
+  // The start-shift modal should appear (not a redirect to dashboard).
+  await expect(page.getByRole('heading', { level: 2, name: 'Start your shift' })).toBeVisible();
+
+  // Dismiss the modal — this should redirect to the dashboard.
+  await page.getByRole('button', { name: 'Close' }).click();
   await expect(page.getByRole('heading', { level: 1, name: 'Dashboard' })).toBeVisible();
 
   // A redirect loop would keep bouncing; assert the dashboard stays put and
