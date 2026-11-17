@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from './authContext';
-import { apiFetch } from './api';
+import { currentSession } from './session';
 
 /**
  * Route guard for the `/sales` screen (the session-state contract in
@@ -25,13 +25,6 @@ import { apiFetch } from './api';
  * Sales screen is preferred to a wrongly-empty one.
  */
 
-interface CurrentSessionResponse {
-  open: boolean;
-  sessionId?: string;
-  startedAt?: string;
-  startingCash?: string;
-}
-
 /**
  * Fetch the current session for the signed-in cashier and resolve whether
  * access is allowed. Any error resolves to `true` (fail-open): a transient
@@ -41,7 +34,7 @@ interface CurrentSessionResponse {
  */
 async function fetchOpen(): Promise<boolean> {
   try {
-    const data = await apiFetch<CurrentSessionResponse>('/api/sessions/current/');
+    const data = await currentSession();
     return data.open === true;
   } catch {
     return true;

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { apiFetch, ApiError } from './api';
+import { currentSession } from './session';
 import './ClosePage.css';
 
 /**
@@ -172,15 +173,23 @@ export default function ClosePage() {
   const summaryLoading =
     !!session && summarySessionId !== session?.id && !summaryError;
 
+  // Resolve the session to close from GET /api/sessions/current/ — the same
+  // register/day scope the route guard validated. We never scan the session
+  // list for "an open one": with multiple accessible registers that could
+  // pick a sibling register's shift, the exact failure ADR-001 forbids. If no
+  // open session exists on the guard's register/day, show the empty state.
   useEffect(() => {
     const load = async () => {
       try {
-        const sessions = await apiFetch<Session[]>('/api/sessions/');
-        const open = sessions.find((s) => s.status === 'open') ?? sessions[0] ?? null;
-        setSession(open);
-        if (open) {
-          setCounts({ ...emptyCounts(), ...(open.cash_counts ?? {}) });
+        const current = await currentSession();
+        if (!current.open || !current.sessionId) {
+          setSession(null);
+          setLoading(false);
+          return;
         }
+        const detail = await apiFetch<Session>(`/api/sessions/${current.sessionId}/`);
+        setSession(detail);
+        setCounts({ ...emptyCounts(), ...(detail.cash_counts ?? {}) });
       } catch (err) {
         setError(err instanceof ApiError ? err.message : 'Could not load the session.');
       } finally {
