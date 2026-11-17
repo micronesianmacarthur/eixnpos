@@ -5,9 +5,9 @@ from rest_framework.permissions import IsAuthenticated
 from django.http import HttpResponse
 from django.utils import timezone
 from django.db import IntegrityError
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from decimal import Decimal
-from .models import Session
+from .models import Session, Register, local_date_of
 from .serializers import SessionSerializer
 from sales.models import Sale, Payment
 from sales.cash_count import calculate_totals, calculate_removal
@@ -28,32 +28,132 @@ class SessionViewSet(viewsets.ModelViewSet):
     serializer_class = SessionSerializer
     permission_classes = [IsAuthenticated]
 
-    def perform_create(self, serializer):
-        serializer.save(cashier=self.request.user)
+    # ------------------------------------------------------------------
+    # Register / business-day scope helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _register_access(user, register):
+        """A user has access to a register if the register allows everyone
+        (empty ``cashiers`` M2M — the v1 default) or lists the user."""
+        return not register.cashiers.exists() or register.cashiers.filter(pk=user.pk).exists()
+
+    def _accessible_registers(self, user):
+        """Registers the user may operate, ordered deterministically by pk."""
+        return [r for r in Register.objects.order_by('id') if self._register_access(user, r)]
+
+    def _default_register(self, user):
+        """The user's first accessible register, used when none is specified."""
+        regs = self._accessible_registers(user)
+        return regs[0] if regs else None
+
+    def _resolve_register(self, user, register_id):
+        """Return ``(register, error_response)``.
+
+        ``register_id`` may be an int or a str. Resolves to 404 for an unknown
+        id and 403 when the caller lacks access (never revealing whether a
+        session exists). ``register`` is ``None`` with ``error_response is None``
+        only when no id was given and the caller has no accessible register.
+        """
+        if register_id is None or register_id == '':
+            return self._default_register(user), None
+        try:
+            register = Register.objects.get(pk=register_id)
+        except (Register.DoesNotExist, ValueError, TypeError) as exc:
+            return None, Response(
+                {'detail': 'Register not found.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        if not self._register_access(user, register):
+            return None, Response(
+                {'detail': 'You do not have access to this register.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return register, None
+
+    def get_queryset(self):
+        """Only sessions on registers the caller may operate are visible."""
+        qs = super().get_queryset()
+        user = self.request.user
+        if not user.is_authenticated:
+            return qs.none()
+        ids = [r.id for r in self._accessible_registers(user)]
+        return qs.filter(register_id__in=ids)
 
     def create(self, request, *args, **kwargs):
-        """Start a shift, rejecting the request if one is already open."""
-        if Session.objects.filter(status=Session.STATUS_OPEN).exists():
+        """Start a shift on a register/day, rejecting a duplicate open."""
+        register, err = self._resolve_register(
+            request.user, request.data.get('register') or None
+        )
+        if err is not None:
+            return err
+        if register is None:
             return Response(
-                {'detail': 'An open session already exists. Close it before starting a new one.'},
+                {'detail': 'No register is available to open a session on. '
+                           'Ask an administrator to configure a register.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        day = local_date_of(timezone.now())
+        if Session.objects.filter(
+            register=register, business_day=day, status=Session.STATUS_OPEN
+        ).exists():
+            return Response(
+                {'detail': 'A session is already open on this register for this '
+                           'business day. Close it before starting a new one.'},
                 status=status.HTTP_409_CONFLICT,
             )
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        # ``cashier`` (audit — who opened) and the register/day scope are set
+        # server-side; they are read-only in the serializer, so pass them here.
         try:
-            return super().create(request, *args, **kwargs)
+            serializer.save(cashier=request.user, register=register, business_day=day)
         except IntegrityError:
-            # Concurrent requests can both pass the check just above; the DB
-            # partial-unique constraint (only_one_open_session) guarantees only
-            # one open row, so treat this as the same 409 conflict.
+            # A concurrent open on the same register/day slipped between the
+            # check above and this insert; the scoped unique constraint makes
+            # this an atomic 409 conflict.
             return Response(
-                {'detail': 'An open session already exists. Close it before starting a new one.'},
+                {'detail': 'A session is already open on this register for this '
+                           'business day. Close it before starting a new one.'},
                 status=status.HTTP_409_CONFLICT,
             )
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
     @action(detail=False, methods=['get'])
     def current(self, request):
-        """Report the current cashier's open session, or that none is open."""
+        """Report the open session for a register/business day, regardless of
+        which cashier opened it.
+
+        Query params:
+          register  — register id (optional; defaults to the caller's first
+                      accessible register when omitted).
+          day       — ``YYYY-MM-DD`` (optional; defaults to the business-local
+                      date of the request instant).
+        """
+        register, err = self._resolve_register(
+            request.user, request.query_params.get('register') or None
+        )
+        if err is not None:
+            return err
+        if register is None:
+            return Response({'open': False})
+
+        day = request.query_params.get('day')
+        if day:
+            from datetime import date as _date
+            try:
+                business_day = _date.fromisoformat(day)
+            except ValueError:
+                return Response(
+                    {'detail': 'Invalid day. Use YYYY-MM-DD.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            business_day = local_date_of(timezone.now())
+
         session = Session.objects.filter(
-            cashier=request.user, status=Session.STATUS_OPEN
+            register=register, business_day=business_day, status=Session.STATUS_OPEN
         ).order_by('-opened_at').first()
         if session is None:
             return Response({'open': False})
@@ -62,7 +162,17 @@ class SessionViewSet(viewsets.ModelViewSet):
             'sessionId': str(session.id),
             'startedAt': session.opened_at.isoformat(),
             'startingCash': str(session.starting_cash),
+            'register': session.register_id,
+            'day': str(session.business_day),
         })
+
+    @action(detail=False, methods=['get'])
+    def registers(self, request):
+        """List the registers the caller may operate (for the register picker)."""
+        return Response([
+            {'id': r.id, 'name': r.name, 'identifier': r.identifier}
+            for r in self._accessible_registers(request.user)
+        ])
 
     @action(detail=True, methods=['post'])
     def close(self, request, pk=None):
@@ -72,9 +182,20 @@ class SessionViewSet(viewsets.ModelViewSet):
         counts = request.data.get('counts', {})
         totals = calculate_totals(counts)
         counted = totals['grand_total']
-        # cash sales
+        # cash sales on THIS session only: either the sale is linked to this
+        # session, or (legacy fallback — pre-migration history with no link)
+        # it is an unlinked sale created inside the session's time window.
         upper = session.closed_at or timezone.now()
-        cash_sales = Payment.objects.filter(method='cash', sale__status='completed', sale__created_at__gte=session.opened_at, sale__created_at__lte=upper).aggregate(s=Sum('amount'))['s'] or Decimal('0')
+        cash_sales = Payment.objects.filter(
+            method='cash', sale__status='completed',
+        ).filter(
+            Q(sale__session=session)
+            | Q(
+                sale__session__isnull=True,
+                sale__created_at__gte=session.opened_at,
+                sale__created_at__lte=upper,
+            )
+        ).aggregate(s=Sum('amount'))['s'] or Decimal('0')
         expected = session.starting_cash + cash_sales
         variance = expected - counted
         session.cash_counts = counts
@@ -82,7 +203,16 @@ class SessionViewSet(viewsets.ModelViewSet):
         session.expected_cash = expected
         session.variance = variance
         upper = session.closed_at or timezone.now()
-        session.sales_total = Sale.objects.filter(status='completed', created_at__gte=session.opened_at, created_at__lte=upper).aggregate(s=Sum('total'))['s'] or Decimal('0')
+        session.sales_total = Sale.objects.filter(
+            status='completed',
+        ).filter(
+            Q(session=session)
+            | Q(
+                session__isnull=True,
+                created_at__gte=session.opened_at,
+                created_at__lte=upper,
+            )
+        ).aggregate(s=Sum('total'))['s'] or Decimal('0')
         session.status = Session.STATUS_CLOSED
         session.closed_at = timezone.now()
         if 'cash_removed' in request.data:

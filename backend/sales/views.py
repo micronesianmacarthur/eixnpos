@@ -22,7 +22,16 @@ class SaleViewSet(viewsets.ModelViewSet):
     _transaction_service = TransactionService(require_payment_tokens=False)
 
     def perform_create(self, serializer):
-        serializer.save(cashier=self.request.user)
+        # Attribute the sale to the open session for the cashier's register/
+        # business day (see sessions.models.resolve_open_session). Could be
+        # None when no session is open — server-side session enforcement is
+        # absent on this line, and a NULL session falls back to the legacy
+        # close/summary time-window rule. Never attach to a closed or
+        # sibling-register session.
+        from django.utils import timezone
+        from sessions.models import resolve_open_session
+        session = resolve_open_session(self.request.user, timezone.now())
+        serializer.save(cashier=self.request.user, session=session)
 
     @action(detail=True, methods=['post'])
     def add_line(self, request, pk=None):
