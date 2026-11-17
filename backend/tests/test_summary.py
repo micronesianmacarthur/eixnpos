@@ -1,5 +1,5 @@
 """Tests for sales.summary.compute_session_summary (pandas revenue/profit/loss)."""
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -8,7 +8,7 @@ from django.test import TestCase
 import pandas as pd
 
 from products.models import Product
-from sessions.models import Session
+from sessions.models import Register, Session
 from sales.models import Payment, Sale, SaleLine
 from sales.summary import _money, _sum_column, _to_decimal, compute_session_summary
 from suppliers.models import Supplier
@@ -24,7 +24,13 @@ class ComputeSessionSummaryTests(TestCase):
             name='Widget', price=Decimal('10.00'), cost=Decimal('4.00'),
             supplier=self.supplier,
         )
-        self.session = Session.objects.create(cashier=self.cashier, starting_cash=Decimal('50.00'))
+        self.session = Session.objects.create(
+            cashier=self.cashier,
+            starting_cash=Decimal('50.00'),
+            register=Register.objects.order_by('id').first()
+            or Register.objects.create(name='Test Register'),
+            business_day=date.today(),
+        )
 
     def make_sale(self, total, subtotal=None, cost_qty=None, method='cash'):
         """Create a completed sale within the session window."""

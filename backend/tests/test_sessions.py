@@ -7,6 +7,7 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from sales.models import Payment, Sale, SaleLine
+from sales.summary import compute_session_summary
 from sessions.models import Register, Session
 
 User = get_user_model()
@@ -339,4 +340,130 @@ class SessionStartTests(TestCase):
         s2 = Session.objects.create(cashier=self.manager, starting_cash=Decimal('60.00'),
                                     register=other_register, business_day=self.today)
         self.assertEqual(s2.status, Session.STATUS_OPEN)
+
+
+class SessionSaleAttributionTests(TestCase):
+    """Sale->session attribution and close/summary/Z-report scoping.
+
+    Regression for the review blocker: now that overlapping open sessions are
+    legal (one per register/business day), money paths must attribute sales to
+    the session they belong to via ``Sale.session``, not by the session's time
+    window alone. Probes from the review are re-run here and must produce
+    ``sales_total=0.00`` for the session that had no sales.
+    """
+
+    def setUp(self):
+        self.manager = User.objects.create_user(username='manager', password='pw', role='manager')
+        self.client = APIClient()
+        self.client.force_authenticate(self.manager)
+        self.register = Register.objects.order_by('id').first() or Register.objects.create(name='Test Register')
+        self.today = date.today()
+
+    def open_session(self, register=None, business_day=None, starting_cash=Decimal('0.00')):
+        return Session.objects.create(
+            cashier=self.manager, starting_cash=starting_cash,
+            register=register or self.register,
+            business_day=business_day or self.today,
+        )
+
+    def completed_sale(self, total, session=None):
+        """Create a completed sale with a cash payment, optionally attributed."""
+        sale = Sale.objects.create(
+            cashier=self.manager, status=Sale.STATUS_COMPLETED,
+            subtotal=total, total=total, session=session,
+        )
+        Payment.objects.create(sale=sale, method='cash', amount=total)
+        return sale
+
+    def close(self, session, counts=None):
+        return self.client.post(
+            f'/api/sessions/{session.id}/close/',
+            {'counts': counts or {}},
+            format='json',
+        )
+
+    def test_sale_creation_attributes_to_open_session_on_register_day(self):
+        """POST /api/sales/ sets Sale.session to the cashier's open session."""
+        session = self.open_session(starting_cash=Decimal('50.00'))
+
+        response = self.client.post('/api/sales/', {'cashier': self.manager.id}, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        sale = Sale.objects.get(pk=response.data['id'])
+        self.assertEqual(sale.session, session)
+
+    def test_sale_creation_leaves_session_null_when_no_session_open(self):
+        """No open session for the cashier's register/day -> session stays NULL
+        (server-side session enforcement is out of scope on this line)."""
+        response = self.client.post('/api/sales/', {'cashier': self.manager.id}, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        sale = Sale.objects.get(pk=response.data['id'])
+        self.assertIsNone(sale.session)
+
+    def test_close_does_not_absorb_sale_from_sibling_register(self):
+        """Closing register A must not pick up a sale attributed to register B,
+        even though B's sale falls inside A's time window."""
+        register_b = Register.objects.create(name='Register B')
+        session_a = self.open_session(starting_cash=Decimal('100.00'))
+        session_b = self.open_session(register=register_b, starting_cash=Decimal('0.00'))
+        # A $10 sale actually made on register B.
+        self.completed_sale(Decimal('10.00'), session=session_b)
+
+        close_a = self.close(session_a, {'hundreds': 1})  # 100 counted, no cash sales
+        self.assertEqual(close_a.status_code, 200)
+
+        session_a.refresh_from_db()
+        self.assertEqual(session_a.sales_total, Decimal('0.00'))
+        self.assertEqual(session_a.expected_cash, Decimal('100.00'))
+        # The sale is owned by B's session only.
+        self.assertEqual(
+            Sale.objects.filter(session=session_b, status=Sale.STATUS_COMPLETED).count(), 1,
+        )
+
+        # Closing B reports its own $10; summary and close() agree.
+        close_b = self.close(session_b, {'tens': 1})
+        self.assertEqual(close_b.status_code, 200)
+        session_b.refresh_from_db()
+        self.assertEqual(session_b.sales_total, Decimal('10.00'))
+        self.assertEqual(session_b.expected_cash, Decimal('10.00'))
+        self.assertEqual(
+            Decimal(compute_session_summary(session_b.id)['summary']['revenue']),
+            session_b.sales_total,
+        )
+        # And A's summary/Z-report agree with A's close() (zero revenue).
+        self.assertEqual(
+            Decimal(compute_session_summary(session_a.id)['summary']['revenue']),
+            session_a.sales_total,
+        )
+
+    def test_close_of_yesterday_open_session_does_not_absorb_todays_sale(self):
+        """Midnight handoff on one register: yesterday's session is still open
+        and today's session is open on the same register. A sale made today is
+        attributed to today's session, so closing yesterday's must report zero.
+        """
+        yesterday = self.today - timedelta(days=1)
+        old_session = self.open_session(
+            starting_cash=Decimal('100.00'), business_day=yesterday,
+        )
+        today_session = self.open_session(starting_cash=Decimal('0.00'))
+        # $10 cash sale made today, attributed to today's open session.
+        self.completed_sale(Decimal('10.00'), session=today_session)
+
+        close_old = self.close(old_session, {'hundreds': 1})
+        self.assertEqual(close_old.status_code, 200)
+        old_session.refresh_from_db()
+        self.assertEqual(old_session.sales_total, Decimal('0.00'))
+        self.assertEqual(old_session.expected_cash, Decimal('100.00'))
+
+        # The sale still lives on today's session.
+        self.assertEqual(
+            Sale.objects.filter(session=today_session, status=Sale.STATUS_COMPLETED).count(), 1,
+        )
+        # Today's summary counts exactly the $10 and agrees with what a close
+        # would compute.
+        self.assertEqual(
+            Decimal(compute_session_summary(today_session.id)['summary']['revenue']),
+            Decimal('10.00'),
+        )
 

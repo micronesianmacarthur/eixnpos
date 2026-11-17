@@ -5,7 +5,7 @@ from rest_framework.permissions import IsAuthenticated
 from django.http import HttpResponse
 from django.utils import timezone
 from django.db import IntegrityError
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from decimal import Decimal
 from .models import Session, Register, local_date_of
 from .serializers import SessionSerializer
@@ -182,9 +182,20 @@ class SessionViewSet(viewsets.ModelViewSet):
         counts = request.data.get('counts', {})
         totals = calculate_totals(counts)
         counted = totals['grand_total']
-        # cash sales
+        # cash sales on THIS session only: either the sale is linked to this
+        # session, or (legacy fallback — pre-migration history with no link)
+        # it is an unlinked sale created inside the session's time window.
         upper = session.closed_at or timezone.now()
-        cash_sales = Payment.objects.filter(method='cash', sale__status='completed', sale__created_at__gte=session.opened_at, sale__created_at__lte=upper).aggregate(s=Sum('amount'))['s'] or Decimal('0')
+        cash_sales = Payment.objects.filter(
+            method='cash', sale__status='completed',
+        ).filter(
+            Q(sale__session=session)
+            | Q(
+                sale__session__isnull=True,
+                sale__created_at__gte=session.opened_at,
+                sale__created_at__lte=upper,
+            )
+        ).aggregate(s=Sum('amount'))['s'] or Decimal('0')
         expected = session.starting_cash + cash_sales
         variance = expected - counted
         session.cash_counts = counts
@@ -192,7 +203,16 @@ class SessionViewSet(viewsets.ModelViewSet):
         session.expected_cash = expected
         session.variance = variance
         upper = session.closed_at or timezone.now()
-        session.sales_total = Sale.objects.filter(status='completed', created_at__gte=session.opened_at, created_at__lte=upper).aggregate(s=Sum('total'))['s'] or Decimal('0')
+        session.sales_total = Sale.objects.filter(
+            status='completed',
+        ).filter(
+            Q(session=session)
+            | Q(
+                session__isnull=True,
+                created_at__gte=session.opened_at,
+                created_at__lte=upper,
+            )
+        ).aggregate(s=Sum('total'))['s'] or Decimal('0')
         session.status = Session.STATUS_CLOSED
         session.closed_at = timezone.now()
         if 'cash_removed' in request.data:

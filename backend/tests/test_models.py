@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -10,7 +10,7 @@ from customers.models import Customer
 from inventory.models import StockMovement
 from products.models import Product
 from sales.models import Sale, SaleLine
-from sessions.models import Session
+from sessions.models import Register, Session
 from suppliers.models import Supplier
 
 User = get_user_model()
@@ -161,7 +161,12 @@ class NamingTests(TestCase):
 
     def test_session_defaults_and_str(self):
         cashier = User.objects.create_user(username='cashier', password='pw')
-        session = Session.objects.create(cashier=cashier)
+        session = Session.objects.create(
+            cashier=cashier,
+            register=Register.objects.order_by('id').first()
+            or Register.objects.create(name='Test Register'),
+            business_day=date.today(),
+        )
 
         self.assertEqual(session.status, Session.STATUS_OPEN)
         self.assertEqual(session.starting_cash, Decimal('0.00'))

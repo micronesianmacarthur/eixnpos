@@ -2,6 +2,7 @@
 import os
 import tempfile
 
+from datetime import date
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -15,7 +16,7 @@ from sales.zreport import (
     build_zreport_lines,
     build_zreport_pdf,
 )
-from sessions.models import Session
+from sessions.models import Register, Session
 from suppliers.models import Supplier
 
 User = get_user_model()
@@ -29,7 +30,13 @@ class ZReportLineTests(TestCase):
             name='Widget', price=Decimal('10.00'), cost=Decimal('4.00'),
             supplier=self.supplier,
         )
-        self.session = Session.objects.create(cashier=self.cashier, starting_cash=Decimal('50.00'))
+        self.session = Session.objects.create(
+            cashier=self.cashier,
+            starting_cash=Decimal('50.00'),
+            register=Register.objects.order_by('id').first()
+            or Register.objects.create(name='Test Register'),
+            business_day=date.today(),
+        )
 
     def make_sale(self, total, method='cash'):
         sale = Sale.objects.create(

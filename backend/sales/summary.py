@@ -31,6 +31,8 @@ import pandas as pd
 if TYPE_CHECKING:
     from sessions.models import Session
 
+from django.db.models import Q
+
 CENTS = Decimal('0.01')
 
 
@@ -80,18 +82,37 @@ class SessionWindow:
         return dj_timezone.now()
 
 
+def _session_sales_filter(window: SessionWindow, prefix: str = '') -> Q:
+    """Q filter selecting completed sales that belong to THIS session.
+
+    A sale is included when it is explicitly linked to the session
+    (``session_id`` matches), OR — the legacy fallback — when it has no
+    session link at all and was created inside the session's time window.
+    The fallback keeps pre-migration sales (``session IS NULL``) reporting
+    under the register/day session whose time window contains them; a sale
+    that IS attributed to a specific session is never counted by a sibling or
+    overlapping session, no matter how its timestamps align.
+
+    ``prefix`` is ``'sale__'`` for queries that reach a Sale through a related
+    model (lines, payments), ``''`` when querying Sale directly.
+    """
+    linked = Q(**{f'{prefix}session_id': window.session_id})
+    legacy = Q(**{
+        f'{prefix}session__isnull': True,
+        f'{prefix}created_at__gte': window.opened_at,
+        f'{prefix}created_at__lte': window.upper_bound,
+    })
+    return linked | legacy
+
+
 def _read_sales(window: SessionWindow) -> pd.DataFrame:
-    """Load completed sales in the session window into a DataFrame."""
+    """Load completed sales for THIS session into a DataFrame."""
     from sales.models import Sale
 
-    later = window.upper_bound
     qs = (
         Sale.objects
-        .filter(
-            status=Sale.STATUS_COMPLETED,
-            created_at__gte=window.opened_at,
-            created_at__lte=later,
-        )
+        .filter(status=Sale.STATUS_COMPLETED)
+        .filter(_session_sales_filter(window))
         .values('id', 'number', 'subtotal', 'discount_total', 'tax_total', 'total')
     )
     df = pd.DataFrame(list(qs))
@@ -103,14 +124,10 @@ def _read_sales(window: SessionWindow) -> pd.DataFrame:
 def _read_lines(window: SessionWindow) -> pd.DataFrame:
     """Load sale lines (with product cost and category) into a DataFrame."""
     from sales.models import Sale, SaleLine
-    later = window.upper_bound
     qs = (
         SaleLine.objects
-        .filter(
-            sale__status=Sale.STATUS_COMPLETED,
-            sale__created_at__gte=window.opened_at,
-            sale__created_at__lte=later,
-        )
+        .filter(sale__status=Sale.STATUS_COMPLETED)
+        .filter(_session_sales_filter(window, prefix='sale__'))
         .select_related('product__category')
         .values(
             'sale_id',
@@ -125,17 +142,13 @@ def _read_lines(window: SessionWindow) -> pd.DataFrame:
 
 
 def _read_payments(window: SessionWindow) -> pd.DataFrame:
-    """Load payments on completed sales in the session window."""
+    """Load payments on completed sales for THIS session."""
     from sales.models import Payment, Sale
 
-    later = window.upper_bound
     qs = (
         Payment.objects
-        .filter(
-            sale__status=Sale.STATUS_COMPLETED,
-            sale__created_at__gte=window.opened_at,
-            sale__created_at__lte=later,
-        )
+        .filter(sale__status=Sale.STATUS_COMPLETED)
+        .filter(_session_sales_filter(window, prefix='sale__'))
         .values('method', 'amount')
     )
     return pd.DataFrame(list(qs))

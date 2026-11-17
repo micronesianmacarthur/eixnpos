@@ -22,6 +22,17 @@ class Sale(models.Model):
 
     number = models.PositiveIntegerField(unique=True, editable=False)
     cashier = models.ForeignKey(User, on_delete=models.PROTECT, related_name='sales')
+    # The POS session (register/day shift) this sale belongs to. Set
+    # server-side at sale creation from the cashier's open session; NULL only
+    # when there is no open session for the cashier's register/business day
+    # (server-side session enforcement is absent on this line). Close/summary/
+    # Z-report totals attribute a sale through this link, falling back to the
+    # legacy time-window rule only for rows where it is NULL (pre-migration
+    # history).
+    session = models.ForeignKey(
+        'pos_sessions.Session', related_name='sales',
+        null=True, blank=True, on_delete=models.PROTECT,
+    )
     customer = models.ForeignKey('customers.Customer', null=True, blank=True, on_delete=models.SET_NULL, related_name='sales')
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_OPEN)
     subtotal = models.DecimalField(max_digits=12, decimal_places=2, default=0)

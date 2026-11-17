@@ -41,6 +41,40 @@ def local_date_of(dt):
     return timezone.localtime(dt, business_tzinfo()).date()
 
 
+def resolve_open_session(cashier, at=None):
+    """The open Session a sale by ``cashier`` should be attributed to.
+
+    Resolves the cashier's *default* register (their first accessible register,
+    ordered by pk — the same rule the session ``create`` and ``current`` views
+    use when no register is given) and the business-local date of ``at``
+    (defaults to now), then returns the open session for that register/day.
+
+    Returns ``None`` when there is no open session on the cashier's default
+    register/day. We deliberately do NOT fall back to some other accessible
+    register that happens to have an open session: the sale HTTP path carries
+    no register, so silently attaching to a sibling-register session would
+    misattribute revenue. In that case the sale stays ``session=NULL`` and the
+    legacy close/summary time-window rule reports it, matching the absence of
+    server-side session enforcement on this line.
+    """
+    from django.utils import timezone as dj_timezone
+    at = at or dj_timezone.now()
+    day = local_date_of(at)
+
+    default = None
+    for register in Register.objects.order_by('id'):
+        if register.cashiers.exists() and not register.cashiers.filter(pk=cashier.pk).exists():
+            continue
+        default = register
+        break
+    if default is None:
+        return None
+
+    return Session.objects.filter(
+        register=default, business_day=day, status=Session.STATUS_OPEN,
+    ).order_by('-opened_at').first()
+
+
 class Register(models.Model):
     """A physical POS station / cash drawer.
 
@@ -85,11 +119,14 @@ class Session(models.Model):
     notes = models.TextField(blank=True, default='')
     # Scope: the open shift is shared by the *register/day*, not by a single
     # cashier (``cashier`` is kept as audit-only — who opened the shift).
+    # Both fields are non-null: legacy sessions were backfilled in migration
+    # ``0004``, and every API-created session resolves a register server-side
+    # (a caller with no accessible register gets a 400), so no row may be
+    # unscoped.
     register = models.ForeignKey(
         Register, on_delete=models.PROTECT, related_name='sessions',
-        null=True, blank=True,
     )
-    business_day = models.DateField(null=True, blank=True)
+    business_day = models.DateField()
 
     class Meta:
         ordering = ['-opened_at']
