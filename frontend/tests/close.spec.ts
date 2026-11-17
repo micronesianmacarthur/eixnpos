@@ -92,7 +92,7 @@ function json(data: unknown, status = 200) {
 
 async function installApiMocks(
   page: Page,
-  options: { failSummary?: boolean } = {},
+  options: { failSummary?: boolean; noOpenSession?: boolean } = {},
 ): Promise<NetworkMonitor> {
   const monitor: NetworkMonitor = { external: [], failed: [], requests: [] };
 
@@ -146,6 +146,27 @@ async function installApiMocks(
     }
     if (path === '/api/business/') {
       await route.fulfill(json(BUSINESS_INFO));
+      return;
+    }
+    if (path === '/api/sessions/current/') {
+      if (options.noOpenSession) {
+        await route.fulfill(json({ open: false }));
+        return;
+      }
+      await route.fulfill(
+        json({
+          open: true,
+          sessionId: String(SESSION.id),
+          startedAt: SESSION.opened_at,
+          startingCash: SESSION.starting_cash,
+          register: 1,
+          day: '2026-11-06',
+        }),
+      );
+      return;
+    }
+    if (path === `/api/sessions/${SESSION.id}/`) {
+      await route.fulfill(json(SESSION));
       return;
     }
     if (path === '/api/sessions/') {
@@ -425,6 +446,40 @@ test('runs a backup and closes the session from the final section', async ({ pag
     ].sort(),
   );
   expect(Object.values(sentCounts).every((v) => v === 0)).toBe(true);
+
+  expectNoNetworkIssues(monitor);
+});
+
+test('two accessible registers: only the non-default one open -> guard and ClosePage agree (no wrong-session close, no redirect loop)', async ({
+  page,
+}) => {
+  // Scenario from ADR-001 acceptance / review S2: the cashier can operate two
+  // registers (default = lowest-pk register 1, sibling = register 2). Only the
+  // sibling register 2 holds an open shift. `GET /api/sessions/current/` (no
+  // register) resolves the *default* register 1, which has NO open session, so
+  // it reports `open: false`.
+  const monitor = await installApiMocks(page, { noOpenSession: true });
+
+  // The /close route is behind RequireOpenSession, which resolves the same
+  // default register/day. With no open session there it must redirect once to
+  // the dashboard — ClosePage must never mount against a sibling's shift.
+  await page.goto(`${BASE_URL}/close`);
+  await expect(page.getByRole('heading', { level: 1, name: 'Dashboard' })).toBeVisible();
+
+  // A redirect loop would keep bouncing; assert the dashboard stays put and
+  // no session close was ever attempted (no POST to /api/sessions/<id>/close/).
+  await expect(page.getByRole('heading', { level: 1, name: 'Dashboard' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Close' })).toHaveCount(0);
+
+  const anyClose = monitor.requests.some(
+    (r) => r.method === 'POST' && /\/api\/sessions\/\d+\/close\/$/.test(r.path),
+  );
+  expect(anyClose, 'must never close a sibling register session').toBe(false);
+
+  // ClosePage must not even scan the session list for "an open one".
+  expect(
+    monitor.requests.some((r) => r.method === 'GET' && r.path === '/api/sessions/'),
+  ).toBe(false);
 
   expectNoNetworkIssues(monitor);
 });

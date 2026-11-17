@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from './authContext';
 import { apiFetch, ApiError } from './api';
+import { currentSession } from './session';
 
 /**
  * Route guard for the transaction screens (`/sales`, `/sales-manager`,
@@ -37,13 +38,6 @@ const currency = new Intl.NumberFormat('en-US', {
   style: 'currency',
   currency: 'USD',
 });
-
-interface CurrentSessionResponse {
-  open: boolean;
-  sessionId?: string;
-  startedAt?: string;
-  startingCash?: string;
-}
 
 /** `loading` -> first check in flight; otherwise see the named phase. */
 type Phase = 'loading' | 'needs-session' | 'ready';
@@ -109,7 +103,7 @@ export function RequireOpenSession() {
     error?: string;
   }> => {
     try {
-      const data = await apiFetch<CurrentSessionResponse>('/api/sessions/current/');
+      const data = await currentSession();
       return { open: data.open === true };
     } catch (error) {
       return {
