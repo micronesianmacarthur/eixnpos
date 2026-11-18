@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuth, type Role } from './authContext';
 import { Icon, type IconName } from './Icon';
+import { Logo } from './Logo';
 import './Sidebar.css';
 
 interface MenuItem {
@@ -91,12 +92,11 @@ function Sidebar() {
       >
         <div className="sidebar-header">
           <span className="sidebar-brand" aria-label="eixnPOS">
-            {collapsed ? (
-              <span aria-hidden="true">e</span>
-            ) : (
-              <>
+            <Logo size={22} className="sidebar-brand-mark" />
+            {!collapsed && (
+              <span className="sidebar-brand-wordmark">
                 <span className="sidebar-brand-accent">eixn</span>POS
-              </>
+              </span>
             )}
           </span>
           <button
