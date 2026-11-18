@@ -8,18 +8,14 @@ import {
   type KeyboardEvent,
 } from 'react';
 import { apiFetch, ApiError } from './api';
-import { useAuth } from './authContext';
 import { useTheme } from './themeContext';
 import { useBlocker } from 'react-router-dom';
-import UserFormModal from './UserFormModal';
-import type { User } from './users';
 import './SettingsPage.css';
 
-type TabId = 'store' | 'users' | 'backup' | 'appearance';
+type TabId = 'store' | 'backup' | 'appearance';
 
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: 'store', label: 'Store' },
-  { id: 'users', label: 'Users' },
   { id: 'backup', label: 'Backup' },
   { id: 'appearance', label: 'Appearance' },
 ];
@@ -33,18 +29,7 @@ interface BusinessInfo {
   backup_path: string;
 }
 
-function normalizeList<T>(data: T[] | { results: T[] }): T[] {
-  return Array.isArray(data) ? data : data.results;
-}
-
-function roleBadge(role: string): string {
-  const cls = `mm-badge ${role === 'admin' ? 'mm-badge--primary' : role === 'manager' ? 'mm-badge--info' : 'mm-badge--muted'}`;
-  return `${cls} settings-role`;
-}
-
 export default function SettingsPage() {
-  const { me } = useAuth();
-  const currentUserId = me?.user.id ?? null;
   const { theme, toggleTheme } = useTheme();
 
   const [activeTab, setActiveTab] = useState<TabId>('store');
@@ -73,17 +58,6 @@ export default function SettingsPage() {
   const [storeSaving, setStoreSaving] = useState(false);
   const [storeError, setStoreError] = useState('');
   const [storeSaved, setStoreSaved] = useState('');
-
-  // Users section ---------------------------------------------------------
-  const [users, setUsers] = useState<User[]>([]);
-  const [usersLoading, setUsersLoading] = useState(true);
-  const [usersError, setUsersError] = useState('');
-  const [usersActionError, setUsersActionError] = useState('');
-  const [userFormMode, setUserFormMode] = useState<'closed' | 'create' | 'edit'>('closed');
-  const [selectedUser, setSelectedUser] = useState<User | null>(null);
-  const [userFormError, setUserFormError] = useState('');
-  const [userFormSaving, setUserFormSaving] = useState(false);
-  const [deletingId, setDeletingId] = useState<number | null>(null);
 
   // Backup section --------------------------------------------------------
   const [backupState, setBackupState] = useState<'idle' | 'running' | 'success' | 'error'>('idle');
@@ -118,27 +92,9 @@ export default function SettingsPage() {
     }
   }, []);
 
-  const loadUsers = useCallback(async () => {
-    try {
-      const data = await apiFetch<User[] | { results: User[] }>('/api/users/');
-      setUsers(normalizeList(data));
-      setUsersError('');
-    } catch (err) {
-      setUsersError(err instanceof ApiError ? err.message : 'Failed to load users');
-    } finally {
-      setUsersLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
     void loadStore();
   }, [loadStore]);
-
-  useEffect(() => {
-    if (activeTab === 'users') {
-      void loadUsers();
-    }
-  }, [activeTab, loadUsers]);
 
   const handleStoreField = (field: keyof BusinessInfo, value: string) => {
     setStore((current) => ({ ...current, [field]: value }));
@@ -219,72 +175,6 @@ export default function SettingsPage() {
       store.website !== savedStore.website,
     [store, savedStore],
   );
-
-  // Users form ------------------------------------------------------------
-  const openCreateUser = () => {
-    setSelectedUser(null);
-    setUserFormError('');
-    setUserFormMode('create');
-  };
-
-  const openEditUser = (user: User) => {
-    setSelectedUser(user);
-    setUserFormError('');
-    setUserFormMode('edit');
-  };
-
-  const closeUserForm = () => {
-    if (userFormSaving) return;
-    setUserFormMode('closed');
-    setSelectedUser(null);
-  };
-
-  const handleDeleteUser = async (user: User) => {
-    if (user.id === currentUserId) {
-      setUsersActionError('You cannot delete your own account.');
-      return;
-    }
-    const confirmed = window.confirm(
-      `Delete ${user.name} (${user.email})? This cannot be undone.`,
-    );
-    if (!confirmed) return;
-    setDeletingId(user.id);
-    setUsersActionError('');
-    try {
-      await apiFetch(`/api/users/${user.id}/`, { method: 'DELETE' });
-      await loadUsers();
-    } catch (err) {
-      setUsersActionError(err instanceof ApiError ? err.message : 'Failed to delete user');
-    } finally {
-      setDeletingId(null);
-    }
-  };
-
-  const handleUserSubmit = async (payload: Record<string, string>) => {
-    setUserFormSaving(true);
-    setUserFormError('');
-    try {
-      if (userFormMode === 'create') {
-        await apiFetch<User>('/api/users/', { method: 'POST', body: JSON.stringify(payload) });
-      } else if (selectedUser) {
-        await apiFetch<User>(`/api/users/${selectedUser.id}/`, {
-          method: 'PATCH',
-          body: JSON.stringify(payload),
-        });
-      } else {
-        setUserFormError('No user selected for editing.');
-        setUserFormSaving(false);
-        return;
-      }
-      setUserFormMode('closed');
-      setSelectedUser(null);
-      await loadUsers();
-    } catch (err) {
-      setUserFormError(err instanceof ApiError ? err.message : 'Failed to save user');
-    } finally {
-      setUserFormSaving(false);
-    }
-  };
 
   // Backup ----------------------------------------------------------------
   const handleBackupPathField = (value: string) => {
@@ -555,109 +445,6 @@ export default function SettingsPage() {
       <div
         className="settings-panel"
         role="tabpanel"
-        id="settings-panel-users"
-        aria-labelledby="settings-tab-users"
-        hidden={activeTab !== 'users'}
-      >
-        <div className="mm-card">
-          <div className="mm-card-header">
-            <div>
-              <h2 className="mm-card-title">Users</h2>
-              <p className="mm-card-subtitle">Manage staff accounts and roles.</p>
-            </div>
-            <button type="button" className="mm-btn mm-btn--primary" onClick={openCreateUser}>
-              + Add user
-            </button>
-          </div>
-          {usersLoading && (
-            <p className="mm-loading">
-              <span className="mm-spinner" aria-hidden="true" />
-              Loading users...
-            </p>
-          )}
-          {usersError && (
-            <p className="mm-alert mm-alert--danger settings-notice" role="alert">
-              {usersError}
-            </p>
-          )}
-          {!usersError && (
-            <>
-              {usersActionError && (
-                <p className="mm-alert mm-alert--danger settings-notice" role="alert">
-                  {usersActionError}
-                </p>
-              )}
-              <div className="mm-table-wrap">
-              <table className="mm-table">
-                <thead>
-                  <tr>
-                    <th scope="col">Name</th>
-                    <th scope="col">Role</th>
-                    <th scope="col">Status</th>
-                    <th scope="col">
-                      <span className="mm-visually-hidden">Actions</span>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {users.map((user) => (
-                    <tr key={user.id}>
-                      <td className="settings-user-name">{user.name}</td>
-                      <td>
-                        <span className={roleBadge(user.role)}>
-                          {user.role.charAt(0).toUpperCase() + user.role.slice(1)}
-                        </span>
-                      </td>
-                      <td>
-                        {user.active ? (
-                          <span className="mm-badge mm-badge--success">Active</span>
-                        ) : (
-                          <span className="mm-badge mm-badge--muted">Inactive</span>
-                        )}
-                      </td>
-                      <td className="settings-user-actions">
-                        <button
-                          type="button"
-                          className="mm-btn mm-btn--sm mm-btn--ghost"
-                          onClick={() => openEditUser(user)}
-                          aria-label={`Edit ${user.name}`}
-                        >
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          className="mm-btn mm-btn--sm mm-btn--danger"
-                          onClick={() => void handleDeleteUser(user)}
-                          disabled={deletingId === user.id || user.id === currentUserId}
-                          aria-label={`Delete ${user.name}`}
-                        >
-                          {deletingId === user.id
-                            ? 'Deleting...'
-                            : user.id === currentUserId
-                              ? 'You'
-                              : 'Delete'}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                  {users.length === 0 && (
-                    <tr>
-                      <td colSpan={4} className="settings-empty-row">
-                        No users yet. Create the first one.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-
-      <div
-        className="settings-panel"
-        role="tabpanel"
         id="settings-panel-backup"
         aria-labelledby="settings-tab-backup"
         hidden={activeTab !== 'backup'}
@@ -765,18 +552,6 @@ export default function SettingsPage() {
           </div>
         </div>
       </div>
-
-      {userFormMode !== 'closed' && (
-        <UserFormModal
-          mode={userFormMode}
-          user={selectedUser}
-          saving={userFormSaving}
-          error={userFormError}
-          titleId="settings-user-form-title"
-          onSubmit={(payload) => void handleUserSubmit(payload)}
-          onClose={closeUserForm}
-        />
-      )}
 
       {blocker.state === 'blocked' && (
         <div

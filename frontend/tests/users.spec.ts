@@ -21,6 +21,12 @@ const AUTH_ME = {
   business_info_complete: true,
 };
 
+const CASHIER_ME = {
+  user: { id: 3, username: 'casey', role: 'cashier' },
+  must_change_password: false,
+  business_info_complete: true,
+};
+
 const USERS = [
   { id: 1, email: 'maya@example.com', name: 'Maya Admin', role: 'admin', createdAt: '2026-01-01T10:00:00Z', updatedAt: '2026-01-01T10:00:00Z' },
   { id: 2, email: 'cashier@example.com', name: 'Casey Cashier', role: 'cashier', createdAt: '2026-01-01T10:00:00Z', updatedAt: '2026-01-01T10:00:00Z' },
@@ -119,4 +125,21 @@ test('opens the create user modal', async ({ page }) => {
   await expect(page.locator('.mm-modal')).toBeVisible();
   expectNoNetworkIssues(monitor);
   await expect(page).toHaveScreenshot('users-create-modal.png', SNAPSHOT);
+});
+
+test('redirects a cashier away from /users to the dashboard', async ({ page }) => {
+  await installApiMocks(page);
+  // Replace the admin /api/auth/me/ mock with a cashier.
+  await page.unroute('**/api/auth/me/');
+  await page.route('**/api/auth/me/', (route) => route.fulfill(json(CASHIER_ME)));
+  // The dashboard (the redirect target) requires an open session.
+  await page.route('**/api/sessions/current/', (route) => route.fulfill(json({ open: true })));
+
+  await page.goto(`${BASE_URL}/users`);
+
+  // RequireRole(['manager', 'admin']) redirects non-managers to '/'.
+  await expect(page).toHaveURL(`${BASE_URL}/`);
+  await expect(page.getByRole('heading', { level: 1, name: 'Users' })).toHaveCount(0);
+  // The sidebar does not offer the Users link to cashiers.
+  await expect(page.locator('a[href="/users"]')).toHaveCount(0);
 });

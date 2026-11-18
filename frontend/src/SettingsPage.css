@@ -76,27 +76,6 @@
   margin: 0;
 }
 
-.settings-user-name {
-  font-weight: 600;
-}
-
-.settings-user-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  white-space: nowrap;
-}
-
-.settings-role {
-  text-transform: capitalize;
-}
-
-.settings-empty-row {
-  padding: 24px 16px;
-  color: var(--mm-text-muted);
-  text-align: center;
-}
-
 @media (max-width: 768px) {
   .settings-fields {
     grid-template-columns: minmax(0, 1fr);
