@@ -214,8 +214,9 @@ test('tab hover and focus states are styled', async ({ page }) => {
   const tab = page.getByRole('tab', { name: 'Backup' });
   const base = await tab.evaluate((el) => getComputedStyle(el).color);
   await tab.hover();
-  const hovered = await tab.evaluate((el) => getComputedStyle(el).color);
-  expect(hovered, 'hover changes tab color').not.toBe(base);
+  // Auto-retries: a single computed-style read can race the browser's
+  // mouse-move input event and still report the pre-hover color.
+  await expect(tab, 'hover changes tab color').not.toHaveCSS('color', base);
   await tab.focus();
   const outline = await tab.evaluate((el) => getComputedStyle(el).outlineStyle);
   const shadow = await tab.evaluate((el) => getComputedStyle(el).boxShadow);

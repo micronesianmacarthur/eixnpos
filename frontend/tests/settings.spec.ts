@@ -118,6 +118,9 @@ test('renders Settings on desktop with Store tab active', async ({ page }) => {
 
   // The Users tab was removed from Settings; user management lives on /users.
   await expect(page.getByRole('tab', { name: 'Users' })).toHaveCount(0);
+  // No link inside the Settings page content points at the removed surface
+  // (scoped to the page container: the app sidebar legitimately links to /users).
+  await expect(page.locator('.app-page a[href="/users"]')).toHaveCount(0);
 
   // Store tab is active and pre-fills the API data.
   await expect(page.getByRole('tab', { name: 'Store' })).toHaveAttribute('aria-selected', 'true');
