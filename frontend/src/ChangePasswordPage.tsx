@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Logo } from './Logo';
 import { apiFetch, ApiError } from './api';
 import { useAuth } from './authContext';
 import './AuthPages.css';
@@ -54,10 +55,9 @@ function ChangePasswordPage() {
   return (
     <div className="auth-page">
       <main className="mm-card auth-card">
-        <div className="auth-brand">
-          <span>
-            <span className="auth-brand-accent">eixn</span>POS
-          </span>
+        <div className="auth-brand" aria-label="eixnPOS">
+          <Logo size={24} />
+          <span className="auth-brand-accent">eixn</span>POS
         </div>
 
         <header className="auth-header">

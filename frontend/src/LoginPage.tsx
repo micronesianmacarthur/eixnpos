@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { Logo } from './Logo';
 import { apiFetch, ApiError } from './api';
 import type { LoginResponse } from './authContext';
 import './AuthPages.css';
@@ -35,13 +36,9 @@ function LoginPage() {
   return (
     <div className="auth-page">
       <main className="mm-card auth-card">
-        <div className="auth-brand">
-          {/*<span className="auth-brand-mark" aria-hidden="true">
-            e
-          </span>*/}
-          <span>
-            <span className="auth-brand-accent">eixn</span>POS
-          </span>
+        <div className="auth-brand" aria-label="eixnPOS">
+          <Logo size={24} />
+          <span className="auth-brand-accent">eixn</span>POS
         </div>
 
         <header className="auth-header">
