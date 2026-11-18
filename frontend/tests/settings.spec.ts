@@ -30,12 +30,6 @@ const BUSINESS_INFO = {
   backup_path: '/backup',
 };
 
-const USERS = [
-  { id: 1, email: 'admin@eixn.test', name: 'Alex Admin', username: 'alex', first_name: 'Alex', last_name: 'Admin', role: 'admin', active: true, createdAt: '2026-01-01T10:00:00Z', updatedAt: '2026-01-01T10:00:00Z' },
-  { id: 2, email: 'sam@eixn.test', name: 'Sam Manager', username: 'sam', first_name: 'Sam', last_name: 'Manager', role: 'manager', active: true, createdAt: '2026-01-01T10:00:00Z', updatedAt: '2026-01-01T10:00:00Z' },
-  { id: 3, email: 'riley@eixn.test', name: 'Riley Cashier', username: 'riley', first_name: 'Riley', last_name: 'Cashier', role: 'cashier', active: false, createdAt: '2026-01-01T10:00:00Z', updatedAt: '2026-01-01T10:00:00Z' },
-];
-
 function json(data: unknown, status = 200) {
   return { status, contentType: 'application/json', body: JSON.stringify(data) };
 }
@@ -86,27 +80,6 @@ async function installApiMocks(page: Page): Promise<NetworkMonitor> {
       await route.fulfill(json(BUSINESS_INFO));
       return;
     }
-    if (path === '/api/users/') {
-      if (method === 'POST') {
-        await route.fulfill(json({ ...USERS[0], ...JSON.parse(request.postData() || '{}') }, 201));
-        return;
-      }
-      await route.fulfill(json(USERS));
-      return;
-    }
-    const userMatch = /^\/api\/users\/(\d+)\/$/.exec(path);
-    if (userMatch) {
-      if (method === 'PATCH') {
-        await route.fulfill(json({ ...USERS[0], ...JSON.parse(request.postData() || '{}') }));
-        return;
-      }
-      if (method === 'DELETE') {
-        await route.fulfill({ status: 204 });
-        return;
-      }
-      await route.fulfill(json({ detail: `No mock for ${method} ${path}` }, 404));
-      return;
-    }
     if (path === '/api/backups/trigger/') {
       await route.fulfill(json({ path: '/backup/eixnpos-20260101.sqlite3' }));
       return;
@@ -138,11 +111,13 @@ test('renders Settings on desktop with Store tab active', async ({ page }) => {
   const monitor = await openSettings(page);
 
   const tabs = page.getByRole('tab');
-  await expect(tabs).toHaveCount(4);
+  await expect(tabs).toHaveCount(3);
   await expect(tabs.nth(0)).toHaveText('Store');
-  await expect(tabs.nth(1)).toHaveText('Users');
-  await expect(tabs.nth(2)).toHaveText('Backup');
-  await expect(tabs.nth(3)).toHaveText('Appearance');
+  await expect(tabs.nth(1)).toHaveText('Backup');
+  await expect(tabs.nth(2)).toHaveText('Appearance');
+
+  // The Users tab was removed from Settings; user management lives on /users.
+  await expect(page.getByRole('tab', { name: 'Users' })).toHaveCount(0);
 
   // Store tab is active and pre-fills the API data.
   await expect(page.getByRole('tab', { name: 'Store' })).toHaveAttribute('aria-selected', 'true');
@@ -155,21 +130,6 @@ test('renders Settings on desktop with Store tab active', async ({ page }) => {
 
   expectNoNetworkIssues(monitor);
   await expect(page.locator('.app-page')).toHaveScreenshot('settings-store.png', SNAPSHOT);
-});
-
-test('shows inactive users with a muted badge', async ({ page }) => {
-  const monitor = await openSettings(page);
-  await page.getByRole('tab', { name: 'Users' }).click();
-
-  await expect(page.getByRole('tab', { name: 'Users' })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByRole('cell', { name: 'Alex Admin', exact: true })).toBeVisible();
-  await expect(page.getByRole('cell', { name: 'Riley Cashier', exact: true })).toBeVisible();
-  await expect(page.locator('.mm-badge--success', { hasText: 'Active' })).toHaveCount(2);
-  await expect(page.locator('.mm-badge--muted', { hasText: 'Inactive' })).toHaveCount(1);
-  await expect(page.getByRole('button', { name: '+ Add user' })).toBeVisible();
-
-  expectNoNetworkIssues(monitor);
-  await expect(page.locator('.app-page')).toHaveScreenshot('settings-users.png', SNAPSHOT);
 });
 
 test('saves store details and shows inline success', async ({ page }) => {
@@ -292,27 +252,6 @@ test('toggles between light and dark theme from Appearance', async ({ page }) =>
   expectNoNetworkIssues(monitor);
 });
 
-test('opens the add user modal and creates a user', async ({ page }) => {
-  const monitor = await openSettings(page);
-  await page.getByRole('tab', { name: 'Users' }).click();
-  await page.getByRole('button', { name: '+ Add user' }).click();
-
-  await expect(page.locator('.mm-modal')).toBeVisible();
-  await expect(page.getByRole('dialog')).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'New user' })).toBeVisible();
-
-  const modal = page.getByRole('dialog');
-  await modal.getByLabel('Username').fill('newworker');
-  await modal.getByLabel('Email').fill('worker@eixn.test');
-  await modal.getByLabel('First name').fill('New');
-  await modal.getByLabel('Last name').fill('Worker');
-  await modal.getByLabel('Password').fill('password123');
-  await modal.getByRole('button', { name: 'Create user' }).click();
-
-  await expect(page.locator('.mm-modal')).toBeHidden();
-  expectNoNetworkIssues(monitor);
-});
-
 test('renders Settings on mobile without overflow', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const monitor = await openSettings(page);
@@ -337,12 +276,12 @@ test('navigates tabs with the arrow keys', async ({ page }) => {
   await page.getByRole('tab', { name: 'Store' }).focus();
   await expect(page.getByRole('tab', { name: 'Store' })).toBeFocused();
   await page.keyboard.press('ArrowRight');
-  await expect(page.getByRole('tab', { name: 'Users' })).toBeFocused();
-  await expect(page.getByRole('tab', { name: 'Users' })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByRole('heading', { name: 'Users' })).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Backup' })).toBeFocused();
+  await expect(page.getByRole('tab', { name: 'Backup' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('heading', { name: 'Backup' })).toBeVisible();
 
   await page.keyboard.press('ArrowRight');
-  await expect(page.getByRole('tab', { name: 'Backup' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: 'Appearance' })).toHaveAttribute('aria-selected', 'true');
 
   await page.keyboard.press('End');
   await expect(page.getByRole('tab', { name: 'Appearance' })).toHaveAttribute('aria-selected', 'true');
@@ -350,17 +289,6 @@ test('navigates tabs with the arrow keys', async ({ page }) => {
   await page.keyboard.press('ArrowLeft');
   await expect(page.getByRole('tab', { name: 'Backup' })).toHaveAttribute('aria-selected', 'true');
 
-  expectNoNetworkIssues(monitor);
-});
-
-test('closes the user modal with Escape and restores focus', async ({ page }) => {
-  const monitor = await openSettings(page);
-  await page.getByRole('tab', { name: 'Users' }).click();
-  await page.getByRole('button', { name: '+ Add user' }).click();
-  await expect(page.locator('.mm-modal')).toBeVisible();
-  await page.keyboard.press('Escape');
-  await expect(page.locator('.mm-modal')).toBeHidden();
-  await expect(page.getByRole('button', { name: '+ Add user' })).toBeFocused();
   expectNoNetworkIssues(monitor);
 });
 
@@ -443,81 +371,5 @@ test('rejects an invalid website URL before it reaches the server', async ({ pag
   expectNoNetworkIssues(monitor);
 });
 
-test('a failed user delete keeps the users table visible', async ({ page }) => {
-  const monitor = await openSettings(page);
-  await page.getByRole('tab', { name: 'Users' }).click();
-  await expect(page.getByRole('cell', { name: 'Alex Admin', exact: true })).toBeVisible();
-
-  // Simulate a 409 "referenced by sales history" on delete.
-  await page.route('**/api/users/2/', async (route) => {
-    if (route.request().method().toUpperCase() === 'DELETE') {
-      await route.fulfill(
-        json({ detail: 'Cannot delete user: referenced by sales history.' }, 409),
-      );
-      return;
-    }
-    await route.fallback();
-  });
-
-  await page.evaluate(() => {
-    // The delete flow uses window.confirm; accept it.
-    window.confirm = () => true;
-  });
-
-  await page.getByRole('button', { name: 'Delete Sam Manager' }).click();
-
-  // The action error shows, but the remaining users table stays rendered.
-  await expect(page.getByRole('alert')).toContainText('referenced by sales history');
-  await expect(page.getByRole('cell', { name: 'Alex Admin', exact: true })).toBeVisible();
-  await expect(page.getByRole('cell', { name: 'Riley Cashier', exact: true })).toBeVisible();
-  expectNoNetworkIssues(monitor);
-});
-
-test('editing a name-less user does not rewrite name fields', async ({ page }) => {
-  const monitor = await openSettings(page);
-  const nameLess = {
-    id: 95,
-    email: 'nameless@eixn.test',
-    name: 'sam',
-    username: 'sam',
-    first_name: '',
-    last_name: '',
-    role: 'cashier',
-    active: true,
-    createdAt: '2026-01-01T10:00:00Z',
-    updatedAt: '2026-01-01T10:00:00Z',
-  };
-  // This test needs a user who has no first/last name (server returns only the
-  // username-derived display name), so override just the users list.
-  await page.route('**/api/users/**', async (route) => {
-    const url = new URL(route.request().url());
-    if (
-      url.pathname === '/api/users/' &&
-      route.request().method().toUpperCase() === 'GET'
-    ) {
-      await route.fulfill(json([nameLess]));
-      return;
-    }
-    await route.fallback();
-  });
-
-  await page.getByRole('tab', { name: 'Users' }).click();
-  await expect(page.getByRole('cell', { name: 'sam', exact: true })).toBeVisible();
-
-  await page.getByRole('button', { name: /^Edit / }).first().click();
-  const modal = page.getByRole('dialog');
-  await expect(modal).toBeVisible();
-  await expect(modal.getByLabel('Username')).toHaveValue('sam');
-  await modal.getByLabel('Role').selectOption('manager');
-  await modal.getByRole('button', { name: 'Save changes' }).click();
-
-  await expect(page.locator('.mm-modal')).toBeHidden();
-
-  const patch = monitor.requests.find(
-    (r) => r.method === 'PATCH' && r.path === '/api/users/95/',
-  );
-  expect(patch).toBeTruthy();
-  // Only the changed field ships; the empty first/last names are not rewritten.
-  expect(JSON.parse(patch!.body ?? '{}')).toEqual({ role: 'manager' });
-  expectNoNetworkIssues(monitor);
-});
+// User management (list, create/edit, delete) is covered on the canonical
+// /users page in users.spec.ts; the Settings Users tab was removed.
