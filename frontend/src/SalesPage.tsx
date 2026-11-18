@@ -448,6 +448,137 @@ export default function SalesPage() {
     [cartLines, discountLineId],
   );
 
+  const receiptStatusBadge = (status: string): string => {
+    if (status === 'completed') return 'mm-badge--success';
+    if (status === 'voided') return 'mm-badge--danger';
+    return 'mm-badge--muted';
+  };
+
+  const renderReceipt = (s: Sale) => {
+    const merchantMeta = [
+      business?.address,
+      [business?.phone, business?.email].filter(Boolean).join('  '),
+      business?.website,
+    ].filter((x): x is string => Boolean(x));
+
+    let dateLabel = '';
+    const timestamp = s.completed_at ?? s.created_at;
+    if (timestamp) {
+      const d = new Date(timestamp);
+      if (!Number.isNaN(d.getTime())) {
+        dateLabel = d.toLocaleString(undefined, { hour12: false });
+      }
+    }
+
+    const discountAmount = toNumber(s.discount_total);
+
+    const methodBadge = (method: string): string => {
+      if (method === 'cash') return 'mm-badge--success';
+      if (method === 'card') return 'mm-badge--primary';
+      if (method === 'invoice') return 'mm-badge--info';
+      return 'mm-badge--muted';
+    };
+
+    return (
+      <div className="receipt-slip">
+        <div className="receipt-merchant">
+          <p className="receipt-store">{business?.company_name || 'Store'}</p>
+          {merchantMeta.length > 0 && (
+            <div className="receipt-merchant-meta mm-muted">
+              {merchantMeta.map((line) => (
+                <p key={line}>{line}</p>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="receipt-rule" aria-hidden="true" />
+
+        <dl className="receipt-sale-meta">
+          <div className="receipt-meta-row">
+            <dt>Date / Time</dt>
+            <dd>{dateLabel || '\u2014'}</dd>
+          </div>
+          <div className="receipt-meta-row">
+            <dt>Cashier</dt>
+            <dd>#{s.cashier}</dd>
+          </div>
+          <div className="receipt-meta-row">
+            <dt>Sale #</dt>
+            <dd>{s.number}</dd>
+          </div>
+        </dl>
+
+        <div className="receipt-rule" aria-hidden="true" />
+
+        <div className="receipt-items">
+          <div className="receipt-column-head" aria-hidden="true">
+            <span>Item</span>
+            <span>Qty</span>
+            <span>Total</span>
+          </div>
+          {s.lines.map((line) => (
+            <div key={line.id} className="receipt-item">
+              <span className="receipt-item-name">{line.product_name}</span>
+              <span className="receipt-item-qty">×{line.quantity}</span>
+              <span className="receipt-item-total">
+                {formatMoney(line.line_total)}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        <div className="receipt-rule" aria-hidden="true" />
+
+        <div className="receipt-totals">
+          <div className="receipt-total-row">
+            <span>Subtotal</span>
+            <span>{formatMoney(s.subtotal)}</span>
+          </div>
+          {discountAmount > 0 && (
+            <div className="receipt-total-row">
+              <span>Discount</span>
+              <span>-{formatMoney(s.discount_total)}</span>
+            </div>
+          )}
+          <div className="receipt-total-row receipt-grand-total">
+            <span>Total</span>
+            <span>{formatMoney(s.total)}</span>
+          </div>
+        </div>
+
+        <div className="receipt-rule" aria-hidden="true" />
+
+        {s.note && (
+          <div className="receipt-note">
+            <p className="receipt-note-label">Note</p>
+            <p className="mm-muted">{s.note}</p>
+          </div>
+        )}
+
+        <div className="receipt-payments">
+          {s.payments.map((p) => (
+            <div key={p.id} className="receipt-payment">
+              <span className={`mm-badge ${methodBadge(p.method)}`}>
+                {p.method.toUpperCase()}
+              </span>
+              <span className="receipt-payment-detail">
+                {p.method === 'cash'
+                  ? (<>tendered {formatMoney(p.tendered ?? 0)} · change {formatMoney(p.change_due)}</>)
+                  : 'paid'}
+              </span>
+              <span className="receipt-payment-amount">
+                {formatMoney(p.amount)}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        <p className="receipt-thanks">Thank you for your visit!</p>
+      </div>
+    );
+  };
+
   return (
     <section className="mm-page sales-page">
       <header className="mm-page-header sales-heading">
@@ -854,33 +985,21 @@ export default function SalesPage() {
         <div className="mm-modal-backdrop">
           <div className="mm-modal receipt-modal" role="dialog" aria-modal="true">
             <header className="mm-modal-header">
-              <h2>Receipt</h2>
+              <div className="receipt-heading">
+                <h2 className="mm-modal-title">Receipt</h2>
+                {receiptSale.status && (
+                  <span className={`mm-badge ${receiptStatusBadge(receiptSale.status)}`}>
+                    {receiptSale.status}
+                  </span>
+                )}
+              </div>
               <button type="button" className="mm-modal-close" onClick={closeReceipt}>
                 ×
               </button>
             </header>
-            <pre className="receipt-text">
-              {(() => {
-                const s = receiptSale;
-                const lines = s.lines
-                  .map(
-                    (l) =>
-                      `${l.product_name.padEnd(20)} ${String(l.quantity).padStart(2)}  ${formatMoney(l.line_total).padStart(8)}`,
-                  )
-                  .join('\n');
-                const payLines = s.payments
-                  .map(
-                    (p) =>
-                      `${p.method.toUpperCase()} ${formatMoney(p.amount)}${
-                        p.method === 'cash'
-                          ? ` (tendered ${formatMoney(p.tendered ?? 0)}, change ${formatMoney(p.change_due)})`
-                          : ''
-                      }`,
-                  )
-                  .join('\n');
-                return `${business?.company_name || 'Store'}\n${business?.address || ''}\n${business?.phone || ''} ${business?.email || ''}\n${business?.website || ''}\n${'='.repeat(34)}\n${new Date(s.completed_at ?? s.created_at ?? '').toLocaleString(undefined, { hour12: false })}\nCashier: user #${s.cashier}   Sale #${s.number}\n${'='.repeat(34)}\n${lines}\n${'='.repeat(34)}\nSubtotal: ${formatMoney(s.subtotal).padStart(22)}\nDiscount: -${formatMoney(s.discount_total).padStart(21)}\nTOTAL:    ${formatMoney(s.total).padStart(22)}\n${'='.repeat(34)}\n${s.note ? `Note: ${s.note}\n` : ''}${payLines}\n${'='.repeat(34)}\nThank you for your visit!\n`;
-              })()}
-            </pre>
+            <div className="mm-modal-body receipt-body">
+              {renderReceipt(receiptSale)}
+            </div>
             <footer className="mm-modal-footer">
               <button type="button" className="mm-btn mm-btn--primary" onClick={closeReceipt}>
                 Close
