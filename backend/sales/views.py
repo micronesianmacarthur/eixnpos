@@ -18,8 +18,10 @@ class SaleViewSet(viewsets.ModelViewSet):
     serializer_class = SaleSerializer
     permission_classes = [permissions.IsAuthenticated]
     
-    # Service instance for transaction management (no payment tokens required for API recording)
-    _transaction_service = TransactionService(require_payment_tokens=False)
+    # Transactions are instantiated per-request (see checkout/void handlers).
+    # Do NOT instantiate a TransactionService at import time: its constructor
+    # reads BusinessInfo from the DB, which breaks system checks and `migrate`
+    # whenever the schema is out of sync or the database is still empty.
 
     def perform_create(self, serializer):
         # Attribute the sale to the open session for the cashier's register/

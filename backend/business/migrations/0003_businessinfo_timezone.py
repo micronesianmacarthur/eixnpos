@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('business', '0002_businessinfo_backup_path'),
+        ('business', '0003_rename_businessinfo_table'),
     ]
 
     operations = [
