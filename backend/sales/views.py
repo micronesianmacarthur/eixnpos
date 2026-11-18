@@ -17,9 +17,15 @@ class SaleViewSet(viewsets.ModelViewSet):
     queryset = Sale.objects.all()
     serializer_class = SaleSerializer
     permission_classes = [permissions.IsAuthenticated]
-    
-    # Service instance for transaction management (no payment tokens required for API recording)
-    _transaction_service = TransactionService(require_payment_tokens=False)
+
+    @property
+    def _transaction_service(self):
+        """Lazily create the transaction service to avoid DB access at import time."""
+        service = getattr(self, "_transaction_service_instance", None)
+        if service is None:
+            service = TransactionService(require_payment_tokens=False)
+            self._transaction_service_instance = service
+        return service
 
     def perform_create(self, serializer):
         serializer.save(cashier=self.request.user)

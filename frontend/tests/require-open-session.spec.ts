@@ -55,20 +55,41 @@ function json(data: unknown, status = 200) {
 
 interface SessionMonitor {
   currentRequests: number;
+  startBodies: Array<Record<string, unknown>>;
+  /** When `parkCurrentAt` matched a current GET, the parked route lives here so the test can fulfill it out of order. */
+  parkedCurrent: Route | null;
+  /** Fulfill the parked current GET (requires `parkCurrentAt`). */
+  releaseCurrent(data: Record<string, unknown>): Promise<void>;
 }
 
 interface SessionOptions {
   /** Response for GET /api/sessions/current/: a payload, or { fail: <text> } to simulate a transport/status failure. */
   current: Record<string, unknown> | { fail: string } | { status: number };
+  /** Status for POST /api/sessions/ (the start-shift POST). Omit to leave that route unmocked (404). */
+  startStatus?: number;
+  /** Park the current GET at this 1-based request index (exposed as monitor.parkedCurrent) so the test can defer its resolution. */
+  parkCurrentAt?: number;
 }
 
 /**
  * Install /api route mocks. `opts.current` controls the current-session check.
  * Every guard request to /api/sessions/current/ is counted so tests can assert
- * that mount and re-validation actually hit the endpoint.
+ * that mount and re-validation actually hit the endpoint. `parkCurrentAt` lets
+ * a test hold a specific revalidation GET in flight and fulfill it late, to
+ * exercise the stale-result race.
  */
 async function installMocks(page: Page, opts: SessionOptions): Promise<SessionMonitor> {
-  const monitor: SessionMonitor = { currentRequests: 0 };
+  const monitor: SessionMonitor = {
+    currentRequests: 0,
+    startBodies: [],
+    parkedCurrent: null,
+    releaseCurrent: async (data) => {
+      const route = monitor.parkedCurrent;
+      if (!route) throw new Error('releaseCurrent() called but no current GET is parked');
+      monitor.parkedCurrent = null;
+      await route.fulfill(json(data));
+    },
+  };
 
   await page.route('**/*', async (route: Route) => {
     const request = route.request();
@@ -92,6 +113,12 @@ async function installMocks(page: Page, opts: SessionOptions): Promise<SessionMo
     }
     if (path === '/api/sessions/current/') {
       monitor.currentRequests += 1;
+      if (opts.parkCurrentAt === monitor.currentRequests) {
+        // Defer this revalidation GET so the test can resolve it after a start
+        // POST has already succeeded (the stale-result race under test).
+        monitor.parkedCurrent = route;
+        return;
+      }
       const cur = opts.current;
       if ('fail' in cur) {
         await route.abort('failed');
@@ -102,6 +129,12 @@ async function installMocks(page: Page, opts: SessionOptions): Promise<SessionMo
         return;
       }
       await route.fulfill(json(cur));
+      return;
+    }
+    if (path === '/api/sessions/' && method === 'POST') {
+      const payload = JSON.parse(request.postData() ?? '{}') as Record<string, unknown>;
+      monitor.startBodies.push(payload);
+      await route.fulfill(json({}, opts.startStatus ?? 404));
       return;
     }
     if (path === '/api/business/') {
@@ -255,4 +288,48 @@ test('does not redirect when a re-validation check fails transiently', async ({
   // The failed re-check must not redirect: Sales stays mounted.
   await page.waitForTimeout(300);
   await expect(page.getByRole('heading', { level: 1, name: 'Sale' })).toBeVisible();
+});
+
+test('stays on /sales when a pre-start revalidation resolves stale after a successful shift start', async ({
+  page,
+}) => {
+  // Regression for the stale-revalidation race (t_d42f51c4): a focus/visibility
+  // revalidation that was in flight before the start POST resolved must not
+  // evict the cashier afterwards based on a stale `open:false` check.
+  //
+  // GET #1 (mount) reports no open session -> the start-shift modal appears.
+  // GET #2 (the revalidation a `focus` event triggers while the modal is up) is
+  // parked in flight. The cashier completes the starting-cash form and the POST
+  // succeeds, opening the session. When GET #2 is finally fulfilled with
+  // `open:false`, that result is stale relative to the now-open session and must
+  // be discarded instead of bouncing the cashier back to the dashboard.
+  const monitor = await installMocks(page, {
+    current: NO_SESSION,
+    startStatus: 201,
+    parkCurrentAt: 2,
+  });
+
+  await openSales(page);
+  const modal = page.getByRole('dialog', { name: 'Start your shift' });
+  await expect(modal).toBeVisible();
+
+  // Trigger the focus revalidation; its current GET is parked by the mock.
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event('focus'));
+  });
+  await expect.poll(() => monitor.parkedCurrent).toBeTruthy();
+
+  // Complete the starting-cash form; the start POST succeeds.
+  await page.getByLabel('Starting cash').fill('100.00');
+  await modal.getByRole('button', { name: 'Start shift' }).click();
+  await expect(page.getByRole('heading', { level: 1, name: 'Sale' })).toBeVisible();
+  expect(monitor.startBodies).toEqual([{ starting_cash: '100.00' }]);
+
+  // Fulfil the parked revalidation with a stale `open:false` exactly as the
+  // reproduction does. It must NOT redirect: the session was already started.
+  await monitor.releaseCurrent(NO_SESSION);
+
+  await expect(page).toHaveURL(`${BASE_URL}/sales`);
+  await expect(page.getByRole('heading', { level: 1, name: 'Sale' })).toBeVisible();
+  await expect(modal).toHaveCount(0);
 });

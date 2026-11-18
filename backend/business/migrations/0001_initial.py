@@ -22,5 +22,8 @@ class Migration(migrations.Migration):
                 ('website', models.URLField(blank=True, default='')),
                 ('singleton', models.BooleanField(default=True, unique=True)),
             ],
+            options={
+                'db_table': 'business_info',
+            },
         ),
     ]

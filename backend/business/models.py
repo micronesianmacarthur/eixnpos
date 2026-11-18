@@ -10,6 +10,9 @@ class BusinessInfo(models.Model):
     backup_path = models.CharField(max_length=500, blank=True, default='')
     singleton = models.BooleanField(default=True, unique=True)
 
+    class Meta:
+        db_table = 'business_info'
+
     @classmethod
     def get(cls):
         obj, _ = cls.objects.get_or_create(singleton=True)
