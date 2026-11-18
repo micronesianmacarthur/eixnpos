@@ -255,6 +255,8 @@ test('long item and merchant names do not overflow', async ({ page }) => {
   });
   await expect(page.locator('.receipt-item')).toHaveCount(2);
   await expectNoOverflow(page);
+  // Dismiss the Change-due modal so the review snapshot shows the full receipt.
+  await page.getByRole('button', { name: 'Close' }).last().click();
   // Screenshot for eyeball review at desktop width.
   await expect(page.locator('.receipt-modal')).toHaveScreenshot('receipt-long-names.png');
 });
@@ -290,6 +292,11 @@ test('receipt renders cleanly at narrow mobile viewport', async ({ page }) => {
     },
   });
   await expectNoOverflow(page);
+  // The Change-due confirmation modal stacks above the receipt; dismiss it so the
+  // snapshot captures the receipt (not the covering modal).
+  await expect(page.getByRole('heading', { name: 'Change due' })).toBeVisible();
+  await page.getByRole('button', { name: 'Close' }).last().click();
+  await expect(page.locator('.receipt-modal')).toBeVisible();
   await expect(page.locator('.receipt-modal')).toHaveScreenshot('receipt-mobile.png');
 });
 

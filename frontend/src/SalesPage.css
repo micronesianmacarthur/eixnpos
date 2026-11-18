@@ -269,6 +269,7 @@
 
 .receipt-merchant-meta p {
   margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .receipt-rule {
