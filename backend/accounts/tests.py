@@ -1,5 +1,6 @@
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.models import AnonymousUser
+from django.core.cache import cache
 from django.test import TestCase
 from rest_framework.test import APIClient
 
@@ -88,6 +89,51 @@ class AuthApiTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data['detail'], 'Invalid credentials')
+
+    def test_inactive_user_is_rejected_like_bad_credentials(self):
+        # An inactive (disabled) account with a *correct* password must be
+        # treated exactly like a wrong password: same status, same generic
+        # message, no session. This both denies access and never reveals that
+        # the account exists / is merely disabled.
+        User.objects.create_user(
+            username='disabled',
+            password='Right-Password-1',
+            role='cashier',
+            is_active=False,
+        )
+        cache.clear()
+
+        response = self.client.post(
+            '/api/auth/login/',
+            {'username': 'disabled', 'password': 'Right-Password-1'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['detail'], 'Invalid credentials')
+        # No session may be established for a disabled account.
+        self.assertIn(self.client.get('/api/auth/me/').status_code, (401, 403))
+
+    def test_unknown_username_gets_the_same_response_as_wrong_password(self):
+        # Account-existence must not be leaked: a non-existent username and a
+        # real user with the wrong password must produce byte-identical 400
+        # responses (status + message), so an attacker cannot enumerate users.
+        cache.clear()
+        wrong_password = self.client.post(
+            '/api/auth/login/',
+            {'username': 'cashier', 'password': 'wrong'},
+            format='json',
+        )
+        cache.clear()
+        unknown_user = self.client.post(
+            '/api/auth/login/',
+            {'username': 'no-such-user', 'password': 'wrong'},
+            format='json',
+        )
+
+        self.assertEqual(unknown_user.status_code, 400)
+        self.assertEqual(unknown_user.status_code, wrong_password.status_code)
+        self.assertEqual(unknown_user.data, wrong_password.data)
 
     def test_me_requires_authentication(self):
         response = self.client.get('/api/auth/me/')
