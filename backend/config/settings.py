@@ -8,7 +8,7 @@ DEBUG = True
 ALLOWED_HOSTS = ['*']
 
 INSTALLED_APPS = [
-    'django.contrib.admin',
+    'accounts.admin_config.EixnPOSAdminConfig',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
@@ -118,6 +118,11 @@ AUTH_LOGIN_FAIL_WINDOW = 15 * 60
 # New-password *policy* violations (weak value) do not count toward this.
 AUTH_CHANGE_PASSWORD_FAIL_LIMIT = 5
 AUTH_CHANGE_PASSWORD_FAIL_WINDOW = 15 * 60
+# 5 rejected attempts at /admin/login/ per 15-minute window, per user+IP.
+# Mirrors the `login` namespace for the hardened Django admin site
+# (accounts.admin_site). Includes reserved/default-credential rejections.
+AUTH_ADMIN_LOGIN_FAIL_LIMIT = 5
+AUTH_ADMIN_LOGIN_FAIL_WINDOW = 15 * 60
 
 # ---------------------------------------------------------------------------
 # Admin seeding gate (S4)

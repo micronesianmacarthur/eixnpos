@@ -12,6 +12,8 @@ Two independent namespaces are used:
 * ``change_password`` — a wrong current password at the start of
   ``POST /api/auth/change-password/`` (new-password *policy* violations are not
   security events and deliberately do not count toward the lockout).
+* ``admin_login`` — a rejected credential at ``/admin/login/`` (the hardened
+  Django admin site; see ``accounts/admin_site.py``).
 
 Limits and windows are defined in ``config/settings.py``.
 """
@@ -33,6 +35,9 @@ def _limit_and_window(namespace):
     if namespace == 'change_password':
         return (settings.AUTH_CHANGE_PASSWORD_FAIL_LIMIT,
                 settings.AUTH_CHANGE_PASSWORD_FAIL_WINDOW)
+    if namespace == 'admin_login':
+        return (settings.AUTH_ADMIN_LOGIN_FAIL_LIMIT,
+                settings.AUTH_ADMIN_LOGIN_FAIL_WINDOW)
     raise ValueError(f'unknown throttle namespace: {namespace}')
 
 
