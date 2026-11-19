@@ -28,7 +28,8 @@ def seed_default_admin(sender, **kwargs):
         return
     if User.objects.exists():
         return
-    u = User(username='admin', role='admin', must_change_password=True)
+    u = User(username='admin', role='admin', must_change_password=True,
+             is_staff=True, is_superuser=False)
     u.set_password('admin')
     u.save()
 

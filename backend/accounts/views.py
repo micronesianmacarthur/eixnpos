@@ -3,11 +3,11 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from django.middleware.csrf import get_token
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny, IsAuthenticated, IsAdminUser
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework import viewsets
 from rest_framework.response import Response
 from .serializers import UserSerializer
-from .permissions import IsManagerOrAdmin
+from .permissions import IsManagerOrAdmin, IsAdminRole
 from business.models import BusinessInfo
 from django.contrib.auth import get_user_model
 from .validators import is_reserved_password
@@ -99,7 +99,7 @@ def business_info_view(request):
     })
 
 @api_view(['GET'])
-@permission_classes([IsAdminUser])
+@permission_classes([IsAdminRole])
 def admin_dashboard_view(request):
     return Response({'message': 'Admin dashboard'})
 
