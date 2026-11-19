@@ -13,13 +13,31 @@ const SNAPSHOT = {
 interface MockOptions {
   businessInfoComplete?: boolean;
   loginFailure?: boolean;
+  /** Return ``password_change_required: true`` from the login endpoint. */
+  passwordChangeRequired?: boolean;
+  /** Abort the login POST at the network layer (simulates offline/backend down). */
+  loginAbort?: boolean;
+  /** Replace the successful login response body entirely (for contract edge cases). */
+  loginResponseOverride?: Record<string, unknown>;
+  /** Force ``me/`` to report ``must_change_password: true`` (drives the guard). */
+  meMustChangePassword?: boolean;
   loginDelayMs?: number;
   businessPostDelayMs?: number;
+}
+
+interface LoginRequest {
+  method: string;
+  path: string;
+  /** Parsed request body, or null when the body was empty. */
+  body: Record<string, unknown> | null;
+  contentType: string | null;
+  csrfHeader: string | null;
 }
 
 interface NetworkMonitor {
   external: string[];
   failed: string[];
+  loginRequests: LoginRequest[];
 }
 
 const AUTH_ME = {
@@ -56,8 +74,16 @@ async function installApiMocks(
   page: Page,
   options: MockOptions = {},
 ): Promise<NetworkMonitor> {
-  const monitor: NetworkMonitor = { external: [], failed: [] };
+  const monitor: NetworkMonitor = { external: [], failed: [], loginRequests: [] };
   let businessComplete = options.businessInfoComplete ?? true;
+  const meMustChange =
+    options.meMustChangePassword ?? options.passwordChangeRequired ?? false;
+
+  // Seed a session-auth CSRF cookie so login (an unsafe POST) actually carries
+  // the X-CSRFToken header the real same-origin session flow would send.
+  await page.context().addCookies([
+    { name: 'csrftoken', value: 'test-csrf-token', url: BASE_URL },
+  ]);
 
   page.on('requestfailed', (request) => {
     const url = new URL(request.url());
@@ -97,6 +123,7 @@ async function installApiMocks(
       await route.fulfill(
         json({
           ...AUTH_ME,
+          must_change_password: meMustChange,
           business_info_complete: businessComplete,
         }),
       );
@@ -104,11 +131,54 @@ async function installApiMocks(
     }
 
     if (path === '/api/auth/login/') {
+      // Record exactly what the UI submitted so a test can assert the payload
+      // and endpoint are correct ("sends the correct authentication request").
+      let parsed: Record<string, unknown> | null = null;
+      const rawBody = request.postData();
+      if (rawBody && rawBody.trim()) {
+        try {
+          parsed = JSON.parse(rawBody);
+        } catch {
+          parsed = null;
+        }
+      }
+      monitor.loginRequests.push({
+        method: request.method().toUpperCase(),
+        path,
+        body: parsed,
+        contentType: request.headers()['content-type'] ?? null,
+        csrfHeader: request.headers()['x-csrftoken'] ?? null,
+      });
+
+      // Simulate a network-level failure (server offline / request aborted).
+      if (options.loginAbort) {
+        await route.abort('connectionrefused');
+        return;
+      }
+
       if (options.loginDelayMs) {
         await delay(options.loginDelayMs);
       }
       if (options.loginFailure) {
-        await route.fulfill(json({ detail: 'Invalid credentials' }, 401));
+        // Real backend rejects bad credentials with HTTP 400 + a `detail`
+        // body (accounts/views.login_view); mirror that exactly.
+        await route.fulfill(json({ detail: 'Invalid credentials' }, 400));
+        return;
+      }
+      if (options.passwordChangeRequired) {
+        await route.fulfill(
+          json({
+            detail: 'ok',
+            ...AUTH_ME,
+            password_change_required: true,
+          }),
+        );
+        return;
+      }
+      if (options.loginResponseOverride) {
+        await route.fulfill(
+          json({ detail: 'ok', ...options.loginResponseOverride }),
+        );
         return;
       }
       await route.fulfill(json({ detail: 'ok' }));
@@ -288,6 +358,114 @@ test('shows the Login loading state and navigates on success', async ({
     page.getByRole('heading', { level: 1, name: 'Dashboard' }),
   ).toBeVisible();
   expectNoNetworkIssues(monitor);
+});
+
+test('submits the correct credentials to the auth endpoint and redirects', async ({
+  page,
+}) => {
+  const monitor = await openLogin(page);
+
+  await page.getByLabel('Username:').fill('maya');
+  await page.getByLabel('Password:').fill('secret');
+  await page.getByRole('button', { name: 'Login' }).click();
+
+  await expect(
+    page.getByRole('heading', { level: 1, name: 'Dashboard' }),
+  ).toBeVisible();
+
+  // Exactly one login request, aimed at the right endpoint, carrying the right
+  // fields as a JSON POST with the session-auth CSRF header attached.
+  expect(monitor.loginRequests).toHaveLength(1);
+  const login = monitor.loginRequests[0];
+  expect(login.method).toBe('POST');
+  expect(login.path).toBe('/api/auth/login/');
+  expect(login.body).toEqual({ username: 'maya', password: 'secret' });
+  expect(login.contentType).toContain('application/json');
+  expect(login.csrfHeader).toBeTruthy();
+
+  expectNoNetworkIssues(monitor);
+});
+
+test('trims whitespace from the username before authenticating', async ({
+  page,
+}) => {
+  const monitor = await openLogin(page);
+
+  // A valid username with accidental surrounding spaces must still authenticate:
+  // the UI trims and only the canonical username is submitted.
+  await page.getByLabel('Username:').fill('  maya  ');
+  await page.getByLabel('Password:').fill('secret');
+  await page.getByRole('button', { name: 'Login' }).click();
+
+  await expect(
+    page.getByRole('heading', { level: 1, name: 'Dashboard' }),
+  ).toBeVisible();
+  expect(monitor.loginRequests).toHaveLength(1);
+  expect(monitor.loginRequests[0].body).toEqual({
+    username: 'maya',
+    password: 'secret',
+  });
+
+  expectNoNetworkIssues(monitor);
+});
+
+test('redirects to the forced password-change screen after login', async ({
+  page,
+}) => {
+  const monitor = await openLogin(page, { passwordChangeRequired: true });
+
+  await page.getByLabel('Username:').fill('maya');
+  await page.getByLabel('Password:').fill('admin');
+  await page.getByRole('button', { name: 'Login' }).click();
+
+  // The post-login redirect targets the forced change screen, not the dashboard.
+  await expect(
+    page.getByRole('heading', { name: 'Change your password' }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('heading', { level: 1, name: 'Dashboard' }),
+  ).toHaveCount(0);
+
+  expect(monitor.loginRequests).toHaveLength(1);
+  expectNoNetworkIssues(monitor);
+});
+
+test('honours the transitional must_change_password login field for the redirect', async ({
+  page,
+}) => {
+  // A server that still echoes the bare `must_change_password` field (instead of
+  // the contracted `password_change_required`) must still route forced changes.
+  const monitor = await openLogin(page, {
+    loginResponseOverride: { ...AUTH_ME, must_change_password: true },
+    meMustChangePassword: true, // me/ must report the flag as true too
+  });
+
+  await page.getByLabel('Username:').fill('maya');
+  await page.getByLabel('Password:').fill('admin');
+  await page.getByRole('button', { name: 'Login' }).click();
+
+  await expect(
+    page.getByRole('heading', { name: 'Change your password' }),
+  ).toBeVisible();
+
+  expect(monitor.loginRequests).toHaveLength(1);
+  expectNoNetworkIssues(monitor);
+});
+
+test('shows a Network error and re-enables the form when login cannot reach the server', async ({
+  page,
+}) => {
+  await openLogin(page, { loginAbort: true });
+
+  await page.getByLabel('Username:').fill('maya');
+  await page.getByLabel('Password:').fill('secret');
+  await page.getByRole('button', { name: 'Login' }).click();
+
+  const alert = page.getByRole('alert');
+  await expect(alert).toHaveText('Network error');
+  // The request never reached the server, so no misleading "invalid
+  // credentials" is shown and the form is usable again.
+  await expect(page.getByRole('button', { name: 'Login' })).toBeEnabled();
 });
 
 test('renders Business Information on desktop', async ({ page }) => {

@@ -19,9 +19,13 @@ function LoginPage() {
     setLoading(true);
     setError('');
     try {
+      // Trim the username before submitting: the backend authenticates the
+      // exact string, so a stray leading/trailing space (paste, autofill,
+      // accidental trailing space) would otherwise reject a *valid* account
+      // with a misleading "invalid credentials". Passwords are sent verbatim.
       const data = await apiFetch<LoginResponse>('/api/auth/login/', {
         method: 'POST',
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username: username.trim(), password }),
       });
       const changeRequired =
         data.password_change_required ?? data.must_change_password ?? false;
