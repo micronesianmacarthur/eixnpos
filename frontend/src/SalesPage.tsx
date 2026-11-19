@@ -45,6 +45,7 @@ interface Sale {
   id: number;
   number: number;
   cashier: number;
+  cashier_username?: string | null;
   customer: number | null;
   status: string;
   subtotal: string;
@@ -501,7 +502,7 @@ export default function SalesPage() {
           </div>
           <div className="receipt-meta-row">
             <dt>Cashier</dt>
-            <dd>#{s.cashier}</dd>
+            <dd>{s.cashier_username || '\u2014'}</dd>
           </div>
           <div className="receipt-meta-row">
             <dt>Sale #</dt>

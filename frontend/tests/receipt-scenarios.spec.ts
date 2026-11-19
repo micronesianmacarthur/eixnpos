@@ -43,6 +43,7 @@ function makeSale(spec: SaleSpec = {}) {
     id: 1,
     number: spec.number ?? 1001,
     cashier: 1,
+    cashier_username: 'maya',
     customer: spec.customer ?? null,
     status: spec.status ?? 'completed',
     subtotal: spec.subtotal ?? '10.00',
@@ -180,11 +181,14 @@ async function expectNoOverflow(page: Page) {
   expect(overflow, `overflow check: ${overflow}`).toBe('clean');
 }
 
-test('completed status shows success badge', async ({ page }) => {
+test('completed status shows success badge and cashier username', async ({ page }) => {
   await openReceipt(page, { sale: { status: 'completed' } });
   const badge = page.locator('.receipt-modal .mm-badge').first();
   await expect(badge).toHaveText('completed');
   await expect(badge).toHaveClass(/mm-badge--success/);
+  const cashier = page.locator('.receipt-meta-row', { hasText: 'Cashier' });
+  await expect(cashier).toContainText('maya');
+  await expect(cashier).not.toContainText('#1');
   await expectNoOverflow(page);
 });
 
