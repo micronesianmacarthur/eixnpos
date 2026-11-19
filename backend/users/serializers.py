@@ -3,6 +3,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 
+from accounts.roles import apply_role_to_staff
 from accounts.validators import is_reserved_password
 
 User = get_user_model()
@@ -63,6 +64,9 @@ class UserCreateSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         password = validated_data.pop('password')
         user = User.objects.create_user(**validated_data)
+        # An API-created 'admin' role must reach the stock Django admin, so the
+        # role is the single source of truth for is_staff on every create.
+        apply_role_to_staff(user)
         user.set_password(password)
         # A reserved/default password must not be allowed to persist silently:
         # flag the account so it is forced to change on first login.
@@ -88,6 +92,10 @@ class UserUpdateSerializer(serializers.ModelSerializer):
         password = validated_data.pop('password', None)
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
+        # Demotion to a non-admin role must revoke is_staff (and a promotion to
+        # 'admin' must grant it) so the stock admin and staff-gated endpoints
+        # reflect the role on every update, not just at seed time.
+        apply_role_to_staff(instance)
         if password:
             instance.set_password(password)
             if is_reserved_password(password):

@@ -92,13 +92,18 @@ class UserViewSetPermissionTests(TestCase):
         response = self.client.get('/api/auth/users/')
         self.assertIn(response.status_code, (401, 403))
 
-    def test_staff_user_can_access(self):
-        """Django staff users should have access regardless of role."""
+    def test_cashier_with_stale_staff_flag_is_still_denied(self):
+        """A demoted administrator (cashier role, stale is_staff) is revoked.
+
+        This is the demotion invariant: ``is_staff`` alone must not grant
+        manager-tier authority — only the role does — so a demoted admin cannot
+        keep using the users API even if a stale staff flag lingers.
+        """
         staff = User.objects.create_user(username='staff', password='pw', role='cashier', is_staff=True)
         try:
             self.client.force_authenticate(staff)
             response = self.client.get('/api/auth/users/')
-            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.status_code, 403)
         finally:
             staff.delete()
 

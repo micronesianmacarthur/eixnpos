@@ -36,10 +36,12 @@ class IsManagerTests(SimpleTestCase):
         self.assertTrue(is_manager(User(username='m', role='manager')))
         self.assertTrue(is_manager(User(username='a', role='admin')))
 
-    def test_staff_flag_promotes_a_cashier(self):
+    def test_staff_flag_does_not_promote_a_cashier(self):
+        # A stale is_staff flag must never grant manager authority to a cashier
+        # role: demotion stays revoked even if a legacy flag lingers.
         user = User(username='s', role='cashier', is_staff=True)
 
-        self.assertTrue(is_manager(user))
+        self.assertFalse(is_manager(user))
 
     def test_superuser_flag_promotes_a_cashier(self):
         user = User(username='r', role='cashier', is_superuser=True)
@@ -71,14 +73,17 @@ class SeedAdminCommandTests(TestCase):
         call_command('seed_admin', stdout=stdout)
         return stdout.getvalue()
 
-    def test_creates_admin_user_with_full_permissions(self):
+    def test_creates_admin_user_with_staff_not_superuser(self):
         output = self.run_command()
 
         admin = User.objects.get(username='admin')
         self.assertIn('Created admin user.', output)
         self.assertEqual(admin.role, 'admin')
         self.assertTrue(admin.is_staff)
-        self.assertTrue(admin.is_superuser)
+        # The audit decision (d2a31b1) maps role='admin' to Django staff, NOT
+        # superuser: superuser grants unrestricted access to every app module,
+        # broader than the admin role implies.
+        self.assertFalse(admin.is_superuser)
         self.assertTrue(admin.check_password('admin'))
 
     def test_is_idempotent(self):

@@ -1,6 +1,12 @@
+from accounts.roles import has_manager_role
+
+
 def is_manager(user):
-    if not user or not getattr(user, 'is_authenticated', False):
-        return False
-    if getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False):
-        return True
-    return getattr(user, 'role', '') in ('manager', 'admin')
+    """Return True if *user* holds manager-tier authority (manager/admin role).
+
+    Delegates to the shared ``has_manager_role`` predicate so the manager tier
+    has a single source of truth. Superusers bypass; a plain ``is_staff`` flag
+    grants nothing so a demoted administrator is revoked even if a stale staff
+    flag lingers.
+    """
+    return has_manager_role(user)

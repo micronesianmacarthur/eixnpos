@@ -30,9 +30,11 @@ class IsManagerTests(TestCase):
             username='admin', defaults={'role': 'admin'})[0]
         self.assertTrue(is_manager(admin))
 
-    def test_staff_is_manager(self):
+    def test_staff_flag_alone_is_not_manager(self):
+        # A stale is_staff flag must not grant manager-tier authority to a
+        # cashier role — demotion stays revoked even if the flag lingers.
         staff = User.objects.create_user(username='staff', password='pw', role='cashier', is_staff=True)
-        self.assertTrue(is_manager(staff))
+        self.assertFalse(is_manager(staff))
 
     def test_superuser_is_manager(self):
         superuser = User.objects.create_user(username='root', password='pw', role='cashier', is_superuser=True)

@@ -1,5 +1,6 @@
 from django.core.management.base import BaseCommand
 from django.contrib.auth import get_user_model
+from accounts.roles import apply_role_to_staff
 
 User = get_user_model()
 
@@ -12,7 +13,7 @@ class Command(BaseCommand):
         if not User.objects.filter(username='admin').exists():
             self.stdout.write('Creating admin user...')
             u = User.objects.create_user(username='admin', password='admin', role='admin')
-            u.is_staff = True
+            apply_role_to_staff(u)
             u.is_superuser = False
             u.is_active = True
             u.must_change_password = True
@@ -22,7 +23,7 @@ class Command(BaseCommand):
             self.stdout.write('Admin user already exists.')
             user = User.objects.get(username='admin')
             if user.role == 'admin':
-                user.is_staff = True
+                apply_role_to_staff(user)
                 user.is_superuser = False
                 user.is_active = True
                 user.save()

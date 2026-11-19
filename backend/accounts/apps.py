@@ -20,6 +20,7 @@ def seed_default_admin(sender, **kwargs):
     """
     from django.conf import settings
     from django.contrib.auth import get_user_model
+    from accounts.roles import apply_role_to_staff
     User = get_user_model()
     if User.objects.filter(username='admin').exists():
         return
@@ -29,7 +30,8 @@ def seed_default_admin(sender, **kwargs):
     if User.objects.exists():
         return
     u = User(username='admin', role='admin', must_change_password=True,
-             is_staff=True, is_superuser=False)
+             is_superuser=False)
+    apply_role_to_staff(u)
     u.set_password('admin')
     u.save()
 

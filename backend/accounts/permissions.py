@@ -1,40 +1,33 @@
 from rest_framework import permissions
 
+from accounts.roles import has_admin_role, has_manager_role
+
 
 class IsManagerOrAdmin(permissions.BasePermission):
-    """
-    Permission class that allows access only to users with role 'manager' or 'admin',
-    or Django staff/superuser status.
+    """Allow users with manager-tier authority ('manager' or 'admin' role).
+
+    Superusers bypass regardless of role. ``is_staff`` alone grants nothing
+    here — manager authority comes from the role, so a demoted administrator
+    (still carrying a stale staff flag) is correctly locked out. Use
+    ``apply_role_to_staff`` on every role write so stale flags do not linger.
     """
 
     message = "Only managers and admins can access this resource."
 
     def has_permission(self, request, view):
-        user = request.user
-        if not user or not getattr(user, 'is_authenticated', False):
-            return False
-        if getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False):
-            return True
-        return getattr(user, 'role', '') in ('manager', 'admin')
+        return has_manager_role(request.user)
 
 
 class IsAdminRole(permissions.BasePermission):
-    """
-    Permission class that allows access only to users with role 'admin',
-    or Django staff/superuser status.
+    """Allow users with admin-tier authority (role='admin').
 
-    Mirrors ``IsManagerOrAdmin`` but for the admin tier alone, so admin-only
-    endpoints are gated on the single ``role='admin'`` field rather than on
-    Django's ``is_staff`` flag — keeping the role as the one enforcement point
-    for the app's authz model.
+    Superusers bypass regardless of role. The single enforcement point is the
+    ``role`` field via ``has_admin_role``; ``is_staff`` by itself neither
+    grants nor revokes admin authority, keeping role as the one source of
+    truth for the app's authz model.
     """
 
     message = "Only admins can access this resource."
 
     def has_permission(self, request, view):
-        user = request.user
-        if not user or not getattr(user, 'is_authenticated', False):
-            return False
-        if getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False):
-            return True
-        return getattr(user, 'role', '') == 'admin'
+        return has_admin_role(request.user)
