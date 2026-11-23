@@ -258,7 +258,10 @@ describe('SalesManagerPage — manager actions', () => {
     renderPage(SEED)
     await user.click(screen.getByText('1001'))
     const drawer = screen.getByTestId('sale-drawer')
+    // The Lines tab is the default.
     expect(within(drawer).getByText('Widget')).toBeInTheDocument()
+    // Payment detail lives on the Payments tab.
+    await user.click(within(drawer).getByRole('tab', { name: 'Payments' }))
     expect(within(drawer).getByText('cash')).toBeInTheDocument()
   })
 })
@@ -290,6 +293,24 @@ describe('SalesManagerPage — KPI derivation', () => {
     await user.click(screen.getByTestId('kpi-needs-review'))
     expect(screen.queryByText('1001')).not.toBeInTheDocument()
     expect(screen.getByText('1002')).toBeInTheDocument()
+  })
+
+  it('Today’s Revenue drill-down scopes to today like the KPI card', async () => {
+    const user = userEvent.setup()
+    const today = new Date().toISOString()
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+    renderPage([
+      // A completed sale today and one yesterday — the card reads only today's.
+      sale({ id: 1, number: 1001, status: 'completed', total: '50.00', created_at: today }),
+      sale({ id: 2, number: 1002, status: 'completed', total: '100.00', created_at: yesterday }),
+    ])
+    // The KPI shows only today's revenue.
+    expect(screen.getByTestId('kpi-revenue')).toHaveTextContent('$50.00')
+
+    await user.click(screen.getByTestId('kpi-revenue'))
+    // The drill-down table shows the same set as the card — not yesterday's.
+    expect(screen.getByText('1001')).toBeInTheDocument()
+    expect(screen.queryByText('1002')).not.toBeInTheDocument()
   })
 })
 
@@ -350,6 +371,31 @@ describe('SalesManagerPage — status chips, dates, and URL persistence', () => 
     await user.type(screen.getByTestId('filter-date'), '2026-02-01')
     expect(screen.queryByText('1001')).not.toBeInTheDocument()
     expect(screen.getByText('1002')).toBeInTheDocument()
+  })
+
+  it('filters by payment method and reflects it in the URL', async () => {
+    const user = userEvent.setup()
+    const cardSale = sale({
+      id: 2,
+      number: 1002,
+      status: 'open',
+      payments: [
+        { id: 22, method: 'card', amount: '30.00', tendered: '30.00', change_due: '0.00', manager_approved: false, created_at: '2026-01-02T09:00:00Z' },
+      ],
+    })
+    renderWithLocation([sale(), cardSale])
+    expect(screen.getByTestId('filter-payment')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Card' }))
+    // Only the card sale remains; the (cash) sale is filtered out.
+    expect(screen.getByText('1002')).toBeInTheDocument()
+    expect(screen.queryByText('1001')).not.toBeInTheDocument()
+    expect(screen.getByTestId('location-probe')).toHaveTextContent('payment=card')
+
+    // Toggling cash alongside card widens the filter back to both.
+    await user.click(screen.getByRole('button', { name: 'Cash' }))
+    expect(screen.getByText('1001')).toBeInTheDocument()
+    expect(screen.getByTestId('location-probe')).toHaveTextContent('payment=card,cash')
   })
 
   it('searches by cashier name and persists the query to the URL after debounce', async () => {
@@ -452,38 +498,17 @@ describe('SalesManagerPage — reassign', () => {
     expect(mockedFetch).not.toHaveBeenCalledWith('/api/sales/2/', expect.anything())
   })
 
-  it('surfaces honestly when the backend leaves the cashier read-only', async () => {
+  it('reassigns by sending the cashier id when the backend accepts the PATCH', async () => {
     const user = userEvent.setup()
-    // PATCH echoes the sale back unchanged (backend serializer gap).
-    mockedFetch
-      .mockResolvedValueOnce([SEED[1]])
-      .mockResolvedValueOnce(CASHIERS)
-      .mockResolvedValueOnce(SEED[1])
-    await renderPage()
-    await screen.findByText('1002')
-
-    await user.click(screen.getByTestId('action-reassign'))
-    const confirm = screen.getByRole('alertdialog')
-    await user.selectOptions(screen.getByTestId('reassign-select'), 'kofi')
-    await user.click(within(confirm).getByTestId('action-confirm'))
-
-    await waitFor(() =>
-      expect(mockedFetch).toHaveBeenCalledWith('/api/sales/2/', {
-        method: 'PATCH',
-        body: JSON.stringify({ cashier: 'kofi' }),
-      }),
-    )
-    // The modal stays open and tells the truth about the no-op.
-    expect(await within(confirm).findByRole('alert')).toHaveTextContent(
-      'The backend did not update the cashier (cashier is read-only).',
-    )
-    // No success toast fired — the sale was NOT reassigned.
-    expect(screen.queryByText(/reassigned to/)).not.toBeInTheDocument()
-  })
-
-  it('reassigns when the backend accepts the PATCH', async () => {
-    const user = userEvent.setup()
-    const reassigned = sale({ id: 2, number: 1002, status: 'open', cashier_username: 'jane' })
+    // sale 1002 is currently kofi (cashier id 2); reassign it to jane (id 1)
+    // and the backend reflects the change in the response.
+    const reassigned = sale({
+      id: 2,
+      number: 1002,
+      status: 'open',
+      cashier: 1,
+      cashier_username: 'jane',
+    })
     mockedFetch
       .mockResolvedValueOnce([SEED[1]])
       .mockResolvedValueOnce(CASHIERS)
@@ -496,9 +521,42 @@ describe('SalesManagerPage — reassign', () => {
     await user.selectOptions(screen.getByTestId('reassign-select'), 'jane')
     await user.click(within(confirm).getByTestId('action-confirm'))
 
+    // Real contract: the client PATCHes the cashier PK, not a username.
+    await waitFor(() =>
+      expect(mockedFetch).toHaveBeenCalledWith('/api/sales/2/', {
+        method: 'PATCH',
+        body: JSON.stringify({ cashier: 1 }),
+      }),
+    )
     expect(await screen.findByText('Sale #1002 reassigned to jane.')).toBeInTheDocument()
     const row = screen.getByText('1002').closest('tr')!
     expect(within(row).getByText('jane')).toBeInTheDocument()
+  })
+
+  it('surfaces an error when the backend response did not change the cashier', async () => {
+    const user = userEvent.setup()
+    // Backend echoes the sale back with its original cashier (no change).
+    mockedFetch
+      .mockResolvedValueOnce([SEED[1]])
+      .mockResolvedValueOnce(CASHIERS)
+      .mockResolvedValueOnce(SEED[1])
+    await renderPage()
+    await screen.findByText('1002')
+
+    await user.click(screen.getByTestId('action-reassign'))
+    const confirm = screen.getByRole('alertdialog')
+    await user.selectOptions(screen.getByTestId('reassign-select'), 'jane')
+    await user.click(within(confirm).getByTestId('action-confirm'))
+
+    await waitFor(() =>
+      expect(mockedFetch).toHaveBeenCalledWith('/api/sales/2/', expect.anything()),
+    )
+    // The modal stays open and tells the truth instead of claiming success.
+    expect(await within(confirm).findByRole('alert')).toHaveTextContent(
+      "didn't change this sale's cashier",
+    )
+    // No success toast fired — the sale was NOT reassigned.
+    expect(screen.queryByText(/reassigned to/)).not.toBeInTheDocument()
   })
 })
 
@@ -599,5 +657,102 @@ describe('SalesManagerPage — CSV export', () => {
     } finally {
       vi.unstubAllGlobals()
     }
+  })
+
+  it('exports only selected rows and neutralizes leading formula characters', async () => {
+    const user = userEvent.setup()
+    const createObjectURL = vi.fn((_blob: Blob) => 'blob:mock')
+    const revokeObjectURL = vi.fn()
+    vi.stubGlobal('URL', { ...URL, createObjectURL, revokeObjectURL })
+    try {
+      // A cashier username that begins with `=` is a formula-injection vector.
+      const risky = sale({
+        id: 2,
+        number: 2002,
+        status: 'completed',
+        cashier: 7,
+        cashier_username: '=SUM(A1:A2)',
+      })
+      renderPage([sale(), risky])
+      // Select only the risky sale, so the export covers it alone.
+      await user.click(screen.getByRole('checkbox', { name: 'Select sale 2002' }))
+      await user.click(screen.getByTestId('export-csv'))
+      expect(await screen.findByText('Exported 1 sale to CSV.')).toBeInTheDocument()
+
+      const blob = createObjectURL.mock.calls[0][0] as unknown as Blob
+      const csv = typeof blob.text === 'function' ? await blob.text() : ''
+      // The selected sale is present; the unselected one is not.
+      expect(csv).toContain('2002')
+      expect(csv).not.toContain('1001')
+      // The leading `=` is neutralized with a quoted `'` marker.
+      expect(csv).toContain("'=SUM(A1:A2)")
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+describe('SalesManagerPage — keyboard accessibility (AC-19)', () => {
+  it('opens the sale drawer via keyboard and manages focus (place on open, restore on close)', async () => {
+    const user = userEvent.setup()
+    renderPage(SEED)
+
+    // Each row exposes a focusable "View details" control; focus it and
+    // activate it with the keyboard rather than the mouse.
+    const trigger = screen.getByRole('button', { name: 'View details for sale 1001' })
+    trigger.focus()
+    await user.keyboard('{Enter}')
+
+    const drawer = screen.getByTestId('sale-drawer')
+    expect(within(drawer).getByText('Widget')).toBeInTheDocument()
+    // The drawer is a modal dialog: focus moved to its heading on open.
+    await waitFor(() =>
+      expect(document.activeElement).toHaveAccessibleName(/Sale #1001/),
+    )
+
+    // Escape still closes it…
+    await user.keyboard('{Escape}')
+    await waitFor(() =>
+      expect(screen.queryByTestId('sale-drawer')).not.toBeInTheDocument(),
+    )
+    // …and focus returns to the control that opened it.
+    await waitFor(() => expect(document.activeElement).toBe(trigger))
+  })
+})
+
+describe('SalesManagerPage — drawer tabs (AC-07)', () => {
+  it('renders all four spec tabs and switches content between them', async () => {
+    const user = userEvent.setup()
+    renderPage(SEED)
+    // 1001 is completed (not open), so the open-sale discount button is absent.
+    await user.click(screen.getByRole('button', { name: 'View details for sale 1001' }))
+
+    const drawer = screen.getByTestId('sale-drawer')
+    const tab = (name: string) => within(drawer).getByRole('tab', { name })
+
+    // Default tab is Lines.
+    expect(tab('Lines')).toHaveAttribute('aria-selected', 'true')
+    expect(within(drawer).getByText('Widget')).toBeInTheDocument()
+
+    // Payments shows the payment record.
+    await user.click(tab('Payments'))
+    expect(tab('Payments')).toHaveAttribute('aria-selected', 'true')
+    expect(within(drawer).getByText('cash')).toBeInTheDocument()
+    expect(within(drawer).getByText('Manager approved')).toBeInTheDocument()
+
+    // Timeline includes Created / a payment event / Status.
+    await user.click(tab('Timeline'))
+    expect(tab('Timeline')).toHaveAttribute('aria-selected', 'true')
+    expect(within(drawer).getByText('Created')).toBeInTheDocument()
+    expect(within(drawer).getByText(/Paid cash/)).toBeInTheDocument()
+    expect(within(drawer).getByText('Status')).toBeInTheDocument()
+
+    // Receipt renders the itemised receipt (sale #, line).
+    await user.click(tab('Receipt'))
+    expect(tab('Receipt')).toHaveAttribute('aria-selected', 'true')
+    expect(within(drawer).getByText(/Receipt for sale #1001/)).toBeInTheDocument()
+    expect(within(drawer).getByText('Widget')).toBeInTheDocument()
+    // The receipt's own sale-number metadata row.
+    expect(within(drawer).getByText('Sale #')).toBeInTheDocument()
   })
 })

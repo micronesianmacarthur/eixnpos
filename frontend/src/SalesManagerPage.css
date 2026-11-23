@@ -203,6 +203,30 @@
   font-variant-numeric: tabular-nums;
 }
 
+.sales-manager-table .sales-manager-number-btn {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  color: var(--mm-link-color, var(--mm-primary));
+  font: inherit;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.sales-manager-table .sales-manager-number-btn:hover {
+  text-decoration: underline;
+}
+
+.sales-manager-table .sales-manager-number-btn:focus-visible {
+  outline: 2px solid var(--mm-focus, var(--mm-primary));
+  outline-offset: 2px;
+}
+
 .sales-manager-tabular {
   font-variant-numeric: tabular-nums;
 }
@@ -478,6 +502,78 @@
   to {
     transform: translateX(0);
   }
+}
+
+/* Drawer tabs + timeline (spec §4.6) ---------------------------------------------- */
+
+.sales-manager-drawer-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--mm-border, #e2e6ec);
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.sales-manager-drawer-tab {
+  appearance: none;
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 8px 12px;
+  margin: 0 0 -1px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mm-muted, #5b6675);
+  cursor: pointer;
+  border-radius: 4px 4px 0 0;
+}
+
+.sales-manager-drawer-tab:hover {
+  color: var(--mm-text, #16191d);
+}
+
+.sales-manager-drawer-tab:focus-visible {
+  outline: 2px solid var(--mm-focus, var(--mm-primary));
+  outline-offset: -2px;
+}
+
+.sales-manager-drawer-tab.active {
+  color: var(--mm-primary, #2f6fed);
+  border-bottom-color: var(--mm-primary, #2f6fed);
+}
+
+.sales-manager-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 14px;
+}
+
+.sales-manager-timeline li {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.sales-manager-timeline li > div {
+  display: flex;
+  flex-direction: column;
+}
+
+.sales-manager-timeline-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--mm-primary, #2f6fed);
+  flex: 0 0 auto;
+  margin-top: 5px;
+}
+
+.sales-manager-drawer .receipt-slip {
+  max-width: 340px;
+  margin: 0 auto;
 }
 
 /* Responsive ----------------------------------------------------------------------- */

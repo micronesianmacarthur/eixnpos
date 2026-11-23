@@ -115,6 +115,77 @@ class SaleApiTests(TestCase):
         self.assertEqual(sale.cashier, self.cashier)
         self.assertEqual(sale.status, Sale.STATUS_OPEN)
 
+    def test_manager_can_reassign_open_sale_cashier(self):
+        self.client.force_authenticate(self.manager)
+        target = User.objects.create_user(
+            username='newcashier', password='pw', role='cashier'
+        )
+        sale = self.make_sale()  # open by default, cashier=self.cashier
+
+        response = self.client.patch(
+            f'/api/sales/{sale.id}/',
+            {'cashier': target.id},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        sale.refresh_from_db()
+        self.assertEqual(sale.cashier, target)
+        self.assertEqual(response.data['cashier'], target.id)
+
+    def test_manager_can_reassign_to_a_manager_tier_target(self):
+        # The serializer validates the target holds cashier/manager authority,
+        # so a manager-tier target is also an acceptable assignee.
+        self.client.force_authenticate(self.manager)
+        target = User.objects.create_user(
+            username='senior', password='pw', role='manager'
+        )
+        sale = self.make_sale()
+
+        response = self.client.patch(
+            f'/api/sales/{sale.id}/',
+            {'cashier': target.id},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        sale.refresh_from_db()
+        self.assertEqual(sale.cashier, target)
+
+    def test_cashier_cannot_reassign_sale(self):
+        # setUp authenticates as a cashier; reassigning requires manager tier.
+        target = User.objects.create_user(
+            username='othercashier', password='pw', role='cashier'
+        )
+        sale = self.make_sale()
+
+        response = self.client.patch(
+            f'/api/sales/{sale.id}/',
+            {'cashier': target.id},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 403)
+        sale.refresh_from_db()
+        self.assertEqual(sale.cashier, self.cashier)
+
+    def test_reassign_rejects_completed_sale(self):
+        self.client.force_authenticate(self.manager)
+        target = User.objects.create_user(
+            username='othercashier', password='pw', role='cashier'
+        )
+        sale = self.make_sale(status=Sale.STATUS_COMPLETED)
+
+        response = self.client.patch(
+            f'/api/sales/{sale.id}/',
+            {'cashier': target.id},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        sale.refresh_from_db()
+        self.assertEqual(sale.cashier, self.cashier)
+
     def test_add_line_uses_product_price_and_updates_totals(self):
         sale = self.make_sale()
 

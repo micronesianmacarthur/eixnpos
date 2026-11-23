@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { apiFetch, ApiError } from './api';
 import { useAuth } from './authContext';
@@ -63,6 +70,16 @@ interface Cashier {
   active?: boolean;
 }
 
+/** Spec §4.6 drawer tabs. */
+type DrawerTab = 'lines' | 'payments' | 'timeline' | 'receipt';
+
+const DRAWER_TAB_LABELS: Record<DrawerTab, string> = {
+  lines: 'Lines',
+  payments: 'Payments',
+  timeline: 'Timeline',
+  receipt: 'Receipt',
+};
+
 interface SaleManagerPageProps {
   /** Opt-in test seam: render these sales without hitting the network. */
   initialSales?: Sale[];
@@ -120,6 +137,25 @@ function isToday(isoDate: string): boolean {
     date.getMonth() === now.getMonth() &&
     date.getDate() === now.getDate()
   );
+}
+
+/** Local date as `YYYY-MM-DD` (matches the `<input type="date">` value format). */
+function todayIso(): string {
+  const d = new Date();
+  const month = `${d.getMonth() + 1}`.padStart(2, '0');
+  const day = `${d.getDate()}`.padStart(2, '0');
+  return `${d.getFullYear()}-${month}-${day}`;
+}
+
+/**
+ * CSV cell sanitizer. Spreadsheets interpret a leading `= + - @` as a formula,
+ * so a value that begins with one is a formula-injection vector (a Django
+ * username like `+charlie` would otherwise evaluate on open). Prefix such
+ * cells with a single quote, which is the conventional CSV "text" marker and
+ * is ignored by parsers when it forms a whole cell.
+ */
+function sanitizeCsvCell(value: string): string {
+  return /^[=+\-@]/.test(value) ? `'${value}` : value;
 }
 
 function relativeTime(isoDate: string): string {
@@ -255,6 +291,8 @@ function SalesManagerToolbar({
   onStatusToggle,
   needsReview,
   onNeedsReview,
+  payments,
+  onPaymentToggle,
   cashiers,
   cashier,
   onCashier,
@@ -272,6 +310,8 @@ function SalesManagerToolbar({
   onStatusToggle: (status: string) => void;
   needsReview: boolean;
   onNeedsReview: (checked: boolean) => void;
+  payments: string[];
+  onPaymentToggle: (method: string) => void;
   cashiers: Cashier[];
   cashier: string;
   onCashier: (value: string) => void;
@@ -287,6 +327,7 @@ function SalesManagerToolbar({
     search !== '' ||
     statuses.length > 0 ||
     needsReview ||
+    payments.length > 0 ||
     cashier !== '' ||
     fromDate !== '' ||
     toDate !== '';
@@ -357,6 +398,32 @@ function SalesManagerToolbar({
               </option>
             ))}
           </select>
+        </div>
+
+        <div className="sales-manager-field">
+          <div
+            id="filter-payment"
+            data-testid="filter-payment"
+            className="sales-manager-statuschips"
+            role="group"
+            aria-label="Filter by payment method"
+          >
+            {Object.keys(PAYMENT_METHODS).map((method) => {
+              const active = payments.includes(method);
+              return (
+                <button
+                  key={method}
+                  type="button"
+                  className={`sales-manager-chip${active ? ' active' : ''}`}
+                  aria-pressed={active}
+                  data-testid={`payment-chip-${method}`}
+                  onClick={() => onPaymentToggle(method)}
+                >
+                  {method.charAt(0).toUpperCase() + method.slice(1)}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         <div className="sales-manager-field sales-manager-datefield">
@@ -451,13 +518,50 @@ function SaleDrawer({
   onClose: () => void;
   onDiscount: (line: SaleLine) => void;
 }) {
+  const panelRef = useRef<HTMLElement | null>(null);
+  const titleRef = useRef<HTMLHeadingElement | null>(null);
+
+  // Spec §4.6 — the drawer renders four tabs, defaulting to "Lines". The
+  // drawer is conditionally mounted only while open, so each open remounts
+  // with fresh state; no effect is needed to reset the tab between sales
+  // (and an effect doing so would trip react/set-state-in-effect).
+  const [activeTab, setActiveTab] = useState<DrawerTab>('lines');
+
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+    // This is a modal dialog: on open we move focus to the heading so a
+    // keyboard-only manager lands inside the drawer, and we trap Tab within
+    // it (cycling first->last->first) so focus can't escape into the page
+    // behind the backdrop. Escape closes it. The invoking control's focus is
+    // restored by the parent once this drawer unmounts.
+    titleRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        onClose();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const panel = panelRef.current;
+      if (!panel) return;
+      const focusables = Array.from(
+        panel.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      );
+      if (focusables.length === 0) return;
+      const first = focusables[0] as HTMLElement;
+      const last = focusables[focusables.length - 1] as HTMLElement;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [sale.id, onClose]);
 
   const open = sale.status === 'open' || sale.status === 'pending';
   const paymentsTotal = sale.payments.reduce(
@@ -473,6 +577,7 @@ function SaleDrawer({
       }}
     >
       <aside
+        ref={panelRef}
         className="sales-manager-drawer"
         data-testid="sale-drawer"
         role="dialog"
@@ -481,7 +586,12 @@ function SaleDrawer({
       >
         <header className="sales-manager-drawer-header">
           <div>
-            <h2 id="sale-drawer-title" className="sales-manager-drawer-title">
+            <h2
+              id="sale-drawer-title"
+              tabIndex={-1}
+              ref={titleRef}
+              className="sales-manager-drawer-title"
+            >
               Sale #{sale.number}
             </h2>
             <p className="mm-muted">
@@ -503,68 +613,91 @@ function SaleDrawer({
         </header>
 
         <div className="sales-manager-drawer-body">
-          <section aria-label="Sale lines">
-            <h3 className="sales-manager-drawer-section-title">Lines</h3>
-            <div className="mm-table-wrap">
-              <table className="mm-table sales-manager-lines-table">
-                <thead>
-                  <tr>
-                    <th scope="col">Product</th>
-                    <th scope="col">Qty</th>
-                    <th scope="col">Unit</th>
-                    <th scope="col">Discount</th>
-                    <th scope="col">Total</th>
-                    {open && (
-                      <th scope="col">
-                        <span className="mm-visually-hidden">Discount</span>
-                      </th>
-                    )}
-                  </tr>
-                </thead>
-                <tbody>
-                  {sale.lines.length === 0 && (
+          <div
+            className="sales-manager-drawer-tabs"
+            role="tablist"
+            aria-label="Sale details"
+          >
+            {(Object.keys(DRAWER_TAB_LABELS) as DrawerTab[]).map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                role="tab"
+                id={`sale-tab-${tab}`}
+                aria-selected={activeTab === tab}
+                aria-controls={`sale-panel-${tab}`}
+                tabIndex={activeTab === tab ? 0 : -1}
+                className={`sales-manager-drawer-tab${activeTab === tab ? ' active' : ''}`}
+                onClick={() => setActiveTab(tab)}
+              >
+                {DRAWER_TAB_LABELS[tab]}
+              </button>
+            ))}
+          </div>
+
+          {activeTab === 'lines' && (
+          <div
+            role="tabpanel"
+            id="sale-panel-lines"
+            aria-labelledby="sale-tab-lines"
+          >
+            {sale.lines.length === 0 ? (
+              <p className="mm-muted">No items on this sale.</p>
+            ) : (
+              <div className="mm-table-wrap">
+                <table className="mm-table sales-manager-lines-table">
+                  <thead>
                     <tr>
-                      <td colSpan={open ? 6 : 5} className="mm-muted">
-                        No items on this sale.
-                      </td>
-                    </tr>
-                  )}
-                  {sale.lines.map((line) => (
-                    <tr key={line.id}>
-                      <td>{line.product_name}</td>
-                      <td>{line.quantity}</td>
-                      <td>{formatMoney(line.unit_price)}</td>
-                      <td className={toNumber(line.discount_amount) > 0 ? 'sales-manager-negative' : ''}>
-                        {toNumber(line.discount_amount) > 0
-                          ? `-${formatMoney(line.discount_amount)}`
-                          : '—'}
-                      </td>
-                      <td>{formatMoney(line.line_total)}</td>
+                      <th scope="col">Product</th>
+                      <th scope="col">Qty</th>
+                      <th scope="col">Unit</th>
+                      <th scope="col">Discount</th>
+                      <th scope="col">Total</th>
                       {open && (
-                        <td>
-                          <button
-                            type="button"
-                            className="mm-btn mm-btn--outline mm-btn--sm"
-                            onClick={() => onDiscount(line)}
-                          >
-                            Discount
-                          </button>
-                        </td>
+                        <th scope="col">
+                          <span className="mm-visually-hidden">Discount</span>
+                        </th>
                       )}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            {sale.note && (
-              <p className="sales-manager-drawer-note">
-                <strong>Note:</strong> {sale.note}
-              </p>
+                  </thead>
+                  <tbody>
+                    {sale.lines.map((line) => (
+                      <tr key={line.id}>
+                        <td>{line.product_name}</td>
+                        <td>{line.quantity}</td>
+                        <td>{formatMoney(line.unit_price)}</td>
+                        <td className={toNumber(line.discount_amount) > 0 ? 'sales-manager-negative' : ''}>
+                          {toNumber(line.discount_amount) > 0
+                            ? `-${formatMoney(line.discount_amount)}`
+                            : '—'}
+                        </td>
+                        <td>{formatMoney(line.line_total)}</td>
+                        {open && (
+                          <td>
+                            <button
+                              type="button"
+                              className="mm-btn mm-btn--outline mm-btn--sm"
+                              onClick={() => onDiscount(line)}
+                            >
+                              Discount
+                            </button>
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
-          </section>
+          </div>
+          )}
 
-          <section aria-label="Sale payments">
-            <h3 className="sales-manager-drawer-section-title">Payments</h3>
+          {activeTab === 'payments' && (
+          <div
+            role="tabpanel"
+            id="sale-panel-payments"
+            aria-labelledby="sale-tab-payments"
+          >
             {sale.payments.length === 0 ? (
               <p className="mm-muted">No payments recorded.</p>
             ) : (
@@ -585,11 +718,141 @@ function SaleDrawer({
                         change {formatMoney(payment.change_due)}
                       </span>
                     )}
+                    {payment.manager_approved && (
+                      <span className="mm-badge mm-badge--info">Manager approved</span>
+                    )}
                   </li>
                 ))}
               </ul>
             )}
-          </section>
+          </div>
+          )}
+
+          {activeTab === 'timeline' && (
+          <div
+            role="tabpanel"
+            id="sale-panel-timeline"
+            aria-labelledby="sale-tab-timeline"
+          >
+            <ul className="sales-manager-timeline">
+              <li>
+                <span className="sales-manager-timeline-dot" aria-hidden="true" />
+                <div>
+                  <strong>Created</strong>
+                  <span className="mm-muted">{relativeTime(sale.created_at)}</span>
+                </div>
+              </li>
+              {sale.payments.map((payment) => (
+                <li key={payment.id}>
+                  <span className="sales-manager-timeline-dot" aria-hidden="true" />
+                  <div>
+                    <strong>
+                      Paid {PAYMENT_METHODS[payment.method] ?? payment.method} ·{' '}
+                      {formatMoney(payment.amount)}
+                    </strong>
+                    <span className="mm-muted">{relativeTime(payment.created_at)}</span>
+                  </div>
+                </li>
+              ))}
+              {sale.completed_at && (
+                <li>
+                  <span className="sales-manager-timeline-dot" aria-hidden="true" />
+                  <div>
+                    <strong>Completed</strong>
+                    <span className="mm-muted">{relativeTime(sale.completed_at)}</span>
+                  </div>
+                </li>
+              )}
+              <li>
+                <span className="sales-manager-timeline-dot" aria-hidden="true" />
+                <div>
+                  <strong>Status</strong>
+                  <span className={sale.status === 'voided' || sale.status === 'refunded' ? 'sales-manager-negative' : ''}>
+                    {STATUS_LABELS[sale.status] ?? sale.status}
+                  </span>
+                </div>
+              </li>
+              {sale.note && (
+                <li>
+                  <span className="sales-manager-timeline-dot" aria-hidden="true" />
+                  <div>
+                    <strong>Note</strong>
+                    <span>{sale.note}</span>
+                  </div>
+                </li>
+              )}
+            </ul>
+          </div>
+          )}
+
+          {activeTab === 'receipt' && (
+          <div
+            role="tabpanel"
+            id="sale-panel-receipt"
+            aria-labelledby="sale-tab-receipt"
+          >
+            <div className="receipt-slip">
+              <div className="receipt-merchant">
+                <p className="receipt-store">Store</p>
+                <div className="receipt-merchant-meta mm-muted">
+                  <p>Receipt for sale #{sale.number}</p>
+                </div>
+              </div>
+              <div className="receipt-rule" aria-hidden="true" />
+              <dl className="receipt-sale-meta">
+                <div className="receipt-meta-row">
+                  <dt>Date / Time</dt>
+                  <dd>{sale.completed_at ? relativeTime(sale.completed_at) : '\u2014'}</dd>
+                </div>
+                <div className="receipt-meta-row">
+                  <dt>Cashier</dt>
+                  <dd>{sale.cashier_username || '\u2014'}</dd>
+                </div>
+                <div className="receipt-meta-row">
+                  <dt>Sale #</dt>
+                  <dd>{sale.number}</dd>
+                </div>
+              </dl>
+              <div className="receipt-rule" aria-hidden="true" />
+              <div className="receipt-items">
+                <div className="receipt-column-head" aria-hidden="true">
+                  <span>Item</span>
+                  <span>Qty</span>
+                  <span>Total</span>
+                </div>
+                {sale.lines.length === 0 && (
+                  <div className="receipt-item">
+                    <span className="receipt-item-name">No items</span>
+                  </div>
+                )}
+                {sale.lines.map((line) => (
+                  <div key={line.id} className="receipt-item">
+                    <span className="receipt-item-name">{line.product_name}</span>
+                    <span className="receipt-item-qty">×{line.quantity}</span>
+                    <span className="receipt-item-total">{formatMoney(line.line_total)}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="receipt-rule" aria-hidden="true" />
+              <div className="receipt-totals">
+                <div className="receipt-total-row">
+                  <span>Subtotal</span>
+                  <span>{formatMoney(sale.subtotal)}</span>
+                </div>
+                {toNumber(sale.discount_total) > 0 && (
+                  <div className="receipt-total-row">
+                    <span>Discount</span>
+                    <span>{`-${formatMoney(sale.discount_total)}`}</span>
+                  </div>
+                )}
+                <div className="receipt-total-row receipt-grand-total">
+                  <span>Total</span>
+                  <span>{formatMoney(sale.total)}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          )}
 
           <section aria-label="Sale totals" className="sales-manager-drawer-totals">
             <div>
@@ -753,6 +1016,9 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
   const [loading, setLoadingState] = useState(!seeded);
   const [error, setError] = useState('');
   const [stale, setStale] = useState(false);
+  // Incremented on every successful load/refresh so the stale-data pill's 30 s
+  // timer is re-armed (a manual refresh must reset the "stale" deadline).
+  const [refreshTick, setRefreshTick] = useState(0);
 
   const [cashiers, setCashiers] = useState<Cashier[]>([]);
 
@@ -760,6 +1026,7 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
   const search = searchParams.get('search') ?? '';
   const statusFilter = searchParams.get('status') ?? '';
   const cashierFilter = searchParams.get('cashier') ?? '';
+  const paymentFilter = searchParams.get('payment') ?? '';
   const needsReview = searchParams.get('needs_review') === 'true';
   const fromDate = searchParams.get('from') ?? '';
   const toDate = searchParams.get('to') ?? '';
@@ -767,13 +1034,45 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
   // The search box is a debounced local input: typing is instant, but the URL
   // (and therefore the visible filter) only commits after 300 ms of quiet.
   const [searchInput, setSearchInput] = useState(search);
-  useEffect(() => {
+  const [prevSearch, setPrevSearch] = useState(search);
+  // Keep the local search box in sync when the URL `search` changes from an
+  // external navigation (back/forward, a shared link). Done during render
+  // (React's "adjust state when a prop changes" pattern) rather than in an
+  // effect, so the oxlint react/set-state-in-effect check stays clean.
+  if (search !== prevSearch) {
+    setPrevSearch(search);
     setSearchInput(search);
-  }, [search]);
+  }
 
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [drawerSale, setDrawerSale] = useState<Sale | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
+
+  // Focus is managed across the drawer's open/close (AC-19 / WCAG 2.1.1 A):
+  // remember the invoking control so closing the drawer can return focus to
+  // it after the drawer (and its focusable elements) unmount.
+  const drawerReturnFocus = useRef<HTMLElement | null>(null);
+
+  const openDrawer = useCallback((sale: Sale) => {
+    drawerReturnFocus.current =
+      (document.activeElement as HTMLElement | null) ?? null;
+    setDrawerSale(sale);
+  }, []);
+
+  const closeDrawer = useCallback(() => {
+    setDrawerSale(null);
+  }, []);
+
+  // Once the drawer unmounts, hand focus back to the control that opened it.
+  useEffect(() => {
+    if (drawerSale !== null || !drawerReturnFocus.current) return;
+    const target = drawerReturnFocus.current;
+    drawerReturnFocus.current = null;
+    const frame = requestAnimationFrame(() => {
+      if (target.isConnected) target.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [drawerSale]);
 
   // Action-modal state.
   const [voidTarget, setVoidTarget] = useState<Sale | null>(null);
@@ -822,12 +1121,13 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
       try {
         const [saleData, cashierData] = await Promise.all([
           apiFetch<Sale[] | { results: Sale[] }>('/api/sales/'),
-          apiFetch<Cashier[] | { results: Cashier[] }>('/api/users/?role=cashier').catch(() => []),
+          apiFetch<Cashier[] | { results: Cashier[] }>('/api/users/?role=cashier&page_size=100').catch(() => []),
         ]);
         if (!active) return;
         setSales(normalizeList(saleData));
         setCashiers(normalizeList(cashierData));
         setStale(false);
+        setRefreshTick((n) => n + 1);
       } catch (err) {
         if (!active) return;
         setError(err instanceof ApiError ? err.message : 'Failed to load sales');
@@ -836,14 +1136,18 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
       }
     };
     void load();
-
-    // Stale-data pill: if no refresh arrives within 30s, prompt to refresh.
-    const initialLoadTimer = setTimeout(() => setStale(true), 30_000);
     return () => {
       active = false;
-      clearTimeout(initialLoadTimer);
     };
   }, [seeded]);
+
+  // Stale-data pill: if no refresh arrives within 30 s, offer one. Re-armed on
+  // every successful load/refresh (via refreshTick), so the pill reliably
+  // reappears after a manual refresh too.
+  useEffect(() => {
+    const timer = setTimeout(() => setStale(true), 30_000);
+    return () => clearTimeout(timer);
+  }, [refreshTick]);
 
   // Debounced search: reflect the local search box into the URL query string.
   useEffect(() => {
@@ -870,6 +1174,11 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
     [statusFilter],
   );
 
+  const payments = useMemo(
+    () => paymentFilter.split(',').filter(Boolean),
+    [paymentFilter],
+  );
+
   // Client-side filtering (server has no filter params in v1).
   const filteredSales = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -888,6 +1197,10 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
       }
       if (statusesList.length > 0 && !statusesList.includes(s.status)) return false;
       if (cashierFilter && s.cashier_username !== cashierFilter) return false;
+      if (payments.length > 0) {
+        const method = s.payments[0]?.method;
+        if (!method || !payments.includes(method)) return false;
+      }
       if (needsReview && !s.needs_review) return false;
       if (fromDate) {
         const from = new Date(`${fromDate}T00:00:00`);
@@ -899,7 +1212,7 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
       }
       return true;
     });
-  }, [sales, search, statuses, cashierFilter, needsReview, fromDate, toDate]);
+  }, [sales, search, statuses, cashierFilter, payments, needsReview, fromDate, toDate]);
 
   const sortedSales = useMemo(
     () =>
@@ -916,6 +1229,7 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
       setSales(normalizeList(data));
       setError('');
       setStale(false);
+      setRefreshTick((n) => n + 1);
       pushToast('success', 'Sales refreshed.');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to load sales');
@@ -979,13 +1293,16 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
     try {
       const updated = await apiFetch<Sale>(`/api/sales/${sale.id}/`, {
         method: 'PATCH',
-        body: JSON.stringify({ cashier: reassignCashier }),
+        // `cashier` is a PK relation; the backend validates this target user
+        // has a cashier/manager-tier role. Send the id, never the username.
+        body: JSON.stringify({ cashier: Number(reassignCashier) }),
       });
-      // The backend marks `cashier` read-only in the serializer; if it didn't
-      // change we surface that honestly rather than claim success.
+      // The backend now accepts `cashier` (PK) for manager/admin. Confirm the
+      // response actually reflects the change; if it didn't, say so rather
+      // than claim success.
       if (updated.cashier_username === sale.cashier_username) {
         setActionError(
-          'The backend did not update the cashier (cashier is read-only).',
+          "The backend didn't change this sale's cashier.",
         );
         return;
       }
@@ -1035,7 +1352,10 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
   }
 
   const bulkVoid = useCallback(async () => {
-    const targets = sortedSales.filter((s) => selectedIds.has(s.id)).slice(0, 10);
+    // Void every selected sale sequentially, reporting a toast per row. No
+    // silent cap: capping at 10 used to leave rows 11+ selected but unvoided
+    // before clearing the selection, making them look handled.
+    const targets = sortedSales.filter((s) => selectedIds.has(s.id));
     if (targets.length === 0) return;
     setBusy(true);
     try {
@@ -1057,7 +1377,13 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
   }, [selectedIds, sortedSales, pushToast]);
 
   function exportCsv() {
-    const rows = sortedSales.map((s) => [
+    // Spec §4.5 "Export selected": when a selection exists, export only the
+    // selected rows (still sorted); otherwise export all visible rows.
+    const source =
+      selectedIds.size > 0
+        ? sortedSales.filter((s) => selectedIds.has(s.id))
+        : sortedSales;
+    const rows = source.map((s) => [
       s.number,
       s.status,
       s.cashier_username,
@@ -1086,7 +1412,9 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
       .map((row) =>
         row
           .map((cell) => {
-            const str = String(cell);
+            // Neutralize spreadsheet formula injection: a value beginning
+            // with `=`, `+`, `-` or `@` would otherwise be evaluated by Excel.
+            const str = sanitizeCsvCell(String(cell));
             return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
           })
           .join(','),
@@ -1204,7 +1532,12 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
           avgBasket={formatMoney(kpis.avgBasket)}
           reviewCount={kpis.review}
           onOpenClick={() => setFilter({ status: 'open,pending' })}
-          onRevenueClick={() => setFilter({ status: 'completed' })}
+          onRevenueClick={() => {
+            // Match the KPI's definition (completed sales created today) so
+            // the drill-down shows the same set as the revenue card.
+            const day = todayIso();
+            setFilter({ status: 'completed', from: day, to: day });
+          }}
           onReviewClick={() => {
             setFilter({ status: '', needs_review: 'true' });
           }}
@@ -1229,7 +1562,7 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
             onClick={() => void bulkVoid()}
             disabled={busy}
           >
-            Void selected (max 10)
+            Void selected
           </button>
           <button
             type="button"
@@ -1259,6 +1592,13 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
               onNeedsReview={(checked) =>
                 setFilter({ needs_review: checked ? 'true' : '' })
               }
+              payments={payments}
+              onPaymentToggle={(method) => {
+                const next = payments.includes(method)
+                  ? payments.filter((m) => m !== method)
+                  : [...payments, method];
+                setFilter({ payment: next.join(',') });
+              }}
               cashiers={cashiers}
               cashier={cashierFilter}
               onCashier={(value) => setFilter({ cashier: value })}
@@ -1310,7 +1650,7 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
                       <tr
                         key={sale.id}
                         className="sales-manager-row"
-                        onClick={() => setDrawerSale(sale)}
+                        onClick={() => openDrawer(sale)}
                         style={{ cursor: 'pointer' }}
                       >
                         <td className="col-check" onClick={(e) => e.stopPropagation()}>
@@ -1321,7 +1661,16 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
                             onChange={() => toggleSelect(sale.id)}
                           />
                         </td>
-                        <td className="col-number">{sale.number}</td>
+                        <td className="col-number">
+                          <button
+                            type="button"
+                            className="sales-manager-number-btn"
+                            aria-label={`View details for sale ${sale.number}`}
+                            onClick={() => openDrawer(sale)}
+                          >
+                            {sale.number}
+                          </button>
+                        </td>
                         <td>
                           <span className={`mm-badge ${STATUS_BADGES[sale.status] ?? 'mm-badge--muted'}`}>
                             {STATUS_LABELS[sale.status] ?? sale.status}
@@ -1399,7 +1748,7 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
       {drawerSale && (
         <SaleDrawer
           sale={drawerSale}
-          onClose={() => setDrawerSale(null)}
+          onClose={closeDrawer}
           onDiscount={openDiscount}
         />
       )}
@@ -1463,7 +1812,7 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
             >
               <option value="">Select a cashier…</option>
               {cashiers.map((c) => (
-                <option key={c.id} value={c.username}>
+                <option key={c.id} value={c.id}>
                   {c.username}
                 </option>
               ))}

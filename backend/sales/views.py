@@ -35,6 +35,46 @@ class SaleViewSet(viewsets.ModelViewSet):
         session = resolve_open_session(self.request.user, timezone.now())
         serializer.save(cashier=self.request.user, session=session)
 
+    def _reassign_guard(self, request, sale):
+        """Reassign (PATCH/PUT `cashier`) is manager/admin-only and open-sale-only.
+
+        Returns an error Response to short-circuit a request, or None to
+        allow it through. Kept in the view rather than the serializer so the
+        authorization failure returns an HTTP 403 instead of a field-level
+        400; target role/active validation stays in the serializer.
+        """
+        if 'cashier' not in request.data:
+            return None
+        if not is_manager(request.user):
+            return Response(
+                {'detail': 'Only managers and admins can reassign a sale.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if not sale.is_open():
+            return Response(
+                {'detail': 'Only open sales can be reassigned.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return None
+
+    def update(self, request, *args, **kwargs):
+        """Update a sale; gate the `cashier` write behind manager authority."""
+        instance = self.get_object()
+        guard = self._reassign_guard(request, instance)
+        if guard is not None:
+            return guard
+        partial = kwargs.pop('partial', False)
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        if getattr(instance, '_prefetched_objects_cache', None):
+            instance._prefetched_objects_cache = {}
+        return Response(serializer.data)
+
+    def partial_update(self, request, *args, **kwargs):
+        kwargs['partial'] = True
+        return self.update(request, *args, **kwargs)
+
     @action(detail=True, methods=['post'])
     def add_line(self, request, pk=None):
         sale = self.get_object()
