@@ -13,8 +13,32 @@ Security rules enforced here:
 """
 
 import logging
+import re
+
+from .throttling import client_ip as _client_ip
 
 audit = logging.getLogger('auth.audit')
+
+
+#: Control characters and bare space — any value containing these would break
+#: the single-line ``key=value`` audit format (space forges an extra token, a
+#: newline forges an extra log line). Such values are emitted via ``repr()``,
+#: which escapes them so the record stays on one physical line.
+_UNSAFE_IN_VALUE = re.compile(r'[\x00-\x20\x7f]')
+
+
+def _render_value(value):
+    """Render a field value as a single log-parseable token.
+
+    Plain values keep the unquoted ``key=value`` shape; values containing
+    whitespace or control characters are emitted as a ``repr()`` literal so a
+    hostile value (e.g. a forged ``username`` with ``\\n``/spaces) cannot
+    inject extra audit lines or tokens.
+    """
+    text = str(value)
+    if _UNSAFE_IN_VALUE.search(text):
+        return repr(text)
+    return text
 
 
 def _fields(request, **extra):
@@ -31,17 +55,10 @@ def _fields(request, **extra):
     return {k: v for k, v in fields.items() if v is not None}
 
 
-def _client_ip(request):
-    forwarded = request.META.get('HTTP_X_FORWARDED_FOR', '')
-    if forwarded:
-        return forwarded.split(',')[0].strip()
-    return request.META.get('REMOTE_ADDR', '') or None
-
-
 def _emit(level, event, request, **extra):
     """Log ``event`` with structured ``extra`` fields at the given level."""
     fields = _fields(request, **extra)
-    line = ' '.join(f'{k}={v}' for k, v in fields.items())
+    line = ' '.join(f'{k}={_render_value(v)}' for k, v in fields.items())
     audit.log(level, 'auth_event=%s %s' % (event, line))
 
 

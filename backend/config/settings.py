@@ -124,6 +124,21 @@ AUTH_CHANGE_PASSWORD_FAIL_WINDOW = 15 * 60
 AUTH_ADMIN_LOGIN_FAIL_LIMIT = 5
 AUTH_ADMIN_LOGIN_FAIL_WINDOW = 15 * 60
 
+# Reverse proxies trusted to supply the real end-client IP via
+# ``X-Forwarded-For``. When the immediate peer (``REMOTE_ADDR``) is in this
+# set, the first ``X-Forwarded-For`` value is used as the client IP that keys
+# the throttle budget and audit records. Empty by default: the header is
+# ignored entirely and ``REMOTE_ADDR`` is used, so a client cannot rotate its
+# own throttle identity or audit IP.
+#
+# Deployment expectation: with nothing listed here the app must run such that
+# ``REMOTE_ADDR`` reflects the real client -- either directly exposed, or
+# behind a proxy that overwrites the peer address. Do NOT rely on
+# ``X-Forwarded-For`` being trustworthy unless the immediate peer is in this
+# set. Example:
+#   AUTH_TRUSTED_PROXY_IPS = {'127.0.0.1', '10.0.0.5'}
+AUTH_TRUSTED_PROXY_IPS = ()
+
 # ---------------------------------------------------------------------------
 # Admin seeding gate (S4)
 #

@@ -22,11 +22,21 @@ from django.conf import settings
 
 
 def client_ip(request):
-    """Return the end-client IP, honouring ``X-Forwarded-For``."""
-    forwarded = request.META.get('HTTP_X_FORWARDED_FOR', '')
-    if forwarded:
+    """Return the end-client IP that keys throttling and audit records.
+
+    ``X-Forwarded-For`` is trusted only when the immediate peer (``REMOTE_ADDR``)
+    is one of the deployment's configured trusted proxies
+    (``settings.AUTH_TRUSTED_PROXY_IPS``, empty by default). Otherwise the
+    header is ignored and ``REMOTE_ADDR`` is used, so an untrusted client
+    cannot rotate its own throttle-key identity or spoof its audit IP. See the
+    deployment note next to ``AUTH_TRUSTED_PROXY_IPS`` in ``config/settings.py``.
+    """
+    remote = (request.META.get('REMOTE_ADDR') or '').strip()
+    forwarded = (request.META.get('HTTP_X_FORWARDED_FOR') or '').strip()
+    trusted = set(getattr(settings, 'AUTH_TRUSTED_PROXY_IPS', None) or ())
+    if forwarded and remote in trusted:
         return forwarded.split(',')[0].strip()
-    return request.META.get('REMOTE_ADDR', '')
+    return remote
 
 
 def _limit_and_window(namespace):

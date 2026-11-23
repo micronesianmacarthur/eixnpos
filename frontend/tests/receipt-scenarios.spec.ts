@@ -33,6 +33,8 @@ interface SaleSpec {
   lines?: LineSpec[];
   payments?: Array<Record<string, unknown>>;
   customer?: { id: number; name: string; balance: string; credit_limit: string } | null;
+  /** undefined -> default 'maya'; null/'' -> fallback case. */
+  cashier_username?: string | null;
 }
 
 function makeSale(spec: SaleSpec = {}) {
@@ -43,7 +45,8 @@ function makeSale(spec: SaleSpec = {}) {
     id: 1,
     number: spec.number ?? 1001,
     cashier: 1,
-    cashier_username: 'maya',
+    // undefined keeps the default username; null/'' exercise the display fallback.
+    cashier_username: spec.cashier_username === undefined ? 'maya' : spec.cashier_username,
     customer: spec.customer ?? null,
     status: spec.status ?? 'completed',
     subtotal: spec.subtotal ?? '10.00',
@@ -188,6 +191,31 @@ test('completed status shows success badge and cashier username', async ({ page 
   await expect(badge).toHaveClass(/mm-badge--success/);
   const cashier = page.locator('.receipt-meta-row', { hasText: 'Cashier' });
   await expect(cashier).toContainText('maya');
+  await expect(cashier).not.toContainText('#1');
+  await expectNoOverflow(page);
+});
+
+test('missing cashier username falls back to em-dash, never the cashier id', async ({ page }) => {
+  await openReceipt(page, { sale: { cashier_username: null } });
+  const cashier = page.locator('.receipt-meta-row', { hasText: 'Cashier' });
+  await expect(cashier).toContainText('—');
+  // The fallback must never leak the cashier id as the display identifier.
+  await expect(cashier).not.toContainText('#1');
+  await expect(cashier).not.toContainText('maya');
+  // Unrelated receipt fields still render correctly alongside the fallback.
+  await expect(page.locator('.receipt-store')).toHaveText('eixn Corner Store');
+  await expect(page.locator('.receipt-meta-row', { hasText: 'Sale' })).toContainText('1001');
+  await expect(page.locator('.receipt-item')).toHaveCount(1);
+  await expect(page.locator('.receipt-item').first()).toContainText('Widget');
+  await expect(page.locator('.receipt-grand-total')).toContainText('$10.00');
+  await expect(page.locator('.receipt-modal .mm-badge').first()).toHaveText('completed');
+  await expectNoOverflow(page);
+});
+
+test('empty cashier username also falls back to em-dash, never the cashier id', async ({ page }) => {
+  await openReceipt(page, { sale: { cashier_username: '' } });
+  const cashier = page.locator('.receipt-meta-row', { hasText: 'Cashier' });
+  await expect(cashier).toContainText('—');
   await expect(cashier).not.toContainText('#1');
   await expectNoOverflow(page);
 });
