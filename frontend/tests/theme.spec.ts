@@ -355,27 +355,23 @@ test('keeps the Business Information prompt and form', async ({ page }) => {
   expectNoNetworkIssues(monitor);
 });
 
-const PLACEHOLDERS = [
-  ['/suppliers', 'Suppliers'],
-] as const;
+// /suppliers is a real wired page now (not a placeholder shell): with an
+// empty supplier list fixture it renders the page's own empty state.
+test('renders the Suppliers page empty state', async ({ page }) => {
+  const monitor = await openApp(page, '/suppliers');
 
-for (const [path, title] of PLACEHOLDERS) {
-  test(`renders the ${title} placeholder`, async ({ page }) => {
-    const monitor = await openApp(page, path);
+  await expect(
+    page.getByRole('heading', { level: 1, name: 'Suppliers' }),
+  ).toBeVisible();
+  await expect(page.locator('.mm-page-subtitle')).not.toBeEmpty();
+  const emptyCard = page.locator('.mm-empty.suppliers-empty');
+  await expect(emptyCard).toBeVisible();
+  await expect(emptyCard).toContainText('No suppliers yet');
 
-    await expect(
-      page.getByRole('heading', { level: 1, name: title }),
-    ).toBeVisible();
-    await expect(page.locator('.mm-page-subtitle')).not.toBeEmpty();
-    const emptyCard = page.locator('.mm-card.mm-empty');
-    await expect(emptyCard).toBeVisible();
-    await expect(emptyCard).toContainText('Nothing here yet');
+  await expect(page.locator('.app-page')).toHaveScreenshot(
+    'suppliers-page.png',
+    SNAPSHOT,
+  );
 
-    await expect(page.locator('.app-page')).toHaveScreenshot(
-      `placeholder-${path.slice(1)}.png`,
-      SNAPSHOT,
-    );
-
-    expectNoNetworkIssues(monitor);
-  });
-}
+  expectNoNetworkIssues(monitor);
+});

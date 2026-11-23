@@ -10,7 +10,7 @@
  */
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom/vitest'
 
@@ -260,5 +260,344 @@ describe('SalesManagerPage — manager actions', () => {
     const drawer = screen.getByTestId('sale-drawer')
     expect(within(drawer).getByText('Widget')).toBeInTheDocument()
     expect(within(drawer).getByText('cash')).toBeInTheDocument()
+  })
+})
+
+describe('SalesManagerPage — KPI derivation', () => {
+  it('derives open count, today revenue, avg basket, and needs-review count', () => {
+    const today = new Date().toISOString()
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+    renderPage([
+      sale({ id: 1, number: 1001, status: 'open', total: '30.00' }),
+      sale({ id: 2, number: 1002, status: 'completed', total: '80.00', created_at: today }),
+      sale({ id: 3, number: 1003, status: 'completed', total: '20.00', created_at: yesterday }),
+      sale({ id: 4, number: 1004, status: 'completed', total: '50.00', created_at: today, needs_review: true }),
+    ])
+    expect(screen.getByTestId('kpi-open-sales')).toHaveTextContent('1')
+    // Today's revenue counts only completed sales created today (80 + 50).
+    expect(screen.getByTestId('kpi-revenue')).toHaveTextContent('$130.00')
+    // Avg basket = 130 / 2 completed-today.
+    expect(screen.getByTestId('kpi-avg-basket')).toHaveTextContent('$65.00')
+    expect(screen.getByTestId('kpi-needs-review')).toHaveTextContent('1')
+  })
+
+  it('clicking the Needs Review KPI applies the needs_review filter', async () => {
+    const user = userEvent.setup()
+    renderPage([
+      sale({ id: 1, number: 1001, status: 'completed' }),
+      sale({ id: 2, number: 1002, status: 'completed', needs_review: true }),
+    ])
+    await user.click(screen.getByTestId('kpi-needs-review'))
+    expect(screen.queryByText('1001')).not.toBeInTheDocument()
+    expect(screen.getByText('1002')).toBeInTheDocument()
+  })
+})
+
+describe('SalesManagerPage — status chips, dates, and URL persistence', () => {
+  function renderWithLocation(initialSales: Sale[]) {
+    function LocationProbe() {
+      const location = useLocation()
+      return <div data-testid="location-probe">{location.pathname + decodeURIComponent(location.search)}</div>
+    }
+    return render(
+      <MemoryRouter initialEntries={['/sales-manager']}>
+        <LocationProbe />
+        <Routes>
+          <Route path="/sales-manager" element={<SalesManagerPage initialSales={initialSales} />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+  }
+
+  it('toggles a status chip with aria-pressed and filters by status', async () => {
+    const user = userEvent.setup()
+    renderWithLocation(SEED)
+    const group = screen.getByTestId('filter-status')
+    const completedChip = within(group).getByRole('button', { name: 'Completed' })
+    expect(completedChip).toHaveAttribute('aria-pressed', 'false')
+    await user.click(completedChip)
+    expect(completedChip).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText('1001')).toBeInTheDocument()
+    expect(screen.queryByText('1002')).not.toBeInTheDocument()
+    expect(screen.getByTestId('location-probe')).toHaveTextContent('status=completed')
+
+    // Toggling a second status widens the filter (comma-joined in the URL).
+    await user.click(within(group).getByRole('button', { name: 'Open' }))
+    expect(screen.getByText('1002')).toBeInTheDocument()
+    expect(screen.getByTestId('location-probe')).toHaveTextContent('status=completed,open')
+  })
+
+  it('filters sales by the needs-review checkbox and reflects it in the URL', async () => {
+    const user = userEvent.setup()
+    renderWithLocation([
+      sale({ id: 1, number: 1001 }),
+      sale({ id: 2, number: 1002, status: 'completed', needs_review: true }),
+    ])
+    const checkbox = screen.getByTestId('filter-needs-review')
+    await user.click(checkbox)
+    expect(checkbox).toBeChecked()
+    expect(screen.queryByText('1001')).not.toBeInTheDocument()
+    expect(screen.getByText('1002')).toBeInTheDocument()
+    expect(screen.getByTestId('location-probe')).toHaveTextContent('needs_review=true')
+  })
+
+  it('filters sales by the from-date range', async () => {
+    const user = userEvent.setup()
+    renderWithLocation([
+      sale({ id: 1, number: 1001, created_at: '2026-01-01T10:00:00Z' }),
+      sale({ id: 2, number: 1002, status: 'open', created_at: '2026-03-01T10:00:00Z' }),
+    ])
+    await user.type(screen.getByTestId('filter-date'), '2026-02-01')
+    expect(screen.queryByText('1001')).not.toBeInTheDocument()
+    expect(screen.getByText('1002')).toBeInTheDocument()
+  })
+
+  it('searches by cashier name and persists the query to the URL after debounce', async () => {
+    const user = userEvent.setup()
+    renderWithLocation(SEED)
+    await user.type(screen.getByTestId('sales-search'), 'kofi')
+    // Debounced: not applied instantly…
+    expect(screen.getByTestId('location-probe')).not.toHaveTextContent('search=')
+    // …but committed to the URL (and the rows) shortly after.
+    await waitFor(
+      () => expect(screen.getByTestId('location-probe')).toHaveTextContent('search=kofi'),
+      { timeout: 1000 },
+    )
+    expect(screen.queryByText('1001')).not.toBeInTheDocument()
+    expect(screen.getByText('1002')).toBeInTheDocument()
+  })
+
+  it('restores filters from the URL on load', () => {
+    render(
+      <MemoryRouter initialEntries={['/sales-manager?search=kofi&status=open']}>
+        <Routes>
+          <Route path="/sales-manager" element={<SalesManagerPage initialSales={SEED} />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    expect(screen.getByTestId('sales-search')).toHaveValue('kofi')
+    expect(screen.queryByText('1001')).not.toBeInTheDocument()
+    expect(screen.getByText('1002')).toBeInTheDocument()
+  })
+
+  it('Clear filters resets the URL and shows all rows', async () => {
+    const user = userEvent.setup()
+    renderWithLocation(SEED)
+    await user.click(screen.getByRole('button', { name: 'Refunded' }))
+    expect(screen.getByText('No sales match')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Clear filters' }))
+    expect(screen.getByText('1001')).toBeInTheDocument()
+    expect(screen.getByText('1002')).toBeInTheDocument()
+    expect(screen.getByTestId('location-probe')).toHaveTextContent(/^\/sales-manager$/)
+  })
+})
+
+describe('SalesManagerPage — role gating', () => {
+  it('allows managers without showing the permission warning', () => {
+    currentRole.value = 'manager'
+    renderPage(SEED)
+    expect(screen.queryByText(/You don't have permission to manage sales/)).not.toBeInTheDocument()
+    expect(screen.getByTestId('sales-table')).toBeInTheDocument()
+  })
+})
+
+describe('SalesManagerPage — bulk void', () => {
+  it('voids each selected open sale and reports a toast', async () => {
+    const user = userEvent.setup()
+    const updated = (id: number) => sale({ id, number: 1000 + id, status: 'voided' })
+    mockedFetch.mockImplementation(async (url: string) => {
+      const match = /\/api\/sales\/(\d+)\/void\//.exec(url)
+      return match ? updated(Number(match[1])) : []
+    })
+    renderPage([
+      sale({ id: 2, number: 1002, status: 'open', total: '30.00' }),
+      sale({ id: 3, number: 1003, status: 'open', total: '40.00' }),
+      sale({ id: 4, number: 1004, status: 'completed', total: '50.00' }),
+    ])
+
+    await user.click(screen.getByRole('checkbox', { name: 'Select sale 1002' }))
+    await user.click(screen.getByRole('checkbox', { name: 'Select sale 1003' }))
+    const bulkbar = screen.getByRole('region', { name: 'Bulk actions' })
+    expect(within(bulkbar).getByText('2 selected')).toBeInTheDocument()
+
+    await user.click(screen.getByTestId('bulk-void'))
+    await waitFor(() => expect(mockedFetch).toHaveBeenCalledTimes(2))
+    expect(mockedFetch).toHaveBeenCalledWith('/api/sales/2/void/', { method: 'POST' })
+    expect(mockedFetch).toHaveBeenCalledWith('/api/sales/3/void/', { method: 'POST' })
+    // The completed sale was never voided.
+    expect(mockedFetch).not.toHaveBeenCalledWith('/api/sales/4/void/', { method: 'POST' })
+    expect(await screen.findByText('Sale #1002 voided.')).toBeInTheDocument()
+    expect(screen.getByText('Sale #1003 voided.')).toBeInTheDocument()
+  })
+})
+
+describe('SalesManagerPage — reassign', () => {
+  const CASHIERS = [
+    { id: 1, username: 'jane', role: 'cashier' },
+    { id: 2, username: 'kofi', role: 'cashier' },
+  ]
+
+  it('requires a cashier selection before calling the API', async () => {
+    const user = userEvent.setup()
+    mockedFetch.mockResolvedValueOnce([SEED[1]]).mockResolvedValueOnce(CASHIERS)
+    await renderPage() // fetch path populates the cashier dropdown
+    await screen.findByText('1002')
+
+    await user.click(screen.getByTestId('action-reassign'))
+    const confirm = screen.getByRole('alertdialog')
+    await user.click(within(confirm).getByTestId('action-confirm'))
+    expect(await within(confirm).findByRole('alert')).toHaveTextContent(
+      'Select a cashier to reassign this sale to.',
+    )
+    expect(mockedFetch).not.toHaveBeenCalledWith('/api/sales/2/', expect.anything())
+  })
+
+  it('surfaces honestly when the backend leaves the cashier read-only', async () => {
+    const user = userEvent.setup()
+    // PATCH echoes the sale back unchanged (backend serializer gap).
+    mockedFetch
+      .mockResolvedValueOnce([SEED[1]])
+      .mockResolvedValueOnce(CASHIERS)
+      .mockResolvedValueOnce(SEED[1])
+    await renderPage()
+    await screen.findByText('1002')
+
+    await user.click(screen.getByTestId('action-reassign'))
+    const confirm = screen.getByRole('alertdialog')
+    await user.selectOptions(screen.getByTestId('reassign-select'), 'kofi')
+    await user.click(within(confirm).getByTestId('action-confirm'))
+
+    await waitFor(() =>
+      expect(mockedFetch).toHaveBeenCalledWith('/api/sales/2/', {
+        method: 'PATCH',
+        body: JSON.stringify({ cashier: 'kofi' }),
+      }),
+    )
+    // The modal stays open and tells the truth about the no-op.
+    expect(await within(confirm).findByRole('alert')).toHaveTextContent(
+      'The backend did not update the cashier (cashier is read-only).',
+    )
+    // No success toast fired — the sale was NOT reassigned.
+    expect(screen.queryByText(/reassigned to/)).not.toBeInTheDocument()
+  })
+
+  it('reassigns when the backend accepts the PATCH', async () => {
+    const user = userEvent.setup()
+    const reassigned = sale({ id: 2, number: 1002, status: 'open', cashier_username: 'jane' })
+    mockedFetch
+      .mockResolvedValueOnce([SEED[1]])
+      .mockResolvedValueOnce(CASHIERS)
+      .mockResolvedValueOnce(reassigned)
+    await renderPage()
+    await screen.findByText('1002')
+
+    await user.click(screen.getByTestId('action-reassign'))
+    const confirm = screen.getByRole('alertdialog')
+    await user.selectOptions(screen.getByTestId('reassign-select'), 'jane')
+    await user.click(within(confirm).getByTestId('action-confirm'))
+
+    expect(await screen.findByText('Sale #1002 reassigned to jane.')).toBeInTheDocument()
+    const row = screen.getByText('1002').closest('tr')!
+    expect(within(row).getByText('jane')).toBeInTheDocument()
+  })
+})
+
+describe('SalesManagerPage — discount override', () => {
+  function openDrawerOnOpenSale() {
+    renderPage([SEED[1]]) // sale 1002 is open → Discount button in drawer
+  }
+
+  it('rejects a negative discount value without calling the API', async () => {
+    const user = userEvent.setup()
+    openDrawerOnOpenSale()
+    await user.click(screen.getByText('1002'))
+    const drawer = screen.getByTestId('sale-drawer')
+    await user.click(within(drawer).getByRole('button', { name: 'Discount' }))
+
+    const confirm = screen.getByRole('alertdialog')
+    expect(confirm).toHaveTextContent('Override discount — Widget')
+    await user.type(within(confirm).getByLabelText('Value'), '-5')
+    await user.click(within(confirm).getByTestId('action-confirm'))
+    expect(await within(confirm).findByRole('alert')).toHaveTextContent(
+      'Enter a valid discount value.',
+    )
+    expect(mockedFetch).not.toHaveBeenCalled()
+  })
+
+  it('applies a percent discount and reloads the sale detail', async () => {
+    const user = userEvent.setup()
+    const discountedLine = { ...SEED[1].lines[0], discount_amount: '5.00' }
+    const discountedSale = { ...SEED[1], lines: [discountedLine] }
+    mockedFetch.mockImplementation(async (url: string) => {
+      if (url.endsWith('/lines/11/discount/')) return discountedLine
+      if (url.endsWith('/api/sales/2/')) return discountedSale
+      return []
+    })
+    openDrawerOnOpenSale()
+    await user.click(screen.getByText('1002'))
+    const drawer = screen.getByTestId('sale-drawer')
+    await user.click(within(drawer).getByRole('button', { name: 'Discount' }))
+
+    const confirm = screen.getByRole('alertdialog')
+    await user.type(within(confirm).getByLabelText('Value'), '10')
+    await user.click(within(confirm).getByTestId('action-confirm'))
+
+    await waitFor(() =>
+      expect(mockedFetch).toHaveBeenCalledWith('/api/sales/2/lines/11/discount/', {
+        method: 'POST',
+        body: JSON.stringify({ discount_type: 'percent', discount_value: '10' }),
+      }),
+    )
+    // The drawer reloads the sale so the new line discount is visible.
+    expect(mockedFetch).toHaveBeenCalledWith('/api/sales/2/')
+    expect(await screen.findByText('Discount applied to Widget.')).toBeInTheDocument()
+    expect(within(screen.getByTestId('sale-drawer')).getByText('-$5.00')).toBeInTheDocument()
+  })
+})
+
+describe('SalesManagerPage — action failures and dismissal', () => {
+  it('keeps the void modal open with the API error when voiding fails', async () => {
+    const user = userEvent.setup()
+    mockedFetch.mockRejectedValueOnce(new ApiError('Manager approval required', 403))
+    renderPage([SEED[1]])
+
+    await user.click(screen.getByTestId('action-void'))
+    const confirm = screen.getByRole('alertdialog')
+    await user.click(within(confirm).getByTestId('action-confirm'))
+    expect(await within(confirm).findByRole('alert')).toHaveTextContent(
+      'Manager approval required',
+    )
+    // Modal stays open; the row is untouched.
+    expect(within(confirm).getByTestId('action-confirm')).toBeEnabled()
+    const row = screen.getByText('1002').closest('tr')!
+    expect(within(row).getAllByText('Open').length).toBeGreaterThan(0)
+  })
+
+  it('closes the drawer with Escape', async () => {
+    const user = userEvent.setup()
+    renderPage(SEED)
+    await user.click(screen.getByText('1001'))
+    expect(screen.getByTestId('sale-drawer')).toBeInTheDocument()
+    await user.keyboard('{Escape}')
+    expect(screen.queryByTestId('sale-drawer')).not.toBeInTheDocument()
+  })
+})
+
+describe('SalesManagerPage — CSV export', () => {
+  it('exports the visible sales and reports how many were exported', async () => {
+    const user = userEvent.setup()
+    const createObjectURL = vi.fn((_blob: Blob) => 'blob:mock')
+    const revokeObjectURL = vi.fn()
+    vi.stubGlobal('URL', { ...URL, createObjectURL, revokeObjectURL })
+    try {
+      renderPage(SEED)
+      await user.click(screen.getByTestId('export-csv'))
+      expect(await screen.findByText('Exported 2 sales to CSV.')).toBeInTheDocument()
+      expect(createObjectURL).toHaveBeenCalledTimes(1)
+      const blob = createObjectURL.mock.calls[0][0] as unknown as Blob
+      expect(blob.type).toContain('text/csv')
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })
