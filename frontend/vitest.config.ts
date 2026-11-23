@@ -5,7 +5,7 @@ import { defineConfig } from 'vitest/config'
 // Playwright e2e glob ("tests/**/*.spec.ts") and out of the tsc app build.
 export default defineConfig({
   test: {
-    include: ['tests/unit/**/*.test.ts'],
+    include: ['tests/unit/**/*.test.{ts,tsx}'],
     environment: 'node',
   },
 })
