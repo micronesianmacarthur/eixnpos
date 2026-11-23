@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { apiFetch, ApiError } from './api';
 import { useAuth } from './authContext';
 import { Icon } from './Icon';
 import './SuppliersPage.css';
 
 /**
- * Supplier contact record, matching the backend `Supplier` model's fields.
- * Data here is static / prop-driven for now; real fetching will wire this
- * to `GET /api/suppliers/` in a follow-up.
+ * Supplier contact record, matching the backend `Supplier` model's fields and
+ * the `SupplierViewSet` serializer (`fields = '__all__'`).
  */
 export interface Supplier {
   id: number;
@@ -40,49 +40,16 @@ const EMPTY_FORM: SupplierForm = {
   active: true,
 };
 
-/** Static sample roster so the page renders without a backend dependency. */
-const SAMPLE_SUPPLIERS: Supplier[] = [
-  {
-    id: 1,
-    name: 'Acme Paper Co.',
-    contact_name: 'Dana Reyes',
-    email: 'dana@acmepaper.test',
-    phone: '+1 555 0141',
-    address: '1200 Harbor Blvd, San Diego, CA',
-    notes: 'Primary packaging and receipt roll vendor.',
-    active: true,
-    created_at: '2026-05-02T10:00:00Z',
-  },
-  {
-    id: 2,
-    name: 'Nordic Beverage Supply',
-    contact_name: 'Ingrid Larsen',
-    email: 'ingrid@nordicbev.test',
-    phone: '+1 555 0188',
-    address: '88 Fjord Way, Portland, OR',
-    notes: '',
-    active: true,
-    created_at: '2026-05-14T10:00:00Z',
-  },
-  {
-    id: 3,
-    name: 'Sunrise Grocers Distributors',
-    contact_name: 'Marcus Webb',
-    email: 'marcus@sunrise.test',
-    phone: '+1 555 0123',
-    address: '450 Alder St, Austin, TX',
-    notes: 'Weekly delivery on Mondays.',
-    active: true,
-    created_at: '2026-06-01T10:00:00Z',
-  },
-];
-
 function normalizeList<T>(data: T[] | { results: T[] }): T[] {
   return Array.isArray(data) ? data : data.results;
 }
 
 interface SuppliersPageProps {
-  /** Optional external supplier list. Falls back to a static sample roster. */
+  /**
+   * Optional external supplier list. When provided, the page renders these
+   * without hitting the network (used by test harnesses to seed a known
+   * state). When omitted, suppliers are fetched from `GET /api/suppliers/`.
+   */
   initialSuppliers?: Supplier[];
 }
 
@@ -168,17 +135,19 @@ function SuppliersEmpty({ hasSuppliers }: { hasSuppliers: boolean }) {
   );
 }
 
-/** Supplier create/edit modal. Local state only; no API call in this task. */
+/** Supplier create/edit modal. Persistence is wired in the parent via onSubmit. */
 function SupplierFormModal({
   editing,
   initial,
   saving,
+  serverError,
   onClose,
   onSubmit,
 }: {
   editing: boolean;
   initial: SupplierForm;
   saving: boolean;
+  serverError: string;
   onClose: () => void;
   onSubmit: (form: SupplierForm) => void;
 }) {
@@ -227,9 +196,9 @@ function SupplierFormModal({
 
         <form className="supplier-form" onSubmit={handleSubmit}>
           <div className="mm-modal-body supplier-body">
-            {formError && (
+            {(formError || serverError) && (
               <div className="mm-alert mm-alert--danger" role="alert">
-                {formError}
+                {formError || serverError}
               </div>
             )}
 
@@ -336,9 +305,12 @@ export default function SuppliersPage({ initialSuppliers }: SuppliersPageProps) 
   const { me } = useAuth();
   const canManage =
     me !== null && (me.user.role === 'manager' || me.user.role === 'admin');
-  const [suppliers, setSuppliers] = useState<Supplier[]>(
-    normalizeList(initialSuppliers ?? SAMPLE_SUPPLIERS),
+  const seeded = initialSuppliers !== undefined;
+  const [suppliers, setSuppliers] = useState<Supplier[]>(() =>
+    initialSuppliers ? normalizeList(initialSuppliers) : [],
   );
+  const [loading, setLoading] = useState(!seeded);
+  const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
 
@@ -346,7 +318,10 @@ export default function SuppliersPage({ initialSuppliers }: SuppliersPageProps) 
   const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
   const [form, setForm] = useState<SupplierForm>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<Supplier | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
 
   const filteredSuppliers = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -368,10 +343,36 @@ export default function SuppliersPage({ initialSuppliers }: SuppliersPageProps) 
   );
   const inactiveCount = suppliers.length - activeCount;
 
+  // Load suppliers from the API on mount, unless the page was seeded with an
+  // `initialSuppliers` prop (test harness mode) — then skip the network.
+  useEffect(() => {
+    if (seeded) {
+      return;
+    }
+    let active = true;
+    apiFetch<Supplier[] | { results: Supplier[] }>('/api/suppliers/')
+      .then((data) => {
+        if (!active) return;
+        setSuppliers(normalizeList(data));
+        setError('');
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (!active) return;
+        setError(
+          err instanceof ApiError ? err.message : 'Failed to load suppliers',
+        );
+        setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [seeded]);
+
   useEffect(() => {
     if (modalOpen || deleteTarget) {
       const handleKeyDown = (event: KeyboardEvent) => {
-        if (event.key === 'Escape') {
+        if (event.key === 'Escape' && !saving && !deleting) {
           setModalOpen(false);
           setEditingSupplier(null);
           setDeleteTarget(null);
@@ -380,16 +381,18 @@ export default function SuppliersPage({ initialSuppliers }: SuppliersPageProps) 
       window.addEventListener('keydown', handleKeyDown);
       return () => window.removeEventListener('keydown', handleKeyDown);
     }
-  }, [modalOpen, deleteTarget]);
+  }, [modalOpen, deleteTarget, saving, deleting]);
 
   const openCreate = () => {
     setEditingSupplier(null);
+    setFormError('');
     setForm(EMPTY_FORM);
     setModalOpen(true);
   };
 
   const openEdit = (supplier: Supplier) => {
     setEditingSupplier(supplier);
+    setFormError('');
     setForm({
       name: supplier.name,
       contact_name: supplier.contact_name,
@@ -408,35 +411,55 @@ export default function SuppliersPage({ initialSuppliers }: SuppliersPageProps) 
     setEditingSupplier(null);
   };
 
-  /** Local-state placeholder mutation. Real persistence arrives with fetching. */
-  const handleSubmit = (next: SupplierForm) => {
+  /** Create (POST) or update (PATCH) the supplier, then synch local state. */
+  const handleSubmit = async (next: SupplierForm) => {
     setSaving(true);
-    // Simulate a short save so the disabled/saving state is exercised.
-    window.setTimeout(() => {
+    setFormError('');
+    try {
       if (editingSupplier) {
+        const updated = await apiFetch<Supplier>(
+          `/api/suppliers/${editingSupplier.id}/`,
+          { method: 'PATCH', body: JSON.stringify(next) },
+        );
         setSuppliers((list) =>
-          list.map((s) => (s.id === editingSupplier.id ? { ...s, ...next } : s)),
+          list.map((s) => (s.id === updated.id ? updated : s)),
         );
       } else {
-        setSuppliers((list) => [
-          ...list,
-          {
-            id: Math.max(0, ...list.map((s) => s.id)) + 1,
-            created_at: new Date().toISOString(),
-            ...next,
-          },
-        ]);
+        const created = await apiFetch<Supplier>('/api/suppliers/', {
+          method: 'POST',
+          body: JSON.stringify(next),
+        });
+        setSuppliers((list) => [...list, created]);
       }
-      setSaving(false);
       setModalOpen(false);
       setEditingSupplier(null);
-    }, 350);
+    } catch (err) {
+      setFormError(
+        err instanceof ApiError ? err.message : 'Failed to save supplier',
+      );
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const confirmDelete = () => {
+  /** Delete (DELETE) the supplier, then drop it from the local list. */
+  const confirmDelete = async () => {
     if (!deleteTarget) return;
-    setSuppliers((list) => list.filter((s) => s.id !== deleteTarget.id));
-    setDeleteTarget(null);
+    setDeleting(true);
+    setDeleteError('');
+    try {
+      await apiFetch(`/api/suppliers/${deleteTarget.id}/`, {
+        method: 'DELETE',
+      });
+      setSuppliers((list) => list.filter((s) => s.id !== deleteTarget.id));
+      setDeleteTarget(null);
+    } catch (err) {
+      setDeleteError(
+        err instanceof ApiError ? err.message : 'Failed to delete supplier',
+      );
+    } finally {
+      setDeleting(false);
+    }
   };
 
   return (
@@ -451,6 +474,12 @@ export default function SuppliersPage({ initialSuppliers }: SuppliersPageProps) 
         </div>
       </header>
 
+      {error && (
+        <div className="mm-alert mm-alert--danger" role="alert">
+          {error}
+        </div>
+      )}
+
       <section className="mm-card suppliers-panel" aria-label="Suppliers">
         <SuppliersToolbar
           search={search}
@@ -461,9 +490,18 @@ export default function SuppliersPage({ initialSuppliers }: SuppliersPageProps) 
           onNew={openCreate}
         />
 
-        {filteredSuppliers.length === 0 ? (
+        {loading && (
+          <div className="mm-loading" role="status">
+            <span className="mm-spinner" aria-hidden="true" />
+            Loading suppliers...
+          </div>
+        )}
+
+        {!loading && !error && filteredSuppliers.length === 0 && (
           <SuppliersEmpty hasSuppliers={suppliers.length > 0} />
-        ) : (
+        )}
+
+        {!loading && filteredSuppliers.length > 0 && (
           <div className="mm-table-wrap suppliers-table-wrap">
             <table className="mm-table suppliers-table">
               <thead>
@@ -550,6 +588,7 @@ export default function SuppliersPage({ initialSuppliers }: SuppliersPageProps) 
           editing={editingSupplier !== null}
           initial={form}
           saving={saving}
+          serverError={formError}
           onClose={closeModal}
           onSubmit={handleSubmit}
         />
@@ -559,7 +598,7 @@ export default function SuppliersPage({ initialSuppliers }: SuppliersPageProps) 
         <div
           className="mm-modal-backdrop"
           onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setDeleteTarget(null);
+            if (e.target === e.currentTarget && !deleting) setDeleteTarget(null);
           }}
         >
           <div
@@ -576,13 +615,19 @@ export default function SuppliersPage({ initialSuppliers }: SuppliersPageProps) 
               <button
                 type="button"
                 className="mm-modal-close"
-                onClick={() => setDeleteTarget(null)}
+                onClick={() => !deleting && setDeleteTarget(null)}
+                disabled={deleting}
                 aria-label="Close"
               >
                 <Icon name="x" size={20} />
               </button>
             </header>
             <div className="mm-modal-body">
+              {deleteError && (
+                <div className="mm-alert mm-alert--danger" role="alert">
+                  {deleteError}
+                </div>
+              )}
               <p id="supplier-delete-desc">
                 Delete <strong>{deleteTarget.name}</strong>? Linked products keep
                 existing but no longer reference this supplier.
@@ -593,15 +638,17 @@ export default function SuppliersPage({ initialSuppliers }: SuppliersPageProps) 
                 type="button"
                 className="mm-btn mm-btn--ghost"
                 onClick={() => setDeleteTarget(null)}
+                disabled={deleting}
               >
                 Cancel
               </button>
               <button
                 type="button"
                 className="mm-btn mm-btn--danger"
-                onClick={confirmDelete}
+                onClick={() => void confirmDelete()}
+                disabled={deleting}
               >
-                Delete supplier
+                {deleting ? 'Deleting...' : 'Delete supplier'}
               </button>
             </footer>
           </div>
