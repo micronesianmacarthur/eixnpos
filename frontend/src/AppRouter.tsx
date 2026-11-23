@@ -3,6 +3,7 @@ import AppLayout from './AppLayout';
 import DashboardPage from './DashboardPage';
 import LoginPage from './LoginPage';
 import PlaceholderPage from './PlaceholderPage';
+import SuppliersPage from './SuppliersPage';
 import CustomersPage from './CustomersPage';
 import UsersPage from './UsersPage';
 import SalesPage from './SalesPage';
@@ -47,15 +48,7 @@ const ROUTES = createRoutesFromElements(
           </Route>
 
           <Route path="customers" element={<CustomersPage />} />
-          <Route
-            path="suppliers"
-            element={
-              <PlaceholderPage
-                title="Suppliers"
-                description="Manage supplier contacts and their linked products."
-              />
-            }
-          />
+          <Route path="suppliers" element={<SuppliersPage />} />
           <Route path="inventory" element={<InventoryPage />} />
 
           <Route element={<RequireRole roles={['manager', 'admin']} />}>

@@ -1,0 +1,170 @@
+/*
+ * Suppliers page layout.
+ *
+ * Palette, controls, tables, badges, and modal treatment come from the
+ * shared `mm-` primitives in theme.css. This file only positions things.
+ */
+
+.suppliers-panel {
+  min-width: 0;
+}
+
+.suppliers-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.suppliers-field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.suppliers-search {
+  flex: 1 1 280px;
+}
+
+.suppliers-filters {
+  display: flex;
+  flex: 0 1 auto;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+.suppliers-filters .suppliers-field {
+  flex: 1 1 160px;
+}
+
+.suppliers-table-wrap {
+  position: relative;
+  width: 100%;
+}
+
+.suppliers-table {
+  min-width: 620px;
+}
+
+.col-id {
+  width: 48px;
+  color: var(--mm-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.col-name {
+  min-width: 200px;
+}
+
+.supplier-name {
+  display: block;
+  color: var(--mm-text);
+  font-weight: 600;
+}
+
+.supplier-email {
+  display: block;
+  color: var(--mm-text-muted);
+  font-size: 12px;
+}
+
+.col-status {
+  width: 110px;
+}
+
+.col-actions {
+  width: 170px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.col-actions .mm-btn + .mm-btn {
+  margin-left: 8px;
+}
+
+.suppliers-empty {
+  border: 1px dashed var(--mm-border);
+  border-radius: var(--mm-radius-sm);
+}
+
+.suppliers-manager-hint {
+  margin-top: 16px;
+  font-size: 13px;
+}
+
+/* Supplier form modal */
+
+.supplier-form {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.supplier-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.supplier-field-row {
+  display: flex;
+  gap: 16px;
+}
+
+.supplier-field-row .mm-field {
+  flex: 1 1 0;
+}
+
+.supplier-active-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--mm-text-muted);
+  font-size: 14px;
+}
+
+.supplier-active-check input {
+  accent-color: var(--mm-primary);
+}
+
+@media (max-width: 768px) {
+  .suppliers-toolbar {
+    align-items: stretch;
+  }
+
+  .suppliers-search,
+  .suppliers-filters {
+    flex: 1 1 100%;
+  }
+}
+
+@media (max-width: 520px) {
+  .suppliers-page > .mm-page-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .suppliers-page > .mm-page-header .mm-btn {
+    width: 100%;
+  }
+
+  .suppliers-filters {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .suppliers-filters .mm-btn {
+    width: 100%;
+  }
+
+  .supplier-field-row {
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .col-phone {
+    display: none;
+  }
+}
