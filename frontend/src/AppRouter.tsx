@@ -2,7 +2,6 @@ import { createBrowserRouter, RouterProvider, Navigate, Route, createRoutesFromE
 import AppLayout from './AppLayout';
 import DashboardPage from './DashboardPage';
 import LoginPage from './LoginPage';
-import PlaceholderPage from './PlaceholderPage';
 import SuppliersPage from './SuppliersPage';
 import CustomersPage from './CustomersPage';
 import UsersPage from './UsersPage';
@@ -12,6 +11,7 @@ import InventoryPage from './InventoryPage';
 import ProductPage from './ProductPage';
 import SettingsPage from './SettingsPage';
 import ClosePage from './ClosePage';
+import SalesManagerPage from './SalesManagerPage';
 import { AuthProvider, RequireAuth, RequireForcedPasswordChange, RequireRole } from './auth';
 import ChangePasswordPage from './ChangePasswordPage';
 
@@ -36,14 +36,10 @@ const ROUTES = createRoutesFromElements(
           <Route element={<RequireOpenSession />}>
             <Route path="sales" element={<SalesPage />} />
             <Route
-              path="sales-manager"
-              element={
-                <PlaceholderPage
-                  title="Sales Manager"
-                  description="Manage open sales, line voids, and sale corrections."
-                />
-              }
-            />
+              element={<RequireRole roles={['manager', 'admin']} />}
+            >
+              <Route path="sales-manager" element={<SalesManagerPage />} />
+            </Route>
             <Route path="close" element={<ClosePage />} />
           </Route>
 

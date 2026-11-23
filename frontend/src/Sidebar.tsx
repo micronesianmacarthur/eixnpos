@@ -16,7 +16,7 @@ interface MenuItem {
 const MENU: readonly MenuItem[] = [
   { to: '/', label: 'Dashboard', icon: 'dashboard', end: true },
   { to: '/sales', label: 'Sales', icon: 'sales' },
-  { to: '/sales-manager', label: 'Sales Manager', icon: 'sales-manager' },
+  { to: '/sales-manager', label: 'Sales Manager', icon: 'sales-manager', managerOnly: true },
   { to: '/customers', label: 'Customers', icon: 'customers' },
   { to: '/suppliers', label: 'Suppliers', icon: 'suppliers' },
   { to: '/inventory', label: 'Inventory', icon: 'inventory' },

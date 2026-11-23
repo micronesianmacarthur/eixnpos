@@ -1,0 +1,526 @@
+/*
+ * Sales Manager page layout.
+ *
+ * Palette, controls, tables, badges, and modal treatment come from the
+ * shared `mm-` primitives in theme.css. This file only positions things.
+ */
+
+.sales-manager-page > .mm-page-header {
+  align-items: center;
+}
+
+.sales-manager-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* KPI summary bar --------------------------------------------------------- */
+
+.sales-manager-kpis {
+  position: sticky;
+  top: 56px;
+  z-index: 5;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.sales-manager-kpi {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 18px 20px;
+  text-align: left;
+}
+
+.sales-manager-kpi--link {
+  width: 100%;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.sales-manager-kpi--link:hover:not(:disabled),
+.sales-manager-kpi--link:focus-visible {
+  border-color: var(--mm-primary-border);
+  box-shadow: var(--mm-shadow-md);
+}
+
+.sales-manager-kpi-text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.sales-manager-kpi-value {
+  color: var(--mm-text);
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.sales-manager-kpi-label {
+  margin-top: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mm-text);
+}
+
+.sales-manager-kpi-hint {
+  margin-top: 2px;
+  color: var(--mm-text-muted);
+  font-size: 12px;
+}
+
+/* Toolbar ------------------------------------------------------------------ */
+
+.sales-manager-panel {
+  min-width: 0;
+}
+
+.sales-manager-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.sales-manager-field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sales-manager-search {
+  flex: 1 1 280px;
+}
+
+.sales-manager-filters {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.sales-manager-statuschips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sales-manager-chip {
+  min-height: 30px;
+  padding: 0 12px;
+  color: var(--mm-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--mm-surface);
+  border: 1px solid var(--mm-border);
+  border-radius: var(--mm-radius-pill);
+  cursor: pointer;
+}
+
+.sales-manager-chip:hover {
+  color: var(--mm-text);
+  border-color: var(--mm-primary-border);
+}
+
+.sales-manager-chip.active {
+  color: var(--mm-on-primary);
+  background: var(--mm-primary);
+  border-color: var(--mm-primary);
+}
+
+.sales-manager-datefield {
+  width: 150px;
+}
+
+.sales-manager-review-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--mm-control-height);
+  color: var(--mm-text-muted);
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.sales-manager-review-check input {
+  accent-color: var(--mm-primary);
+}
+
+.sales-manager-count {
+  flex: 1 1 100%;
+  margin-top: 4px;
+  font-size: 13px;
+}
+
+/* Loading / empty ---------------------------------------------------------- */
+
+.sales-manager-loading {
+  justify-content: flex-start;
+  padding: 32px 0;
+}
+
+.sales-manager-empty {
+  border: 1px dashed var(--mm-border);
+  border-radius: var(--mm-radius-sm);
+}
+
+/* Table -------------------------------------------------------------------- */
+
+.sales-manager-table-wrap {
+  position: relative;
+  width: 100%;
+}
+
+.sales-manager-table {
+  min-width: 1100px;
+}
+
+.sales-manager-table th,
+.sales-manager-table td {
+  white-space: nowrap;
+}
+
+.sales-manager-table .col-check {
+  width: 40px;
+}
+
+.sales-manager-table .col-check input {
+  accent-color: var(--mm-primary);
+}
+
+.sales-manager-table .col-number {
+  color: var(--mm-text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.sales-manager-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.sales-manager-total {
+  font-weight: 650;
+}
+
+.sales-manager-negative {
+  color: var(--mm-error-foreground);
+}
+
+.sales-manager-created {
+  color: var(--mm-text-muted);
+  font-size: 13px;
+}
+
+.sales-manager-table .col-actions {
+  width: 150px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.sales-manager-table .col-actions .mm-btn + .mm-btn {
+  margin-left: 6px;
+}
+
+.sales-manager-table tr[style] {
+  transition: background-color var(--mm-transition-fast);
+}
+
+/* Bulk action bar ----------------------------------------------------------- */
+
+.sales-manager-bulkbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 8px 16px;
+  background: var(--mm-primary-soft);
+  border: 1px solid var(--mm-primary-border);
+  border-radius: var(--mm-radius-sm);
+  font-size: 14px;
+}
+
+/* Stale pill ----------------------------------------------------------------- */
+
+.sales-manager-stale {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  color: var(--mm-warning-foreground);
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--mm-warning-soft);
+  border: 1px solid var(--mm-warning);
+  border-radius: var(--mm-radius-pill);
+  cursor: pointer;
+}
+
+.sales-manager-stale:hover {
+  border-color: var(--mm-warning-foreground);
+}
+
+.sales-manager-retry {
+  margin-left: 4px;
+  padding: 0 8px;
+  color: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.sales-manager-role-alert {
+  margin: 0;
+}
+
+/* Sale drawer ---------------------------------------------------------------- */
+
+.sales-manager-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(17, 28, 45, 0.35);
+  animation: sales-manager-fade 160ms ease-out;
+}
+
+.sales-manager-drawer {
+  display: flex;
+  width: 480px;
+  max-width: 100%;
+  height: 100%;
+  flex-direction: column;
+  background: var(--mm-surface);
+  border-left: 1px solid var(--mm-border);
+  box-shadow: var(--mm-shadow-lg);
+  animation: sales-manager-slide 200ms ease-out;
+}
+
+.sales-manager-drawer-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--mm-border);
+}
+
+.sales-manager-drawer-header > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sales-manager-drawer-title {
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.sales-manager-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+.sales-manager-drawer-section-title {
+  margin: 20px 0 10px;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--mm-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sales-manager-drawer-section-title:first-child {
+  margin-top: 0;
+}
+
+.sales-manager-drawer-note {
+  margin-top: 12px;
+  font-size: 14px;
+}
+
+.sales-manager-lines-table {
+  min-width: 0;
+}
+
+.sales-manager-payments {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sales-manager-payment {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+}
+
+.sales-manager-payment .mm-badge {
+  text-transform: capitalize;
+}
+
+.sales-manager-drawer-totals {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--mm-border);
+}
+
+.sales-manager-drawer-totals > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+  font-size: 14px;
+}
+
+.sales-manager-drawer-totals .sales-manager-drawer-grand-total {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--mm-border);
+  font-size: 16px;
+  font-weight: 650;
+}
+
+/* Discount modal rows -------------------------------------------------------- */
+
+.sales-manager-discount-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sales-manager-discount-row {
+  display: flex;
+  gap: 12px;
+}
+
+.sales-manager-discount-row .mm-field {
+  flex: 1 1 0;
+}
+
+.sales-manager-discount-hint {
+  font-size: 13px;
+}
+
+/* Toasts ----------------------------------------------------------------------- */
+
+.sales-manager-toasts {
+  position: fixed;
+  top: 72px;
+  right: 20px;
+  z-index: 60;
+  display: flex;
+  width: 360px;
+  max-width: calc(100vw - 40px);
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sales-manager-toast {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  box-shadow: var(--mm-shadow-md);
+}
+
+.sales-manager-toast--error {
+  color: var(--mm-error-foreground);
+  background: var(--mm-error-soft);
+}
+
+.sales-manager-toast-close {
+  display: inline-flex;
+  padding: 2px;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.sales-manager-toast-close:hover {
+  opacity: 0.7;
+}
+
+/* Animations ---------------------------------------------------------------------- */
+
+@keyframes sales-manager-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes sales-manager-slide {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+/* Responsive ----------------------------------------------------------------------- */
+
+@media (max-width: 1023px) {
+  .sales-manager-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 768px) {
+  .sales-manager-toolbar {
+    align-items: stretch;
+  }
+
+  .sales-manager-search,
+  .sales-manager-filters {
+    flex: 1 1 100%;
+  }
+
+  .sales-manager-datefield {
+    flex: 1 1 120px;
+  }
+
+  .sales-manager-kpis {
+    position: static;
+  }
+}
+
+@media (max-width: 520px) {
+  .sales-manager-kpis {
+    grid-template-columns: 1fr;
+  }
+
+  .sales-manager-header-actions {
+    width: 100%;
+  }
+
+  .sales-manager-header-actions .mm-btn {
+    flex: 1 1 auto;
+  }
+
+  .sales-manager-drawer {
+    width: 100%;
+  }
+}
