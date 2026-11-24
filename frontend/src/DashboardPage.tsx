@@ -87,6 +87,7 @@ export default function DashboardPage() {
         </section>
       )}
 
+      {isManager ? (
           <DashboardKpiRow today={today} loading={loading && !overview} />
           {todayError && (
             <p className="dashboard-error-message mm-alert mm-alert--banner" role="alert">
@@ -119,7 +120,6 @@ export default function DashboardPage() {
           </div>
         </section>
       )}
->>>>>>> wt/t_f57598cd
     </div>
   );
 }
