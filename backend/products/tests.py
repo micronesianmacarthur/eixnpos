@@ -26,6 +26,62 @@ class InventoryTests(TestCase):
         self.assertEqual(self.product.quantity, 4)
         self.assertTrue(StockMovement.objects.filter(product=self.product, movement_type='receive').exists())
 
+    def test_receive_rejects_non_numeric_quantity(self):
+        res = self.client.post(
+            f'/api/products/{self.product.id}/receive/', {'quantity': 'abc'}, format='json'
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('quantity', res.data)
+        self.assertEqual(self.product.quantity, 0)
+        self.assertFalse(StockMovement.objects.filter(product=self.product).exists())
+
+    def test_receive_rejects_negative_quantity(self):
+        res = self.client.post(
+            f'/api/products/{self.product.id}/receive/', {'quantity': -5}, format='json'
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('quantity', res.data)
+        self.assertEqual(self.product.quantity, 0)
+        self.assertFalse(StockMovement.objects.filter(product=self.product).exists())
+
+    def test_receive_rejects_zero_quantity(self):
+        res = self.client.post(
+            f'/api/products/{self.product.id}/receive/', {'quantity': 0}, format='json'
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(self.product.quantity, 0)
+        self.assertFalse(StockMovement.objects.filter(product=self.product).exists())
+
+    def test_receive_rejects_non_numeric_unit_cost(self):
+        res = self.client.post(
+            f'/api/products/{self.product.id}/receive/',
+            {'quantity': 2, 'unit_cost': 'abc'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('unit_cost', res.data)
+        self.assertEqual(self.product.quantity, 0)
+        self.assertFalse(StockMovement.objects.filter(product=self.product).exists())
+
+    def test_receive_rejects_negative_unit_cost(self):
+        res = self.client.post(
+            f'/api/products/{self.product.id}/receive/',
+            {'quantity': 2, 'unit_cost': '-5'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('unit_cost', res.data)
+        self.assertEqual(self.product.quantity, 0)
+
+    def test_receive_accepts_zero_unit_cost(self):
+        res = self.client.post(
+            f'/api/products/{self.product.id}/receive/',
+            {'quantity': 2, 'unit_cost': '0.00'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(self.product.quantity, 2)
+
     def test_low_stock(self):
         StockMovement.objects.create(product=self.product, movement_type='receive', quantity=3)
         self.assertTrue(self.product.is_low_stock())

@@ -67,6 +67,7 @@ class TestTransactionServiceStartSale:
         service = TransactionService()
         sale1 = service.start_sale(cashier_user)
         service.add_item(product, quantity=1)
+        StockMovement.objects.create(product=product, quantity=10, movement_type='receive')
 
         # Complete the sale
         service.complete_sale('cash', sale1.total, tendered=sale1.total)
@@ -235,6 +236,7 @@ class TestTransactionServiceCompleteSale:
         service = TransactionService()
         service.start_sale(cashier_user)
         service.add_item(product, quantity=2)  # 20.00
+        StockMovement.objects.create(product=product, quantity=10, movement_type='receive')
 
         sale = service.complete_sale('cash', Decimal('20.00'), tendered=Decimal('20.00'))
 
@@ -253,6 +255,7 @@ class TestTransactionServiceCompleteSale:
         service = TransactionService()
         service.start_sale(cashier_user)
         service.add_item(product, quantity=2)  # 20.00
+        StockMovement.objects.create(product=product, quantity=10, movement_type='receive')
 
         sale = service.complete_sale('cash', Decimal('20.00'), tendered=Decimal('50.00'))
 
@@ -264,6 +267,7 @@ class TestTransactionServiceCompleteSale:
         service = TransactionService(require_payment_tokens=False)
         service.start_sale(cashier_user)
         service.add_item(product, quantity=1)
+        StockMovement.objects.create(product=product, quantity=10, movement_type='receive')
 
         sale = service.complete_sale('card', Decimal('10.00'))
 
@@ -302,6 +306,7 @@ class TestTransactionServiceCompleteSale:
         service = TransactionService()
         service.start_sale(cashier_user)
         service.add_item(product, quantity=1)
+        StockMovement.objects.create(product=product, quantity=10, movement_type='receive')
         service.complete_sale('cash', Decimal('10.00'), tendered=Decimal('10.00'))
 
         with pytest.raises(TransactionError):
@@ -344,6 +349,7 @@ class TestTransactionServiceCompleteSale:
         service = TransactionService()
         service.start_sale(cashier_user, customer=customer)
         service.add_item(product, quantity=1)
+        StockMovement.objects.create(product=product, quantity=10, movement_type='receive')
 
         sale = service.complete_sale('invoice', Decimal('10.00'), manager_approved=True)
 
@@ -367,6 +373,7 @@ class TestTransactionServiceCompleteSale:
         service = TransactionService()
         service.start_sale(cashier_user, customer=customer_low_credit_limit)
         service.add_item(product, quantity=1)  # 10.00, but limit is 10.00
+        StockMovement.objects.create(product=product, quantity=10, movement_type='receive')
 
         # With manager_approved=True, sale succeeds even though credit limit would be exceeded
         sale = service.complete_sale('invoice', Decimal('10.00'), manager_approved=True)
@@ -379,6 +386,7 @@ class TestTransactionServiceCompleteSale:
         service = TransactionService()
         service.start_sale(cashier_user, customer=customer_low_credit_limit)
         service.add_item(product, quantity=1)
+        StockMovement.objects.create(product=product, quantity=10, movement_type='receive')
 
         # This should fail without manager approval
         with pytest.raises(TransactionError, match='Manager approval required'):
@@ -393,6 +401,7 @@ class TestTransactionServiceCompleteSale:
         service = TransactionService()
         service.start_sale(cashier_user)
         service.add_item(product, quantity=1)
+        StockMovement.objects.create(product=product, quantity=10, movement_type='receive')
 
         sale = service.complete_sale('cash', Decimal('10.00'), tendered=Decimal('10.00'))
 
@@ -404,10 +413,40 @@ class TestTransactionServiceCompleteSale:
         service = TransactionService()
         service.start_sale(cashier_user)
         service.add_item(product, quantity=1)
+        StockMovement.objects.create(product=product, quantity=10, movement_type='receive')
 
         sale = service.complete_sale('cash', Decimal('10.00'), tendered=Decimal('10.00'), generate_receipt=False)
 
         assert sale.status == Sale.STATUS_COMPLETED
+
+    def test_complete_sale_rejects_quantity_exceeding_on_hand(self, cashier_user, product):
+        """Selling more than available on_hand is rejected and stock unchanged."""
+        StockMovement.objects.create(product=product, quantity=3, movement_type='receive')
+        service = TransactionService()
+        sale = service.start_sale(cashier_user)
+        service.add_item(product, quantity=5)
+
+        with pytest.raises(TransactionError, match='Insufficient stock'):
+            service.complete_sale('cash', Decimal('50.00'), tendered=Decimal('50.00'))
+
+        # on_hand unchanged, no sale movement, sale not completed
+        assert product.quantity == 3
+        assert not StockMovement.objects.filter(movement_type='sale').exists()
+        sale.refresh_from_db()
+        assert sale.status != Sale.STATUS_COMPLETED
+        assert sale.completed_at is None
+
+    def test_complete_sale_allows_quantity_equal_to_on_hand(self, cashier_user, product):
+        """A sale exactly draining on_hand is still valid."""
+        StockMovement.objects.create(product=product, quantity=5, movement_type='receive')
+        service = TransactionService()
+        service.start_sale(cashier_user)
+        service.add_item(product, quantity=5)
+
+        sale = service.complete_sale('cash', Decimal('50.00'), tendered=Decimal('50.00'))
+
+        assert sale.status == Sale.STATUS_COMPLETED
+        assert product.quantity == 0
 
 
 @pytest.mark.django_db
@@ -442,6 +481,7 @@ class TestTransactionServiceVoidSale:
         service = TransactionService()
         service.start_sale(cashier_user)
         service.add_item(product, quantity=1)
+        StockMovement.objects.create(product=product, quantity=10, movement_type='receive')
         service.complete_sale('cash', Decimal('10.00'), tendered=Decimal('10.00'))
 
         # Start a new service instance with the completed sale as current

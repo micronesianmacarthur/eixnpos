@@ -290,6 +290,34 @@ class InvalidPaymentMethodError(TransactionError):
     pass
 
 
+def validate_sale_stock(sale) -> None:
+    """
+    Ensure no stock product's total ordered quantity exceeds its current
+    on_hand before stock is deducted.
+
+    Raises:
+        TransactionError: If any stock product does not have enough on_hand.
+    """
+    demanded: Dict[int, int] = {}
+    for line in sale.lines.select_related('product'):
+        if line.product.non_stock:
+            continue
+        demanded[line.product_id] = demanded.get(line.product_id, 0) + line.quantity
+
+    if not demanded:
+        return
+
+    products_by_id = {p.id: p for p in Product.objects.filter(id__in=demanded)}
+    for product_id, needed in demanded.items():
+        product = products_by_id[product_id]
+        available = product.quantity
+        if available < needed:
+            raise TransactionError(
+                f'Insufficient stock for {product.name}: '
+                f'{available} available, {needed} needed'
+            )
+
+
 class TransactionService:
     """
     Service for managing the complete transaction lifecycle.
@@ -580,6 +608,7 @@ class TransactionService:
 
         # Complete the sale - create stock movements
         with db_transaction.atomic():
+            validate_sale_stock(sale)
             sale.status = Sale.STATUS_COMPLETED
             sale.completed_at = timezone.now()
             sale.save(update_fields=['status', 'completed_at'])
@@ -641,6 +670,7 @@ class TransactionService:
 
         # Complete the sale - create stock movements
         with db_transaction.atomic():
+            validate_sale_stock(sale)
             sale.status = Sale.STATUS_COMPLETED
             sale.completed_at = timezone.now()
             sale.save(update_fields=['status', 'completed_at'])
