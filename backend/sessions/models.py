@@ -143,3 +143,34 @@ class Session(models.Model):
 
     def __str__(self):
         return f'Session #{self.id}'
+
+
+class ZReportSnapshot(models.Model):
+    """Immutable Z-report figures captured the instant a shift is closed.
+
+    ``summary_data`` serializes exactly what ``sales.summary
+    .compute_session_summary`` returned at close time (session metadata,
+    revenue / COGS / profit-loss and the payment- and category-level
+    breakdowns), plus the store name — together, the precise inputs needed to
+    re-render the filed PDF deterministically. The snapshot is created in the
+    same database transaction as the close that flips ``Session.status``, so a
+    re-download can never contradict the figures that were filed.
+
+    The ``GET /zreport/`` view renders the PDF from this snapshot instead of
+    recomputing from live data, so later refunds or product-cost edits cannot
+    change a closed shift's report.
+    """
+    session = models.OneToOneField(
+        Session,
+        on_delete=models.CASCADE,
+        related_name='zreport_snapshot',
+        help_text='The session this report was filed for at close.',
+    )
+    summary_data = models.JSONField(
+        help_text='JSON-serialized compute_session_summary output plus '
+                  'store_name, captured atomically at close.',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f'Z-report snapshot #{self.session_id}'
