@@ -299,6 +299,40 @@ class LowStockBoundaryTests(DashboardBase):
             'Healthy', [i['product_name'] for i in data['items']])
 
 
+class LowStockQueryCountTests(DashboardBase):
+    """S3: low-stock is a single annotated query — no full-ledger/all-product scan.
+
+    The previous implementation grouped the entire StockMovement ledger and
+    then iterated every product in Python. The annotated rewrite must issue a
+    small constant number of queries regardless of how many products/movements
+    exist.
+    """
+
+    @override_settings(TIME_ZONE='UTC')
+    def test_query_count_is_constant_regardless_of_catalog_size(self):
+        from django.test.utils import CaptureQueriesContext
+        from django.db import connection
+
+        # Warm the app once so BusinessInfo.get() (uncached get_or_create) and
+        # connection warmup don't add one-off queries to either measurement.
+        services.low_stock_payload()
+
+        def count_queries():
+            with CaptureQueriesContext(connection) as ctx:
+                services.low_stock_payload()
+            return len(ctx.captured_queries)
+
+        baseline = count_queries()
+
+        # Add many stock products + movements; the query count must not grow.
+        for i in range(10):
+            p = self.make_product(f'P{i}', min_stock=5)
+            StockMovement.objects.create(
+                product=p, movement_type='receive', quantity=i)
+
+        self.assertEqual(count_queries(), baseline)
+
+
 class SessionTimezoneTests(DashboardBase):
     @override_settings(TIME_ZONE='UTC')
     def test_session_opened_before_local_midnight_reports_local_day(self):
@@ -322,3 +356,104 @@ class SessionTimezoneTests(DashboardBase):
         self.assertTrue(payload['started_at_local'].endswith('-08:00'))
         self.assertEqual(payload['business_day'], '2026-11-23')
         self.assertEqual(payload['starting_cash'], '100.00')
+
+
+class RangeBoundaryTests(DashboardBase):
+    """S1: custom range windows are half-open [start, end)."""
+
+    @override_settings(TIME_ZONE='UTC')
+    def test_sale_exactly_at_end_boundary_is_excluded(self):
+        # Range [2026-11-01, 2026-11-02): a sale created exactly at local
+        # midnight of the exclusive end date (00:00 UTC here) must be excluded.
+        info = BusinessInfo.get()
+        info.timezone = 'UTC'
+        info.save(update_fields=['timezone'])
+
+        # in-range sale (23:59 on the exclusive start day) + boundary sale.
+        self.make_sale(
+            Decimal('10.00'),
+            created_at=_aware(2026, 11, 1, 23, 59),
+            method='cash',
+        )
+        self.make_sale(
+            Decimal('20.00'),
+            created_at=_aware(2026, 11, 2, 0, 0),
+            method='cash',
+        )
+
+        data = services.period_payload(date(2026, 11, 1), date(2026, 11, 2))
+        self.assertEqual(data['sales_count'], 1)
+        self.assertEqual(data['revenue'], '10.00')
+        self.assertEqual(data['cash_sales'], '10.00')
+
+    @override_settings(TIME_ZONE='UTC')
+    def test_top_items_half_open_excludes_end_boundary(self):
+        info = BusinessInfo.get()
+        info.timezone = 'UTC'
+        info.save(update_fields=['timezone'])
+
+        self.make_product('AtEnd')
+        self.make_sale(
+            Decimal('5.00'),
+            created_at=_aware(2026, 11, 2, 0, 0),
+            lines=[(self.make_product('AtEnd2'), 5, Decimal('5.00'))],
+        )
+        data = services.top_payload(
+            'range', start_date=date(2026, 11, 1), end_date=date(2026, 11, 2))
+        self.assertEqual(data['top_items'], [])
+        self.assertEqual(data['total_items'], 0)
+
+
+class BusinessTimezonePayloadTests(DashboardBase):
+    """S2: composite/today payloads carry the IANA business timezone."""
+
+    @override_settings(TIME_ZONE='UTC')
+    def test_composite_payload_includes_business_timezone(self):
+        info = BusinessInfo.get()
+        info.timezone = 'America/Los_Angeles'
+        info.save(update_fields=['timezone'])
+
+        self.client.force_authenticate(self.manager)
+        data = self.client.get('/api/dashboard/').json()
+        self.assertEqual(data['business_timezone'], 'America/Los_Angeles')
+
+    @override_settings(TIME_ZONE='UTC')
+    def test_today_payload_includes_default_business_timezone(self):
+        info = BusinessInfo.get()
+        info.timezone = ''
+        info.save(update_fields=['timezone'])
+
+        payload = services.today_payload()
+        self.assertEqual(payload['business_timezone'], 'UTC')
+
+
+class SessionQueryCountTests(DashboardBase):
+    """S4: register resolution is a single query, independent of register count.
+
+    The previous implementation issued 2 queries per register (exists() +
+    filter()). The query count of the whole payload must be constant regardless
+    of how many accessible registers exist — that is what "no N+1" means.
+    """
+
+    @override_settings(TIME_ZONE='UTC')
+    def test_query_count_is_constant_across_register_count(self):
+        info = BusinessInfo.get()
+        info.timezone = 'UTC'
+        info.save(update_fields=['timezone'])
+
+        from django.test.utils import CaptureQueriesContext
+        from django.db import connection
+
+        def count_queries():
+            with CaptureQueriesContext(connection) as ctx:
+                services.current_session_payload(self.manager)
+            return len(ctx.captured_queries)
+
+        baseline = count_queries()
+
+        # Adding more accessible (empty-cashiers) registers must NOT add any
+        # queries to the register-resolution step.
+        for name in ('Reg2', 'Reg3', 'Reg4', 'Reg5'):
+            Register.objects.create(name=name)
+
+        self.assertEqual(count_queries(), baseline)
