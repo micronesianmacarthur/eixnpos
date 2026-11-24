@@ -437,20 +437,31 @@ class TestTransactionServiceVoidSale:
 
         assert voided.status == Sale.STATUS_VOIDED
 
-    def test_void_rejects_completed_sale(self, cashier_user, product):
-        """Test that voiding completed sale is rejected."""
+    def test_void_completed_sale_neutralizes_payment_and_restocks(self, cashier_user, product):
+        """Voiding a completed sale is now allowed: it neutralizes the payment,
+        restores inventory, and marks the sale voided (see design spec)."""
         service = TransactionService()
         service.start_sale(cashier_user)
         service.add_item(product, quantity=1)
-        service.complete_sale('cash', Decimal('10.00'), tendered=Decimal('10.00'))
+        StockMovement.objects.create(product=product, quantity=10, movement_type='receive')
+        sale = service.complete_sale('cash', Decimal('10.00'), tendered=Decimal('10.00'))
 
         # Start a new service instance with the completed sale as current
         service2 = TransactionService()
-        service2._current_sale = Sale.objects.get(number=1)
+        service2._current_sale = Sale.objects.get(number=sale.number)
         service2._cart = None  # No cart for completed sale
 
-        with pytest.raises(TransactionError, match='Cannot void a completed sale'):
-            service2.void_sale()
+        voided = service2.void_sale()
+
+        assert voided.status == Sale.STATUS_VOIDED
+        payment = voided.payments.first()
+        assert payment.voided is True
+        assert payment.voided_at is not None
+        # Inventory that the completed sale moved out is restored.
+        restock = StockMovement.objects.get(
+            movement_type='adjustment', reference=f'void:sale:{sale.number}'
+        )
+        assert restock.quantity == 1
 
     def test_void_rejects_refunded_sale(self, cashier_user):
         """Test that voiding refunded sale is rejected."""
@@ -461,7 +472,7 @@ class TestTransactionServiceVoidSale:
         service._current_sale = refunded_sale
         service._cart = None
 
-        with pytest.raises(TransactionError, match='Cannot void a refunded sale'):
+        with pytest.raises(TransactionError, match='cannot void a refunded sale'):
             service.void_sale()
 
     def test_void_rejects_no_active_sale(self):

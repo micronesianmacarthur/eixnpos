@@ -640,14 +640,14 @@ class SaleApiTests(TestCase):
         self.assertEqual(sale.status, Sale.STATUS_VOIDED)
         self.assertFalse(StockMovement.objects.filter(movement_type='sale').exists())
 
-    def test_void_completed_sale_is_rejected(self):
+    def test_void_completed_sale_is_allowed(self):
         sale = self.make_sale(status=Sale.STATUS_COMPLETED)
 
         response = self.client.post(f'/api/sales/{sale.id}/void/')
 
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 200)
         sale.refresh_from_db()
-        self.assertEqual(sale.status, Sale.STATUS_COMPLETED)
+        self.assertEqual(sale.status, Sale.STATUS_VOIDED)
 
     def test_sales_api_requires_authentication(self):
         anonymous = APIClient()

@@ -18,7 +18,7 @@ from inventory.models import StockMovement
 from products.models import Product
 from customers.models import Customer
 
-from .models import Sale, SaleLine, Payment
+from .models import Sale, SaleLine, Payment, Refund
 from .payments import (
     PaymentMethod,
     PaymentProcessor,
@@ -287,6 +287,24 @@ class InsufficientPaymentError(TransactionError):
 
 class InvalidPaymentMethodError(TransactionError):
     """Raised when payment method is invalid."""
+    pass
+
+
+class RefundValidationError(TransactionError):
+    """Refund request violates a 400-level rule: negative/too-large amount,
+    non-positive quantity, or refund beyond captured capacity."""
+    pass
+
+
+class RefundConflictError(TransactionError):
+    """Refund conflicts with the current state (409): voided payment, double
+    refund, or a fully-refunded line/payment."""
+    pass
+
+
+class VoidConflictError(TransactionError):
+    """Void conflicts with the current state (409): already voided or already
+    refunded."""
     pass
 
 
@@ -664,95 +682,336 @@ class TransactionService:
 
     def void_sale(self) -> Sale:
         """
-        Void the current sale.
+        Void the current sale (pending, open, or completed).
 
-        Only allowed for open/pending sales. No stock movements created.
+        Neutralizes each captured payment (voided flag + reversal of any
+        invoice receivable so the amount stops counting toward the customer's
+        balance) and restores the inventory that a completed sale moved out.
+        A void of an open/pending sale that moved no goods is a pure status
+        change with no stock movement and no balance change.
 
         Returns:
             The voided Sale
 
         Raises:
-            TransactionError: If no sale in progress or sale is completed
+            TransactionError: If no sale is in progress.
+            VoidConflictError: If the sale is already voided or refunded (409).
         """
         if not self._current_sale:
             raise TransactionError('No sale in progress. Call start_sale() first.')
 
         sale = self._current_sale
 
-        if sale.status == Sale.STATUS_COMPLETED:
-            raise TransactionError('Cannot void a completed sale')
-
         if sale.status == Sale.STATUS_REFUNDED:
-            raise TransactionError('Cannot void a refunded sale')
+            raise VoidConflictError('cannot void a refunded sale')
 
-        sale.status = Sale.STATUS_VOIDED
-        sale.save(update_fields=['status'])
+        if sale.status == Sale.STATUS_VOIDED:
+            raise VoidConflictError('already voided')
+
+        with db_transaction.atomic():
+            # Re-lock the sale row so a concurrent void/refund cannot race.
+            sale = Sale.objects.select_for_update().get(pk=sale.id)
+            # Re-check state under the lock: the value we read before locking
+            # could be stale under concurrency.
+            if sale.status == Sale.STATUS_VOIDED:
+                raise VoidConflictError('already voided')
+            if sale.status == Sale.STATUS_REFUNDED:
+                raise VoidConflictError('cannot void a refunded sale')
+            payments = list(
+                Payment.objects.select_for_update().filter(sale=sale).order_by('id')
+            )
+            customer = sale.customer
+            customer_dirty = False
+
+            for p in payments:
+                # A fully-refunded payment is neutralized by the refund, not by
+                # this void; never void it, or we'd double-reverse the balance.
+                # An already-voided payment stays voided (idempotent per row).
+                if p.voided or p.is_fully_refunded():
+                    continue
+                p.voided = True
+                p.voided_at = timezone.now()
+                p.save(update_fields=['voided', 'voided_at'])
+                if p.method == Payment.METHOD_INVOICE and customer is not None:
+                    customer.balance = (customer.balance or Decimal('0')) - p.amount
+                    customer_dirty = True
+
+            if customer_dirty:
+                customer.save(update_fields=['balance'])
+
+            # A completed sale moved goods out at completion; restore them.
+            if sale.status == Sale.STATUS_COMPLETED:
+                for line in sale.lines.all():
+                    self._restock(
+                        sale, line.product, line.quantity,
+                        reference=f'void:sale:{sale.number}', note='Void',
+                    )
+
+            sale.status = Sale.STATUS_VOIDED
+            sale.save(update_fields=['status'])
 
         self._current_sale = None
         self._cart = None
 
         return sale
 
+    def _restock(self, sale, product, quantity, reference, note):
+        """Restock one product after a refund/void (non-stock excluded).
+
+        Records the goods returned to inventory as an ``adjustment`` movement
+        at ``product.cost`` (the original cost basis of the goods being
+        returned), so the audit trail captures the COGS reversal.
+        """
+        if product.non_stock:
+            return None
+        return StockMovement.objects.create(
+            product=product,
+            quantity=quantity,
+            movement_type='adjustment',
+            reference=reference,
+            note=note,
+            cost=product.cost,
+        )
+
+    @staticmethod
+    def _split_quantity(total_qty, segment_amounts):
+        """Split a line's refunded quantity across money segments.
+
+        ``segment_amounts`` are the per-payment refund amounts that together
+        sum to the line's refund; the quantity is split proportionally with
+        integer values and the remainder assigned to the last segment.
+        """
+        if not segment_amounts:
+            return []
+        if len(segment_amounts) == 1:
+            return [total_qty]
+        total = sum(segment_amounts)
+        result = []
+        assigned = 0
+        for i, amt in enumerate(segment_amounts):
+            if i == len(segment_amounts) - 1:
+                qty = total_qty - assigned
+            else:
+                qty = int(Decimal(total_qty) * amt / total)
+            result.append(qty)
+            assigned += qty
+        if assigned < total_qty:
+            result[-1] += total_qty - assigned
+        return result
+
     def refund_sale(
         self,
         sale_id: int,
         reason: str = '',
         manager_approved: bool = False,
-        manager_credentials: Optional[Dict[str, str]] = None
+        manager_credentials: Optional[Dict[str, str]] = None,
+        items: Optional[List[Dict[str, Any]]] = None,
     ) -> Sale:
         """
-        Refund a completed sale.
+        Refund a completed sale, reversing tender, receivable and inventory.
 
-        Creates reverse stock movements and updates sale status to refunded.
+        With ``items=None`` every line is refunded in full and every captured,
+        non-voided payment is reversed: the sale becomes ``refunded`` and the
+        customer's outstanding balance for an invoice sale returns to zero.
+
+        With ``items`` a list of ``{'line_id', 'quantity', 'amount'}`` only
+        the named lines/amounts are refunded; the sale stays ``completed`` and
+        an invoice customer's balance is reduced by exactly the refunded
+        amount. Guards: no refund of a voided payment (409), no double refund
+        (409), refund amount <= captured amount and <= line capacity (400).
+
+        The whole operation runs inside an ``atomic`` transaction with the
+        sale, its lines and payments locked via ``select_for_update`` so
+        concurrent refunds cannot oversell capacity.
 
         Args:
-            sale_id: ID of the sale to refund
-            reason: Optional reason for refund
-            manager_approved: Whether a manager has approved
-            manager_credentials: Optional {'username', 'password'} for manager auth
+            sale_id: ID of the completed sale to refund.
+            reason: Optional reason for the refund.
+            manager_approved: Whether a manager has approved.
+            manager_credentials: Optional {'username', 'password'} for manager auth.
+            items: Optional per-line refund specs.
 
         Returns:
-            The refunded Sale
+            The refunded Sale (status ``refunded`` for a full refund, still
+            ``completed`` for a partial refund).
 
         Raises:
-            TransactionError: If sale not found, not completed, or already refunded
+            TransactionError: sale not found / not completed / manager not approved.
+            RefundValidationError: amount > captured or > line capacity (400).
+            RefundConflictError: voided payment or double refund (409).
         """
-        try:
-            sale = Sale.objects.get(pk=sale_id)
-        except Sale.DoesNotExist:
-            raise TransactionError(f'Sale {sale_id} not found')
-
-        if sale.status != Sale.STATUS_COMPLETED:
-            raise TransactionError(f'Can only refund completed sales, current status: {sale.status}')
-
-        # Verify manager approval for refunds
-        effective_manager_approved = manager_approved
-        if manager_credentials:
-            username = manager_credentials.get('username')
-            password = manager_credentials.get('password')
-            if username and password:
-                user = authenticate(username=username, password=password)
-                if user and is_manager(user):
-                    effective_manager_approved = True
-
-        if not effective_manager_approved:
-            raise TransactionError('Manager approval required for refunds')
-
-        # Process refund - create reverse stock movements
         with db_transaction.atomic():
-            sale.status = Sale.STATUS_REFUNDED
-            sale.refunded_at = timezone.now()
-            sale.save(update_fields=['status', 'refunded_at'])
+            try:
+                sale = Sale.objects.select_for_update().get(pk=sale_id)
+            except Sale.DoesNotExist:
+                raise TransactionError(f'Sale {sale_id} not found')
 
-            # Create reverse stock movements (positive quantity for return)
-            for line in sale.lines.all():
-                StockMovement.objects.create(
-                    product=line.product,
-                    quantity=line.quantity,  # Positive for return
-                    movement_type='adjustment',  # Using adjustment for returns
-                    reference=f'refund:sale:{sale.number}',
-                    note=f'Refund: {reason}' if reason else 'Refund'
+            if sale.status != Sale.STATUS_COMPLETED:
+                raise TransactionError(
+                    f'Can only refund completed sales, current status: {sale.status}'
                 )
+
+            # Verify manager approval (explicit flag or valid credentials).
+            effective_manager_approved = manager_approved
+            if manager_credentials:
+                username = manager_credentials.get('username')
+                password = manager_credentials.get('password')
+                if username and password:
+                    user = authenticate(username=username, password=password)
+                    if user and is_manager(user):
+                        effective_manager_approved = True
+
+            if not effective_manager_approved:
+                raise TransactionError('Manager approval required for refunds')
+
+            lines = list(
+                SaleLine.objects.select_for_update().filter(sale=sale).order_by('id')
+            )
+            payments = list(
+                Payment.objects.select_for_update().filter(sale=sale).order_by('id')
+            )
+
+            # Resolve the (line, quantity, amount) refund specs.
+            if items is None:
+                specs = [
+                    {'line': line, 'quantity': line.quantity, 'amount': line.line_total}
+                    for line in lines
+                ]
+            else:
+                specs = []
+                for item in items:
+                    try:
+                        line_id = int(item.get('line_id'))
+                    except (TypeError, ValueError):
+                        raise RefundValidationError('invalid line_id')
+                    line = next((l for l in lines if l.id == line_id), None)
+                    if line is None:
+                        raise RefundValidationError(f'line {line_id} not in sale')
+                    try:
+                        quantity = int(item.get('quantity', line.quantity))
+                    except (TypeError, ValueError):
+                        raise RefundValidationError('invalid quantity')
+                    raw_amount = item.get('amount')
+                    if raw_amount is None:
+                        # Default to the line's unit contribution for the qty.
+                        amount = (line.line_total / line.quantity * quantity).quantize(
+                            Decimal('0.01')
+                        )
+                    else:
+                        try:
+                            amount = Decimal(str(raw_amount))
+                        except (InvalidOperation, TypeError, ValueError):
+                            raise RefundValidationError('invalid amount')
+                    specs.append(
+                        {'line': line, 'quantity': quantity, 'amount': amount}
+                    )
+
+            # Per-line validation: positive, no double refund, within capacity.
+            for spec in specs:
+                line = spec['line']
+                quantity = spec['quantity']
+                amount = spec['amount']
+                if quantity < 1:
+                    raise RefundValidationError('refund quantity must be positive')
+                if amount <= 0:
+                    raise RefundValidationError('refund amount must be positive')
+                already_qty = sum(r.quantity for r in line.refunds.all())
+                if already_qty >= line.quantity:
+                    raise RefundConflictError('already fully refunded')
+                if quantity > line.quantity - already_qty:
+                    raise RefundValidationError(
+                        'refund quantity exceeds remaining line capacity'
+                    )
+                line_remaining = line.line_total - sum(
+                    r.amount for r in line.refunds.all()
+                )
+                if amount > line_remaining:
+                    raise RefundValidationError(
+                        'refund amount exceeds remaining line capacity'
+                    )
+
+            # Dollar capacity across captured, non-voided payments.
+            available = []
+            for p in payments:
+                if p.voided:
+                    continue
+                remaining = p.remaining_refundable()
+                if remaining > 0:
+                    available.append([p, remaining])
+            total_refund = sum(spec['amount'] for spec in specs)
+            total_capacity = sum(rem for _, rem in available)
+            if total_refund > total_capacity:
+                if any(p.voided for p in payments):
+                    raise RefundConflictError('cannot refund a voided payment')
+                if total_capacity == 0 or any(
+                    p.is_fully_refunded() for p in payments
+                ):
+                    raise RefundConflictError('already fully refunded')
+                raise RefundValidationError('refund amount exceeds captured amount')
+
+            # Allocate each spec's amount to payments (sequential drain).
+            allocation = []
+            pay_i = 0
+            for spec in specs:
+                remaining_in_spec = spec['amount']
+                segments = []
+                while remaining_in_spec > 0:
+                    while pay_i < len(available) and available[pay_i][1] <= 0:
+                        pay_i += 1
+                    if pay_i >= len(available):
+                        break  # guarded by total_capacity check above
+                    p, cap = available[pay_i]
+                    take = min(remaining_in_spec, cap)
+                    segments.append((p, take))
+                    available[pay_i][1] = cap - take
+                    remaining_in_spec -= take
+                    if cap - take <= 0:
+                        pay_i += 1
+                allocation.append(segments)
+
+            # Write the reversing entries.
+            customer = sale.customer
+            customer_dirty = False
+            for spec, segments in zip(specs, allocation):
+                line = spec['line']
+                total_qty = spec['quantity']
+                seg_amounts = [amt for _, amt in segments]
+                qty_split = self._split_quantity(total_qty, seg_amounts)
+                for (p, amount), qty in zip(segments, qty_split):
+                    Refund.objects.create(
+                        sale=sale,
+                        line=line,
+                        payment=p,
+                        quantity=qty,
+                        amount=amount,
+                        method=p.method,
+                        reason=reason,
+                        manager_approved=True,
+                    )
+                    # AR / customer-balance credit for invoice payments.
+                    if p.method == Payment.METHOD_INVOICE and customer is not None:
+                        customer.balance = (customer.balance or Decimal('0')) - amount
+                        customer_dirty = True
+                # Inventory restock once per line for the aggregate quantity.
+                self._restock(
+                    sale, line.product, total_qty,
+                    reference=f'refund:sale:{sale.number}',
+                    note=f'Refund: {reason}' if reason else 'Refund',
+                )
+            if customer_dirty:
+                customer.save(update_fields=['balance'])
+
+            # Full refund => sale is refunded; partial stays completed.
+            captured = sum(p.amount for p in payments if not p.voided)
+            total_refunded = sum(r.amount for r in Refund.objects.filter(sale=sale))
+            all_lines_full = all(
+                sum(r.quantity for r in line.refunds.all()) >= line.quantity
+                for line in lines
+            )
+            if all_lines_full and total_refunded >= captured:
+                sale.status = Sale.STATUS_REFUNDED
+                sale.refunded_at = timezone.now()
+                sale.save(update_fields=['status', 'refunded_at'])
 
         return sale
 
