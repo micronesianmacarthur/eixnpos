@@ -88,6 +88,7 @@ export default function DashboardPage() {
       )}
 
       {isManager ? (
+        <>
           <DashboardKpiRow today={today} loading={loading && !overview} />
           {todayError && (
             <p className="dashboard-error-message mm-alert mm-alert--banner" role="alert">
