@@ -277,7 +277,10 @@ class TopItemsTests(DashboardBase):
         prod = self.make_product('RangeProd')
         self.make_sale(
             Decimal('15.00'),
-            created_at=timezone.make_aware(datetime(self.today.year, 1, 5, 12, 0)),
+            # Fixed date inside the queried range below (any deterministic
+            # instant works; must not track the live wall-clock year).
+            created_at=timezone.make_aware(
+                datetime(2026, 1, 5, 12, 0)),
             lines=[(prod, 5, Decimal('15.00'))],
         )
         self.client.force_authenticate(self.manager)
