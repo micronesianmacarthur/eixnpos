@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from .serializers import UserSerializer
 from .permissions import IsManagerOrAdmin, IsAdminRole
 from business.models import BusinessInfo
+from sessions.models import business_tzinfo
 from django.contrib.auth import get_user_model
 from .validators import is_reserved_password
 
@@ -67,6 +68,7 @@ def login_view(request):
         'user': UserSerializer(user).data,
         'password_change_required': user.must_change_password or uses_reserved_password,
         'business_info_complete': bi.is_complete(),
+        'business_timezone': str(business_tzinfo().key),
     })
 
 @api_view(['POST'])
@@ -83,6 +85,7 @@ def me_view(request):
         'user': UserSerializer(request.user).data,
         'must_change_password': request.user.must_change_password,
         'business_info_complete': bi.is_complete(),
+        'business_timezone': str(business_tzinfo().key),
     })
 
 @api_view(['GET'])

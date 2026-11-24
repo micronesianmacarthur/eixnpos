@@ -31,15 +31,6 @@ def _parse_date_param(raw) -> date:
     return date.fromisoformat(raw.strip())
 
 
-def _empty_period(start_raw, end_raw):
-    """Synthesize an all-zero range payload for invalid/missing/no-op windows.
-
-    ``start``/``end`` are already-validated dates; this is only the empty
-    (start >= end) state, per contract §5.2.
-    """
-    return period_payload(start_raw, end_raw)
-
-
 @api_view(['GET'])
 @permission_classes([IsDashboardReader])
 def today_view(request):
