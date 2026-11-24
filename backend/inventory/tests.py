@@ -177,3 +177,181 @@ class StockMovementProductScopeTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self._rows(response), [])
+
+
+class StockAdjustmentApiTests(TestCase):
+    """Endpoints for operator-stamped damage and cycle-count adjustments."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            username='manager', password='pw', role='manager'
+        )
+        self.client = APIClient()
+        self.product = Product.objects.create(name='Widget', price='10.00')
+        # on_hand starts at 0; give it a real ledger: 10 in, 2 sold.
+        StockMovement.objects.create(
+            product=self.product, movement_type='receive', quantity=10, note='delivery'
+        )
+        StockMovement.objects.create(
+            product=self.product, movement_type='sale', quantity=-2, note='sale'
+        )
+
+    def _auth_admin(self):
+        self.client.force_authenticate(self.admin)
+
+    @staticmethod
+    def _on_hand(product):
+        return sum(m.quantity for m in StockMovement.objects.filter(product=product))
+
+    def test_damage_decreases_on_hand_and_records_audit(self):
+        self._auth_admin()
+        before = self._on_hand(self.product)
+
+        response = self.client.post(
+            '/api/inventory/damage/',
+            {'product': self.product.id, 'quantity': 3, 'note': 'broken on arrival'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['movement_type'], 'damage')
+        self.assertEqual(response.data['old_on_hand'], before)
+        self.assertEqual(response.data['new_on_hand'], before - 3)
+        self.assertEqual(self._on_hand(self.product), before - 3)
+        movement = StockMovement.objects.get(id=response.data['movement_id'])
+        self.assertEqual(movement.movement_type, 'damage')
+        self.assertEqual(movement.quantity, -3)
+        self.assertEqual(movement.note, 'broken on arrival')
+        self.assertEqual(movement.adjusted_by, self.admin)
+        self.assertEqual(movement.old_on_hand, before)
+        self.assertEqual(movement.new_on_hand, before - 3)
+
+    def test_positive_count_correction_increases_on_hand(self):
+        self._auth_admin()
+        before = self._on_hand(self.product)
+
+        response = self.client.post(
+            '/api/inventory/adjust/',
+            {'product': self.product.id, 'quantity': 5, 'note': 'cycle count found extra'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['old_on_hand'], before)
+        self.assertEqual(response.data['new_on_hand'], before + 5)
+        self.assertEqual(self._on_hand(self.product), before + 5)
+        movement = StockMovement.objects.get(id=response.data['movement_id'])
+        self.assertEqual(movement.movement_type, 'adjustment')
+        self.assertEqual(movement.quantity, 5)
+        self.assertEqual(movement.adjusted_by, self.admin)
+
+    def test_negative_count_correction_works_as_long_as_on_hand_stays_non_negative(self):
+        self._auth_admin()
+        before = self._on_hand(self.product)
+
+        response = self.client.post(
+            '/api/inventory/adjust/',
+            {'product': self.product.id, 'quantity': -2, 'note': 'count miscount'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['new_on_hand'], before - 2)
+        self.assertEqual(self._on_hand(self.product), before - 2)
+
+    def test_adjustment_that_would_go_negative_is_rejected(self):
+        self._auth_admin()
+        before = self._on_hand(self.product)
+
+        response = self.client.post(
+            '/api/inventory/adjust/',
+            {'product': self.product.id, 'quantity': -200, 'note': 'too much'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        # on_hand must be unchanged and no audit row written.
+        self.assertEqual(self._on_hand(self.product), before)
+        self.assertEqual(
+            StockMovement.objects.filter(movement_type='adjustment').count(), 0
+        )
+
+    def test_damage_requiring_non_negative_balance_is_rejected(self):
+        self._auth_admin()
+        before = self._on_hand(self.product)
+        response = self.client.post(
+            '/api/inventory/damage/',
+            {'product': self.product.id, 'quantity': 999, 'note': 'total loss'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self._on_hand(self.product), before)
+
+    def test_zero_quantity_is_rejected(self):
+        self._auth_admin()
+        response = self.client.post(
+            '/api/inventory/adjust/',
+            {'product': self.product.id, 'quantity': 0, 'note': 'no change'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_missing_reason_is_rejected(self):
+        self._auth_admin()
+        response = self.client.post(
+            '/api/inventory/adjust/',
+            {'product': self.product.id, 'quantity': 2, 'note': '   '},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('note', response.data)
+
+    def test_non_stock_product_cannot_be_adjusted(self):
+        self._auth_admin()
+        non_stock = Product.objects.create(name='Service', price='1.00', non_stock=True)
+        response = self.client.post(
+            '/api/inventory/adjust/',
+            {'product': non_stock.id, 'quantity': 2, 'note': 'nope'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_unknown_product_returns_400(self):
+        self._auth_admin()
+        response = self.client.post(
+            '/api/inventory/adjust/',
+            {'product': 999999, 'quantity': 2, 'note': 'ghost'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_cashier_cannot_write_but_can_read(self):
+        cashier = User.objects.create_user(username='cashier1', password='pw', role='cashier')
+        self.client.force_authenticate(cashier)
+
+        write = self.client.post(
+            '/api/inventory/adjust/',
+            {'product': self.product.id, 'quantity': 2, 'note': 'should fail'},
+            format='json',
+        )
+        self.assertEqual(write.status_code, 403)
+
+        read = self.client.get('/api/inventory/')
+        self.assertEqual(read.status_code, 200)
+
+    def test_anonymous_user_cannot_write(self):
+        before = self._on_hand(self.product)
+        response = self.client.post(
+            '/api/inventory/damage/',
+            {'product': self.product.id, 'quantity': 1, 'note': 'anon'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self._on_hand(self.product), before)
+
+    def test_read_endpoints_still_work_for_any_authenticated_role(self):
+        cashier = User.objects.create_user(username='cashier2', password='pw', role='cashier')
+        self.client.force_authenticate(cashier)
+        response = self.client.get('/api/inventory/')
+        self.assertEqual(response.status_code, 200)
+
