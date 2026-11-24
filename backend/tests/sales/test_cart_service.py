@@ -539,3 +539,71 @@ class TestCartServiceEdgeCases:
         totals = cart.calculate_totals()
         # 11.00 * 3 = 33.00
         assert totals['subtotal'] == Decimal('33.00')
+
+
+@pytest.mark.django_db
+class TestSaleLineCostSnapshot:
+    """The line's unit_cost is captured from product.cost at creation and is a
+    fixed snapshot — later edits to Product.cost never restate it."""
+
+    def test_add_item_snapshots_product_cost(self, cashier_user, product, open_sale):
+        """add_item stores the product's current cost on the new line."""
+        cart = CartService(open_sale)
+        line = cart.add_item(product, quantity=1)
+        assert line.unit_cost == Decimal('5.00')  # product fixture cost
+
+    def test_each_product_snapshots_its_own_cost(
+        self, cashier_user, product, expensive_product, open_sale
+    ):
+        """Different products each carry their own cost snapshot."""
+        cart = CartService(open_sale)
+        line1 = cart.add_item(product, quantity=1)
+        line2 = cart.add_item(expensive_product, quantity=1)
+        assert line1.unit_cost == Decimal('5.00')
+        assert line2.unit_cost == Decimal('50.00')
+
+    def test_editing_product_cost_after_creation_leaves_unit_cost_unchanged(
+        self, cashier_user, product, open_sale
+    ):
+        """Changing product.cost after the sale does not rewrite the snapshot."""
+        cart = CartService(open_sale)
+        line = cart.add_item(product, quantity=1)
+        assert line.unit_cost == Decimal('5.00')
+
+        product.cost = Decimal('9.50')
+        product.save(update_fields=['cost'])
+        line.refresh_from_db()
+
+        assert line.unit_cost == Decimal('5.00')
+
+    def test_stock_change_after_create_keeps_snapshot(
+        self, cashier_user, product, open_sale
+    ):
+        """Updating quantity after creation leaves the snapshot untouched."""
+        cart = CartService(open_sale)
+        line = cart.add_item(product, quantity=1)
+        cart.update_item_quantity(line.id, 3)
+        line.refresh_from_db()
+        assert line.quantity == 3
+        assert line.unit_cost == Decimal('5.00')
+
+    def test_direct_create_snapshots_cost(self, cashier_user, product, open_sale):
+        """Direct SaleLine creation (covers admin/import paths) also snapshots."""
+        line = SaleLine.objects.create(
+            sale=open_sale,
+            product=product,
+            quantity=1,
+            unit_price=product.price,
+        )
+        assert line.unit_cost == Decimal('5.00')
+
+    def test_explicit_unit_cost_is_respected(self, cashier_user, product, open_sale):
+        """An explicitly provided unit_cost is not overwritten by the snapshot."""
+        line = SaleLine.objects.create(
+            sale=open_sale,
+            product=product,
+            quantity=1,
+            unit_price=product.price,
+            unit_cost=Decimal('7.00'),
+        )
+        assert line.unit_cost == Decimal('7.00')

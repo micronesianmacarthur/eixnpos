@@ -110,6 +110,17 @@ class SaleLine(models.Model):
     discount_authorizer = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name='authorized_discounts')
     line_total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
 
+    def save(self, *args, **kwargs):
+        # Snapshot the product's cost at the moment the line is created so
+        # later edits to Product.cost never restate historical COGS. Living in
+        # the model's save() (not a call site) guarantees every creation path —
+        # cart/transaction services, the admin form, imports, direct .create()
+        # — captures it. Only on FIRST insert: an explicit unit_cost is
+        # respected and updates never rewrite an existing snapshot.
+        if self._state.adding and self.unit_cost is None:
+            self.unit_cost = self.product.cost
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return f'{self.product} x{self.quantity}'
 
