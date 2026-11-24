@@ -33,6 +33,8 @@ if TYPE_CHECKING:
 
 from django.db.models import Q
 
+from sales.cash import compute_cash_sales
+
 CENTS = Decimal('0.01')
 
 
@@ -276,6 +278,14 @@ def compute_session_summary(session_id: int) -> Dict[str, Any]:
     profit_loss = revenue - cogs
     margin = (profit_loss / revenue) if revenue > 0 else None
 
+    # Canonical cash figures shared with shift close and the dashboard, so the
+    # Z-summary reports the identical gross/refunds/net/by_tender as those two
+    # surfaces must. ``by_tender`` is distinct from ``by_payment`` (kept below):
+    # ``by_payment`` is the completed-sales-only method breakdown, while
+    # ``by_tender`` reflects the shared convention (refunded sales net to zero
+    # retained cash) that shift close / dashboard read.
+    cash = compute_cash_sales(session)
+
     return {
         'session': {
             'id': session.id,
@@ -296,6 +306,10 @@ def compute_session_summary(session_id: int) -> Dict[str, Any]:
             'profit_margin': round(float(margin), 4) if margin is not None else None,
             'by_payment': _by_method(payments_df),
             'by_category': _by_category(lines_df),
+            'by_tender': {k: _money(v) for k, v in cash['by_tender'].items()},
+            'gross': _money(cash['gross']),
+            'refunds': _money(cash['refunds']),
+            'net': _money(cash['net']),
         },
         'warnings': {
             'invalid_sale_amounts': invalid_sales,

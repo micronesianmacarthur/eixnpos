@@ -178,16 +178,18 @@ class SalesTodayTests(DashboardBase):
         self.assertEqual(data['invoice_count'], 1)
         self.assertEqual(data['invoice_total'], '60.00')
 
-    def test_refund_cash_is_not_netted(self):
-        # A refunded sale keeps its original cash payment in cash_sales (v1
-        # documented limitation) while revenue/sales_count exclude it.
+    def test_refund_cash_nets_to_zero(self):
+        # A refunded sale's cash payment nets to zero retained cash (the
+        # canonical convention shared with shift close and the Z-summary), so
+        # cash_sales counts only the still-completed $80; revenue/sales_count
+        # likewise exclude the refunded $20.
         self.make_sale(Decimal('80.00'), method='cash')
         self.make_sale(Decimal('20.00'), status='refunded', method='cash')
         self.client.force_authenticate(self.manager)
         data = self.client.get('/api/dashboard/sales/today/').json()['today']
         self.assertEqual(data['sales_count'], 1)
         self.assertEqual(data['revenue'], '80.00')
-        self.assertEqual(data['cash_sales'], '100.00')
+        self.assertEqual(data['cash_sales'], '80.00')
 
     def test_money_fields_are_two_decimal_strings(self):
         self.make_sale(Decimal('1234.5'))
