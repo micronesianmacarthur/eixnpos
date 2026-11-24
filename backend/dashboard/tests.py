@@ -355,18 +355,100 @@ class SessionCurrentTests(DashboardBase):
         self.client.force_authenticate(self.manager)
         data = self.client.get('/api/dashboard/sessions/current/').json()
         self.assertTrue(data['open'])
-        self.assertEqual(data['session_id'], session.id)
-        self.assertEqual(data['started_at_local'].endswith('+00:00'), True)
+        self.assertEqual(data['count'], 1)
         self.assertEqual(data['business_day'], self.today.isoformat())
-        self.assertEqual(data['register']['id'], self.register.id)
-        self.assertEqual(data['cashier']['username'], 'cashier')
-        self.assertEqual(data['cashier']['role'], 'cashier')
-        self.assertEqual(data['starting_cash'], '55.00')
+        sessions = data['sessions']
+        self.assertEqual(len(sessions), 1)
+        item = sessions[0]
+        # Canonical B2 fields are present on each session object.
+        self.assertEqual(item['session_id'], session.id)
+        self.assertEqual(item['register_name'], self.register.name)
+        self.assertEqual(item['opened_at_local'].endswith('+00:00'), True)
+        self.assertEqual(item['business_day'], self.today.isoformat())
+        self.assertEqual(item['register']['id'], self.register.id)
+        self.assertEqual(item['opened_by']['username'], 'cashier')
+        self.assertEqual(item['opened_by']['role'], 'cashier')
+        self.assertEqual(item['cashiers'], [])
+        self.assertEqual(item['starting_cash'], '55.00')
+        # The single-session accessor stays backward-compatible (same object).
+        self.assertEqual(data['session']['session_id'], session.id)
+        self.assertTrue(data['session']['started_at_local'].endswith('+00:00'))
 
     def test_no_open_session(self):
         self.client.force_authenticate(self.manager)
         data = self.client.get('/api/dashboard/sessions/current/').json()
-        self.assertEqual(data, {'open': False})
+        self.assertFalse(data['open'])
+        self.assertEqual(data['count'], 0)
+        self.assertEqual(data['sessions'], [])
+        self.assertEqual(data['session'], {'open': False})
+
+    def test_manager_not_in_cashiers_still_sees_open_session(self):
+        """Blocker B2 regression: a manager who is NOT a register cashier must
+        still see the open session on that register."""
+        # Register with an explicit cashier list that does NOT include the manager.
+        cashiers_register = Register.objects.create(name='Back')
+        cashiers_register.cashiers.set([self.cashier])
+        Session.objects.create(
+            cashier=self.cashier, starting_cash=Decimal('10.00'),
+            register=cashiers_register, business_day=self.today,
+        )
+        self.client.force_authenticate(self.manager)
+        data = self.client.get('/api/dashboard/sessions/current/').json()['sessions']
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]['register']['id'], cashiers_register.id)
+        self.assertEqual(data[0]['cashiers'], ['cashier'])
+        self.assertEqual(data[0]['opened_by']['username'], 'cashier')
+
+    def test_manager_sees_open_sessions_across_all_registers(self):
+        """A manager sees every open session for the business day, regardless
+        of register cashier assignment."""
+        reg_a = Register.objects.create(name='A')
+        reg_b = Register.objects.create(name='B', identifier='B')
+        Session.objects.create(
+            cashier=self.cashier, register=reg_a, business_day=self.today,
+        )
+        Session.objects.create(
+            cashier=self.manager, register=reg_b, business_day=self.today,
+        )
+        self.client.force_authenticate(self.manager)
+        data = self.client.get('/api/dashboard/sessions/current/').json()
+        self.assertTrue(data['open'])
+        self.assertEqual(data['count'], 2)
+        names = {s['register_name'] for s in data['sessions']}
+        self.assertEqual(names, {'A', 'B'})
+
+    def test_cashier_sees_only_assigned_registers(self):
+        """A cashier only sees sessions on registers they are assigned to.
+
+        The dashboard HTTP endpoint is manager-gated (cashiers get 403), so the
+        cashier-side scoping is exercised at the service-function level.
+        """
+        self.register.cashiers.set([self.cashier])
+        other = Register.objects.create(name='Other')
+        other.cashiers.set([self.manager])
+        Session.objects.create(
+            cashier=self.cashier, register=self.register, business_day=self.today,
+        )
+        Session.objects.create(
+            cashier=self.manager, register=other, business_day=self.today,
+        )
+        data = services.current_session_payload(self.cashier)
+        self.assertTrue(data['open'])
+        self.assertEqual(data['count'], 1)
+        self.assertEqual(data['sessions'][0]['register']['id'], self.register.id)
+
+    def test_cashier_sees_open_session_on_shared_register(self):
+        """A register with an empty cashiers M2M is accessible by everyone;
+        a cashier sees an open session there even if not explicitly assigned
+        (service-level scoping modelled on the sessions API rule)."""
+        Session.objects.create(
+            cashier=self.manager, starting_cash=Decimal('20.00'),
+            register=self.register, business_day=self.today,
+        )
+        data = services.current_session_payload(self.cashier)
+        self.assertTrue(data['open'])
+        self.assertEqual(data['count'], 1)
+        self.assertEqual(data['sessions'][0]['register']['id'], self.register.id)
 
 
 class LowStockTests(DashboardBase):
@@ -415,6 +497,24 @@ class CompositeTests(DashboardBase):
         self.assertTrue(data['session']['open'])
         self.assertIn('inventory', data)
         self.assertIn('low_stock_count', data['inventory'])
+
+    def test_composite_manager_sees_all_open_shifts(self):
+        """Integration: the manager's first-paint composite surfaces every open
+        shift, including registers they are not a cashier of."""
+        back = Register.objects.create(name='Back')
+        back.cashiers.set([self.cashier])
+        Session.objects.create(
+            cashier=self.cashier, register=back, business_day=self.today,
+        )
+        Session.objects.create(
+            cashier=self.manager, register=self.register, business_day=self.today,
+        )
+        self.client.force_authenticate(self.manager)
+        data = self.client.get('/api/dashboard/').json()['session']
+        self.assertTrue(data['open'])
+        self.assertEqual(data['count'], 2)
+        names = {s['register_name'] for s in data['sessions']}
+        self.assertEqual(names, {'Back', self.register.name})
 
 
 class TimezoneTests(DashboardBase):

@@ -37,18 +37,37 @@ export interface SessionCashier {
 }
 
 /**
- * Current open shift payload (contract §5.5). When `open` is false no other
- * fields are present.
+ * One open shift (§4.5/§5.5 item). Carries the canonical B2 fields
+ * (`register_name`, `opened_at_local`, `opened_by`, `cashiers`) plus legacy
+ * aliases (`started_at_local`, `cashier`) kept for backward compatibility.
+ */
+export interface DashboardOpenSession {
+  session_id: number;
+  register_name: string;
+  opened_at: string;
+  opened_at_local: string;
+  started_at: string;       // legacy alias of opened_at
+  started_at_local: string; // legacy alias of opened_at_local
+  business_day: string;
+  register: RegisterInfo;
+  opened_by: SessionCashier;
+  cashier: SessionCashier;  // legacy alias of opened_by
+  cashiers: string[];       // register-assigned cashier usernames
+  starting_cash: string;
+}
+
+/**
+ * Current-session payload (contract §5.5). ``open`` is false when there are
+ * no open shifts; ``sessions`` is empty then. ``session`` is a backward-
+ * compatible single-session accessor (the first open shift, same shape as the
+ * pre-B2 response) or ``{open: false}``.
  */
 export interface DashboardSession {
   open: boolean;
-  session_id?: number;
-  started_at?: string;
-  started_at_local?: string;
-  business_day?: string;
-  register?: RegisterInfo;
-  cashier?: SessionCashier;
-  starting_cash?: string;
+  count: number;
+  business_day: string;
+  sessions: DashboardOpenSession[];
+  session?: DashboardOpenSession | { open: boolean };
 }
 
 /**

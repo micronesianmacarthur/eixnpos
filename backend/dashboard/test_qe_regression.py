@@ -317,8 +317,11 @@ class SessionTimezoneTests(DashboardBase):
 
         payload = services.current_session_payload(self.manager)
         self.assertTrue(payload['open'])
+        # The single-session accessor preserves the pre-B2 shape; it also
+        # carries the canonical ``started_at_local`` alias.
+        session = payload['session']
+        self.assertEqual(session['business_day'], '2026-11-23')
+        self.assertEqual(session['starting_cash'], '100.00')
         # Local wall-clock rendering must show the LA calendar day and offset.
-        self.assertTrue(payload['started_at_local'].startswith('2026-11-23T23:30'))
-        self.assertTrue(payload['started_at_local'].endswith('-08:00'))
-        self.assertEqual(payload['business_day'], '2026-11-23')
-        self.assertEqual(payload['starting_cash'], '100.00')
+        self.assertTrue(session['started_at_local'].startswith('2026-11-23T23:30'))
+        self.assertTrue(session['started_at_local'].endswith('-08:00'))

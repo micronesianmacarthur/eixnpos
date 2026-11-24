@@ -71,13 +71,38 @@ function overview(): DashboardOverview {
     },
     session: {
       open: true,
-      session_id: 7,
-      started_at: '2026-11-24T07:00:00+11:00',
-      started_at_local: '2026-11-24T07:00:00+11:00',
+      count: 1,
       business_day: '2026-11-24',
-      register: { id: 1, name: 'Front', identifier: 'REG-1' },
-      cashier: { id: 3, username: 'jane', role: 'cashier' },
-      starting_cash: '100.00',
+      sessions: [
+        {
+          session_id: 7,
+          register_name: 'Front',
+          opened_at: '2026-11-24T07:00:00+11:00',
+          opened_at_local: '2026-11-24T07:00:00+11:00',
+          started_at: '2026-11-24T07:00:00+11:00',
+          started_at_local: '2026-11-24T07:00:00+11:00',
+          business_day: '2026-11-24',
+          register: { id: 1, name: 'Front', identifier: 'REG-1' },
+          opened_by: { id: 3, username: 'jane', role: 'cashier' },
+          cashier: { id: 3, username: 'jane', role: 'cashier' },
+          cashiers: ['jane'],
+          starting_cash: '100.00',
+        },
+      ],
+      session: {
+        session_id: 7,
+        register_name: 'Front',
+        opened_at: '2026-11-24T07:00:00+11:00',
+        opened_at_local: '2026-11-24T07:00:00+11:00',
+        started_at: '2026-11-24T07:00:00+11:00',
+        started_at_local: '2026-11-24T07:00:00+11:00',
+        business_day: '2026-11-24',
+        register: { id: 1, name: 'Front', identifier: 'REG-1' },
+        opened_by: { id: 3, username: 'jane', role: 'cashier' },
+        cashier: { id: 3, username: 'jane', role: 'cashier' },
+        cashiers: ['jane'],
+        starting_cash: '100.00',
+      },
     },
     inventory: {
       generated_at: '2026-11-24T09:12:00+11:00',
@@ -172,7 +197,13 @@ describe('DashboardPage — empty / zero state', () => {
       invoice_count: 0, invoice_total: '0.00', void_count: 0,
       refund_count: 0, avg_basket: '0.00', open_count_today: 0,
     }
-    empty.session = { open: false }
+    empty.session = {
+      open: false,
+      count: 0,
+      business_day: '2026-11-24',
+      sessions: [],
+      session: { open: false },
+    }
     mockedFetch.mockResolvedValue(empty)
     render(<DashboardPage />)
 
@@ -183,6 +214,55 @@ describe('DashboardPage — empty / zero state', () => {
     expect(invoice).toHaveTextContent('0')
     expect(invoice).not.toHaveTextContent('·')
     expect(await screen.findByText('No open shift')).toBeInTheDocument()
+  })
+
+  it('renders one row per open register when multiple shifts are open', async () => {
+    const multi = overview()
+    multi.session = {
+      open: true,
+      count: 2,
+      business_day: '2026-11-24',
+      sessions: [
+        {
+          session_id: 7,
+          register_name: 'Front',
+          opened_at: '2026-11-24T07:00:00+11:00',
+          opened_at_local: '2026-11-24T07:00:00+11:00',
+          started_at: '2026-11-24T07:00:00+11:00',
+          started_at_local: '2026-11-24T07:00:00+11:00',
+          business_day: '2026-11-24',
+          register: { id: 1, name: 'Front', identifier: 'REG-1' },
+          opened_by: { id: 3, username: 'jane', role: 'cashier' },
+          cashier: { id: 3, username: 'jane', role: 'cashier' },
+          cashiers: ['jane'],
+          starting_cash: '100.00',
+        },
+        {
+          session_id: 8,
+          register_name: 'Back',
+          opened_at: '2026-11-24T08:30:00+11:00',
+          opened_at_local: '2026-11-24T08:30:00+11:00',
+          started_at: '2026-11-24T08:30:00+11:00',
+          started_at_local: '2026-11-24T08:30:00+11:00',
+          business_day: '2026-11-24',
+          register: { id: 2, name: 'Back', identifier: 'REG-2' },
+          opened_by: { id: 4, username: 'sam', role: 'cashier' },
+          cashier: { id: 4, username: 'sam', role: 'cashier' },
+          cashiers: ['sam'],
+          starting_cash: '50.00',
+        },
+      ],
+    }
+    mockedFetch.mockResolvedValue(multi)
+    render(<DashboardPage />)
+
+    expect(await screen.findByText('2 open shifts')).toBeInTheDocument()
+    expect(screen.getByText(/Across 2 registers/)).toBeInTheDocument()
+    // Both openers/registers are listed.
+    expect(screen.getByText(/Opener jane/)).toBeInTheDocument()
+    expect(screen.getByText(/Opener sam/)).toBeInTheDocument()
+    expect(screen.getByText(/Register Front/)).toBeInTheDocument()
+    expect(screen.getByText(/Register Back/)).toBeInTheDocument()
   })
 })
 

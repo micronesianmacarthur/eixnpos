@@ -23,11 +23,12 @@ from django.db.models import Count, Q, Sum
 from django.db.models.functions import TruncMonth
 from django.utils import timezone
 
+from accounts.roles import has_manager_role
 from business.models import BusinessInfo
 from inventory.models import StockMovement
 from products.models import Product
 from sales.models import Payment, Sale, SaleLine
-from sessions.models import Register, Session, business_tzinfo, local_date_of
+from sessions.models import Session, business_tzinfo, local_date_of
 
 CENTS = Decimal('0.01')
 TOP_LIMIT = 5
@@ -339,48 +340,101 @@ def _prev_month_first(day: date) -> date:
 # --------------------------------------------------------------------------- #
 # Current session + opener (contract §4.5, endpoint 5.5)
 # --------------------------------------------------------------------------- #
-def current_session_payload(user) -> Dict[str, Any]:
-    """The open shift for the register/day the requestor can operate.
-
-    Reuses the same register-resolution rule as the sessions API: the caller's
-    first accessible register (a register with an empty ``cashiers`` M2M is
-    accessible by everyone). Returns ``{'open': False}`` when none is open.
-    """
-    registers = [
-        r for r in Register.objects.order_by('id')
-        if not r.cashiers.exists() or r.cashiers.filter(pk=user.pk).exists()
-    ]
-    if not registers:
-        return {'open': False}
-    register = registers[0]
-    day = _business_day()
-    session = (
-        Session.objects
-        .filter(register=register, business_day=day, status=Session.STATUS_OPEN)
-        .select_related('register', 'cashier')
-        .order_by('-opened_at')
-        .first()
+def _session_cashier_names(session) -> List[str]:
+    """Usernames of the register's assigned cashiers (the ``cashiers`` M2M)."""
+    ordered = sorted(
+        (u.username for u in session.register.cashiers.all()),
+        key=lambda n: n or '',
     )
-    if session is None:
-        return {'open': False}
+    return ordered
+
+
+def _session_dict(session) -> Dict[str, Any]:
+    """Serialize one open Session into its contract §4.5/§5.5 object shape.
+
+    The object carries both the canonical fields (``opened_at_local``,
+    ``opened_by``, ``cashiers``, ``register_name``) and legacy aliases
+    (``started_at_local``, ``cashier``) so callers reading the pre-B2 single
+    ``session`` shape keep working.
+    """
     cashier = session.cashier
+    opened_by = {
+        'id': cashier.id,
+        'username': cashier.username,
+        'role': getattr(cashier, 'role', 'cashier'),
+    }
     return {
-        'open': True,
         'session_id': session.id,
-        'started_at': session.opened_at.isoformat(),
-        'started_at_local': _local_iso(session.opened_at),
+        'register_name': session.register.name,
+        'opened_at': session.opened_at.isoformat(),
+        'opened_at_local': _local_iso(session.opened_at),
+        'started_at': session.opened_at.isoformat(),      # legacy alias
+        'started_at_local': _local_iso(session.opened_at),  # legacy alias
         'business_day': session.business_day.isoformat(),
         'register': {
             'id': session.register.id,
             'name': session.register.name,
             'identifier': session.register.identifier,
         },
-        'cashier': {
-            'id': cashier.id,
-            'username': cashier.username,
-            'role': getattr(cashier, 'role', 'cashier'),
-        },
+        'opened_by': opened_by,
+        'cashier': opened_by,                              # legacy alias
+        'cashiers': _session_cashier_names(session),
         'starting_cash': _money(session.starting_cash),
+    }
+
+
+def current_session_payload(user) -> Dict[str, Any]:
+    """All open shifts for the business day, scoped by the caller's tier.
+
+    Manager-admin callers (per :func:`accounts.roles.has_manager_role`) see
+    every open session for the business day, across all registers, regardless
+    of each register's ``cashiers`` assignment — a manager must never be told
+    "No open shift" because the open shift sits on a register that does not
+    list them as a cashier. Non-manager callers keep the register-resolution
+    rule shared with the sessions API: only registers with an empty ``cashiers``
+    M2M (accessible by everyone) or which list the caller are considered.
+
+    Response envelope: ``open`` (bool), ``count`` (int), ``business_day`` and
+    a parallel ``sessions`` array (each a serialized open session). For
+    backward compatibility the first open session is ALSO emitted under the
+    historical ``session`` key (shape identical to the previous single-object
+    response), or ``{'open': False}`` when none is open.
+    """
+    day = _business_day()
+    manager = has_manager_role(user)
+
+    qs = Session.objects.filter(
+        business_day=day, status=Session.STATUS_OPEN,
+    ).select_related(
+        'register', 'cashier',
+    ).prefetch_related(
+        'register__cashiers',
+    ).order_by('register__id', 'opened_at')
+
+    if not manager:
+        # Register-access rule shared with sessions/views.py: a register is
+        # accessible when its cashiers M2M is empty (everyone) or lists the
+        # caller. One query — a plain filter, no per-register lookups (S4).
+        qs = qs.filter(
+            Q(register__cashiers__isnull=True) | Q(register__cashiers=user),
+        ).distinct()
+
+    sessions = [_session_dict(s) for s in qs]
+    if not sessions:
+        return {
+            'open': False,
+            'count': 0,
+            'business_day': day.isoformat(),
+            'sessions': [],
+            'session': {'open': False},
+        }
+    return {
+        'open': True,
+        'count': len(sessions),
+        'business_day': day.isoformat(),
+        'sessions': sessions,
+        # Backward-compatible single-session accessor (first open session).
+        'session': sessions[0],
     }
 
 

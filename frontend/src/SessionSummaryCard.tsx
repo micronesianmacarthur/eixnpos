@@ -1,15 +1,43 @@
 import { Icon } from './Icon';
-import type { DashboardSession } from './DashboardTypes';
+import type { DashboardOpenSession, DashboardSession } from './DashboardTypes';
 import { formatDateTime, formatMoney } from './dashboardFormat';
 import './DashboardPage.css';
 
 /**
- * Current open shift card.
+ * Current open shift(s) card.
  *
- * Shows when the session was opened and by whom (the manager-facing question
- * "when was the session opened and who opened it"). Rendered only for the
- * manager dashboard (the API that feeds it is manager-gated).
+ * Shows every open session for the business day the manager can operate a
+ * shift on — one card per open register (opened when + by whom), or a compact
+ * "No open shift" state when none is open. The card renders three states:
+ * zero sessions, a single session (the historical single-card layout), and
+ * multiple sessions (a list/accordion). Only the manager dashboard feeds this
+ * (the API that backs it is manager-gated).
  */
+function singleSessionRow(session: DashboardOpenSession) {
+  const openedLabel = formatDateTime(session.opened_at_local);
+  const openers = (session.cashiers ?? []).slice().sort().join(', ');
+  return (
+    <div className="dashboard-session-header">
+      <span className="mm-icon-tile mm-icon-tile--success">
+        <Icon name="close" size={22} />
+      </span>
+      <div className="dashboard-session-title-wrapper">
+        <h2 className="dashboard-session-title">Open since {openedLabel}</h2>
+        <p className="mm-muted dashboard-session-subtitle">
+          Register {session.register_name}
+          {session.opened_by?.username
+            ? ` · Opener ${session.opened_by.username}`
+            : ''}
+          {openers ? ` · Cashiers ${openers}` : ''}
+          {session.starting_cash
+            ? ` · Starting cash ${formatMoney(session.starting_cash)}`
+            : ''}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export function SessionSummaryCard({
   session,
   loading,
@@ -47,7 +75,10 @@ export function SessionSummaryCard({
     );
   }
 
-  if (!session) {
+  const sessions = session?.sessions ?? [];
+  const hasOpen = !!session?.open && sessions.length > 0;
+
+  if (!session || !hasOpen) {
     return (
       <section className="mm-card dashboard-session">
         <div className="dashboard-session-header">
@@ -65,44 +96,38 @@ export function SessionSummaryCard({
     );
   }
 
-  if (!session.open) {
+  // Single open session: keep the historical single-card presentation.
+  if (sessions.length === 1) {
     return (
       <section className="mm-card dashboard-session">
-        <div className="dashboard-session-header">
-          <span className="mm-icon-tile">
-            <Icon name="close" size={22} />
-          </span>
-          <div className="dashboard-session-title-wrapper">
-            <h2 className="dashboard-session-title">No open shift</h2>
-            <p className="mm-muted dashboard-session-subtitle">
-              Open a register to start selling.
-            </p>
-          </div>
-        </div>
+        {singleSessionRow(sessions[0])}
       </section>
     );
   }
 
-  const openedLabel = formatDateTime(session.started_at_local);
+  // Multiple open shifts: one row per open register.
   return (
-    <section className="mm-card dashboard-session">
+    <section className="mm-card dashboard-session" aria-label="Open shifts">
       <div className="dashboard-session-header">
         <span className="mm-icon-tile mm-icon-tile--success">
           <Icon name="close" size={22} />
         </span>
         <div className="dashboard-session-title-wrapper">
           <h2 className="dashboard-session-title">
-            Open since {openedLabel}
+            {sessions.length} open shifts
           </h2>
           <p className="mm-muted dashboard-session-subtitle">
-            Register {session.register?.identifier ?? session.register?.name ?? ''}
-            · Opener {session.cashier?.username ?? '—'}
-            {session.starting_cash
-              ? ` · Starting cash ${formatMoney(session.starting_cash)}`
-              : ''}
+            Across {sessions.length} registers
           </p>
         </div>
       </div>
+      <ul className="dashboard-session-list">
+        {sessions.map((s) => (
+          <li key={s.session_id} className="dashboard-session-list-item">
+            {singleSessionRow(s)}
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }
