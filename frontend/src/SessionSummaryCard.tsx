@@ -13,8 +13,11 @@ import './DashboardPage.css';
  * multiple sessions (a list/accordion). Only the manager dashboard feeds this
  * (the API that backs it is manager-gated).
  */
-function singleSessionRow(session: DashboardOpenSession) {
-  const openedLabel = formatDateTime(session.opened_at_local);
+function singleSessionRow(session: DashboardOpenSession, businessTimezone?: string | null) {
+  const openedLabel = formatDateTime(
+    session.opened_at_local,
+    businessTimezone,
+  );
   const openers = (session.cashiers ?? []).slice().sort().join(', ');
   return (
     <div className="dashboard-session-header">
@@ -43,11 +46,14 @@ export function SessionSummaryCard({
   loading,
   error,
   onRetry,
+  businessTimezone,
 }: {
   session: DashboardSession | null;
   loading: boolean;
   error: string | null;
   onRetry: () => void;
+  /** IANA zone name used to format the "open since" wall clock (S2). */
+  businessTimezone?: string | null;
 }) {
   if (error && !session) {
     return (
@@ -100,7 +106,7 @@ export function SessionSummaryCard({
   if (sessions.length === 1) {
     return (
       <section className="mm-card dashboard-session">
-        {singleSessionRow(sessions[0])}
+        {singleSessionRow(sessions[0], businessTimezone)}
       </section>
     );
   }
@@ -124,7 +130,7 @@ export function SessionSummaryCard({
       <ul className="dashboard-session-list">
         {sessions.map((s) => (
           <li key={s.session_id} className="dashboard-session-list-item">
-            {singleSessionRow(s)}
+            {singleSessionRow(s, businessTimezone)}
           </li>
         ))}
       </ul>

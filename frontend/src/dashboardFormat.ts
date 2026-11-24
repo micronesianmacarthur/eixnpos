@@ -51,16 +51,18 @@ const DEFAULT_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
  *
  * The server sends datetimes already expressed in the store's business-local
  * timezone with the UTC offset embedded (e.g. `2026-11-24T07:00:00+11:00`).
- * We format using that embedded offset, so the session's "opened when" always
- * shows the store's own clock independent of the viewer's browser timezone
- * and independent of the CI/test machine's TZ. Whole-hour offsets map to an
- * `Etc/GMT` zone; anything unusual falls back to the environment default.
+ * When the business IANA zone name (`business_timezone`, contract §3.2) is
+ * provided we pass it to `Intl.DateTimeFormat` so the store clock is shown
+ * regardless of the viewer's browser timezone AND regardless of whole-hour vs
+ * fractional UTC offsets (+05:30, +09:30 — which `Etc/GMT` can't express).
+ * Without a zone we fall back to the embedded offset via `Etc/GMT` (whole-hour
+ * offsets only), then the environment default.
  */
-export function formatDateTime(iso: string | undefined): string {
+export function formatDateTime(iso: string | undefined, businessTimezone?: string | null): string {
   if (!iso) return '';
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso; // pass through unparseable text
-  const zone = offsetToEtcZone(iso);
+  const zone = businessTimezone?.trim() || offsetToEtcZone(iso);
   if (zone) {
     return new Intl.DateTimeFormat('en-US', {
       dateStyle: 'medium',

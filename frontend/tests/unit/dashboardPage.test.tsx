@@ -9,7 +9,8 @@
  * transitions (loading / error / success / empty / non-manager) are each
  * exercised in isolation.
  */
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom/vitest'
 
@@ -53,6 +54,7 @@ function overview(): DashboardOverview {
   return {
     business_day: '2026-11-24',
     generated_at: '2026-11-24T09:12:00+11:00',
+    business_timezone: 'Pacific/Noumea',
     period: {
       scope: 'today',
       start: '2026-11-24T00:00:00+11:00',
@@ -136,6 +138,23 @@ describe('dashboard format helpers', () => {
     expect(formatDateTime('2026-11-24T07:00:00+11:00')).toMatch(/Nov 24, 2026/);
     expect(formatDateTime(undefined)).toBe('');
   })
+  it('formats a datetime in a fractional-hour business timezone (S2)', () => {
+    // +05:30 (Asia/Kolkata) cannot be expressed as a whole-hour Etc/GMT zone;
+    // the IANA business_timezone must drive the wall clock. 2026-11-24T13:45
+    // +05:30 == 08:15:00 UTC.
+    expect(
+      formatDateTime('2026-11-24T13:45:00+05:30', 'Asia/Kolkata'),
+    ).toMatch(/Nov 24, 2026/);
+    expect(
+      formatDateTime('2026-11-24T13:45:00+05:30', 'Asia/Kolkata'),
+    ).toMatch(/1:45 PM/);
+  })
+  it('falls back to the embedded offset when no IANA zone is provided (S2)', () => {
+    // Without businessTimezone the whole-hour offset path still works; the
+    // fractional case falls back to the environment default without crashing.
+    expect(formatDateTime('2026-11-24T07:00:00+11:00', null)).toMatch(/Nov 24, 2026/);
+    expect(formatDateTime('2026-11-24T13:45:00+05:30', undefined)).toMatch(/Nov 24, 2026/);
+  })
 })
 
 describe('DashboardPage — data fetching states', () => {
@@ -186,6 +205,17 @@ describe('DashboardPage — data fetching states', () => {
     mockedFetch.mockRejectedValue(new ApiError('Server error', 500, undefined))
     render(<DashboardPage />)
     expect(await screen.findByText('Server error')).toBeInTheDocument()
+  })
+
+  it('renders em-dash KPI tiles instead of zeros on load failure (S7)', async () => {
+    mockedFetch.mockRejectedValue(new ApiError('Server error', 500, undefined))
+    render(<DashboardPage />)
+    // Once the failure settles, the tiles must read "unknown", never "0 sales".
+    const sales = await screen.findByTestId('kpi-sales-today')
+    expect(sales).toHaveTextContent('—')
+    expect(screen.getByTestId('kpi-revenue-today')).toHaveTextContent('—')
+    expect(screen.getByTestId('kpi-cash-today')).toHaveTextContent('—')
+    expect(screen.getByTestId('kpi-invoices-today')).toHaveTextContent('—')
   })
 })
 
@@ -263,6 +293,84 @@ describe('DashboardPage — empty / zero state', () => {
     expect(screen.getByText(/Opener sam/)).toBeInTheDocument()
     expect(screen.getByText(/Register Front/)).toBeInTheDocument()
     expect(screen.getByText(/Register Back/)).toBeInTheDocument()
+  })
+
+  it('shows a "no completed sales today" banner when today has zero sales (S9)', async () => {
+    const empty = overview()
+    empty.today = {
+      sales_count: 0, revenue: '0.00', cash_sales: '0.00',
+      invoice_count: 0, invoice_total: '0.00', void_count: 0,
+      refund_count: 0, avg_basket: '0.00', open_count_today: 0,
+    }
+    empty.session = {
+      open: true,
+      count: 1,
+      business_day: '2026-11-24',
+      sessions: [],
+      session: { open: false },
+    }
+    mockedFetch.mockResolvedValue(empty)
+    render(<DashboardPage />)
+
+    expect(await screen.findByText(/No completed sales today/)).toBeInTheDocument()
+  })
+})
+
+describe('DashboardPage — stale-data pill and refresh (S6)', () => {
+  it('shows a "Data from" pill with a manual refresh button', async () => {
+    mockedFetch.mockResolvedValue(overview())
+    render(<DashboardPage />)
+
+    expect(await screen.findByText(/Data from/)).toBeInTheDocument()
+    const stale = (screen.getByText(/Data from/).closest(
+      '.dashboard-stale',
+    )) as HTMLElement
+    expect(
+      within(stale).getByRole('button', { name: 'Refresh' }),
+    ).toBeInTheDocument()
+  })
+
+  it('re-requests the composite on manual refresh', async () => {
+    mockedFetch.mockResolvedValue(overview())
+    render(<DashboardPage />)
+    await screen.findByText(/Data from/)
+    const stale = (screen.getByText(/Data from/).closest(
+      '.dashboard-stale',
+    )) as HTMLElement
+    const refresh = within(stale).getByRole('button', { name: 'Refresh' })
+    mockedFetch.mockClear()
+    await userEvent.click(refresh)
+    expect(mockedFetch).toHaveBeenCalledWith('/api/dashboard/')
+  })
+})
+
+describe('DashboardPage — low-stock KPI tile drill-down (S9)', () => {
+  it('renders the 5th tile with the low-stock count', async () => {
+    const payload = overview()
+    payload.inventory.low_stock_count = 4
+    mockedFetch.mockResolvedValue(payload)
+    render(<DashboardPage />)
+
+    const tile = await screen.findByTestId('kpi-low-stock')
+    expect(tile).toHaveTextContent('4')
+    expect(screen.getByText('Low stock')).toBeInTheDocument()
+  })
+
+  it('low-stock tile is clickable and scrolls to the low-stock panel', async () => {
+    const scrollIntoView = vi.fn()
+    // jsdom has no low-stock panel mounted (analytics panels are stubbed),
+    // so stub the element lookup to return a fake with an observable scroll.
+    const originalGet = document.getElementById.bind(document)
+    document.getElementById = vi.fn((id: string) =>
+      id === 'low-stock-panel' ? ({ scrollIntoView } as unknown as HTMLElement) : originalGet(id),
+    ) as typeof document.getElementById
+    mockedFetch.mockResolvedValue(overview())
+    render(<DashboardPage />)
+
+    const tile = await screen.findByTestId('kpi-low-stock')
+    const button = tile.closest('button') ?? tile
+    await userEvent.click(button)
+    expect(scrollIntoView).toHaveBeenCalled()
   })
 })
 

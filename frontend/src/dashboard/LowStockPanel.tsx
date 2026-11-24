@@ -141,6 +141,7 @@ export default function LowStockPanel({ initialData }: LowStockPanelProps) {
 
   return (
     <section
+      id="low-stock-panel"
       className="mm-card dashboard-panel dashboard-panel--low-stock"
       aria-labelledby="low-stock-title"
     >

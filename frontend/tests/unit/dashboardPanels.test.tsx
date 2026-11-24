@@ -128,6 +128,40 @@ describe('TopItemsPanel — rendered states (seeded)', () => {
       expect(mockedFetch).toHaveBeenCalledWith('/api/dashboard/sales/top/?scope=week'),
     )
   })
+
+  it('supports roving-tabindex keyboard navigation with arrow keys (S9)', async () => {
+    render(<TopItemsPanel initialData={TOP_PAYLOAD} />)
+
+    const todayTab = screen.getByRole('tab', { name: 'Today' })
+    const weekTab = screen.getByRole('tab', { name: 'Week' })
+    const monthTab = screen.getByRole('tab', { name: 'Month' })
+
+    // Only the active tab is in tab order.
+    expect(todayTab).toHaveAttribute('tabindex', '0')
+    expect(weekTab).toHaveAttribute('tabindex', '-1')
+    expect(monthTab).toHaveAttribute('tabindex', '-1')
+
+    // ArrowRight from Today activates + focuses Week and fetches it.
+    await userEvent.keyboard('{Tab}{ArrowRight}')
+    await waitFor(() => expect(weekTab).toHaveFocus())
+    await waitFor(() =>
+      expect(mockedFetch).toHaveBeenCalledWith('/api/dashboard/sales/top/?scope=week'),
+    )
+    expect(weekTab).toHaveAttribute('aria-selected', 'true')
+    expect(weekTab).toHaveAttribute('tabindex', '0')
+    expect(todayTab).toHaveAttribute('tabindex', '-1')
+
+    // Left arrow wraps back to the last tab (Month).
+    await userEvent.keyboard('{ArrowLeft}{ArrowLeft}')
+    await waitFor(() => expect(monthTab).toHaveFocus())
+    expect(monthTab).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('labels the tabpanel via aria-labelledby (S9)', () => {
+    render(<TopItemsPanel initialData={TOP_PAYLOAD} />)
+    const panel = screen.getByRole('tabpanel')
+    expect(panel).toHaveAttribute('aria-labelledby', 'top-items-title')
+  })
 })
 
 /* ------------------------------------------------------------------ */

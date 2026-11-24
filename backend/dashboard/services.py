@@ -19,8 +19,8 @@ from datetime import date, datetime, time as dtime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional, Tuple
 
-from django.db.models import Count, Q, Sum
-from django.db.models.functions import TruncMonth
+from django.db.models import Count, F, Q, Sum
+from django.db.models.functions import Coalesce, TruncMonth
 from django.utils import timezone
 
 from accounts.roles import has_manager_role
@@ -80,6 +80,16 @@ def _local_iso(dt) -> str:
     return timezone.localtime(dt, business_tzinfo()).isoformat()
 
 
+def _business_tz_name() -> str:
+    """IANA name of the store's configured business timezone (default UTC).
+
+    ``business_tzinfo()`` already falls back to 'UTC', so this returns the
+    exact zone the server used for bucketing and local-ISO rendering — the
+    value the client passes to ``Intl.DateTimeFormat`` (contract §3.3).
+    """
+    return str(business_tzinfo().key)
+
+
 def _next_month_first(day: date) -> date:
     if day.month == 12:
         return date(day.year + 1, 1, 1)
@@ -91,7 +101,9 @@ def _next_month_first(day: date) -> date:
 # --------------------------------------------------------------------------- #
 def _range_aggregates(start_utc, end_utc) -> Dict[str, Any]:
     """KPI figures for completed sales with ``created_at`` in [start, end)."""
-    sales = Sale.objects.filter(created_at__range=[start_utc, end_utc])
+    sales = Sale.objects.filter(
+        created_at__gte=start_utc, created_at__lt=end_utc,
+    )
     agg = sales.aggregate(
         sales_count=Count('id', filter=Q(status=Sale.STATUS_COMPLETED)),
         revenue=Sum('total', filter=Q(status=Sale.STATUS_COMPLETED)),
@@ -104,7 +116,8 @@ def _range_aggregates(start_utc, end_utc) -> Dict[str, Any]:
     )
     payments = Payment.objects.filter(
         sale__status__in=SETTLED_STATUSES,
-        sale__created_at__range=[start_utc, end_utc],
+        sale__created_at__gte=start_utc,
+        sale__created_at__lt=end_utc,
     ).aggregate(
         cash_sales=Sum('amount', filter=Q(method=Payment.METHOD_CASH)),
         invoice_count=Count('id', filter=Q(method=Payment.METHOD_INVOICE)),
@@ -143,6 +156,7 @@ def today_payload() -> Dict[str, Any]:
     return {
         'business_day': day.isoformat(),
         'generated_at': _local_iso(now_utc),
+        'business_timezone': _business_tz_name(),
         'period': period,
         'today': today,
     }
@@ -188,7 +202,8 @@ def _top_items_for(start_utc, end_utc) -> Tuple[int, List[Dict[str, Any]]]:
     """Top-5 products by units sold in [start, end), deterministic ordering."""
     base = SaleLine.objects.filter(
         sale__status=Sale.STATUS_COMPLETED,
-        sale__created_at__range=[start_utc, end_utc],
+        sale__created_at__gte=start_utc,
+        sale__created_at__lt=end_utc,
     )
     total_items = base.values('product_id').distinct().count()
     rows = (
@@ -444,34 +459,32 @@ def current_session_payload(user) -> Dict[str, Any]:
 def low_stock_payload() -> Dict[str, Any]:
     """Active stock-only products whose on-hand quantity is at/below threshold.
 
-    quantity_on_hand is the sum of the StockMovement ledger (0 when a product
-    has no movements). Non-stock products are excluded by construction.
+    quantity_on_hand is the aggregate of the StockMovement ledger in a single
+    annotated query (0 when a product has no movements). Non-stock products are
+    excluded by construction. One SQL query, no full-ledger/all-product scan
+    (S3).
     """
-    stock_map = {
-        product_id: (qty or 0) for product_id, qty in
-        StockMovement.objects.values_list('product_id').annotate(qty=Sum('quantity'))
-    }
     products = (
         Product.objects
         .filter(active=True, non_stock=False)
+        .annotate(qty=Coalesce(Sum('movements__quantity'), 0))
+        .filter(qty__lte=F('min_stock'))
         .select_related('category')
+        .order_by('qty')  # ascending on-hand: negative net ledger sorts first
     )
     items: List[Dict[str, Any]] = []
     for product in products:
-        qty = stock_map.get(product.id, 0)
-        if qty <= product.min_stock:
-            item = {
-                'product_id': product.id,
-                'product_name': product.name,
-                'quantity_on_hand': qty,
-                'min_stock': product.min_stock,
-            }
-            if product.sku is not None:
-                item['sku'] = product.sku
-            if product.category is not None:
-                item['category'] = product.category.name
-            items.append(item)
-    items.sort(key=lambda it: it['quantity_on_hand'])
+        item = {
+            'product_id': product.id,
+            'product_name': product.name,
+            'quantity_on_hand': product.qty,
+            'min_stock': product.min_stock,
+        }
+        if product.sku is not None:
+            item['sku'] = product.sku
+        if product.category is not None:
+            item['category'] = product.category.name
+        items.append(item)
     return {
         'generated_at': _local_iso(_now_utc()),
         'threshold_source': {
@@ -492,6 +505,8 @@ def composite_payload(user) -> Dict[str, Any]:
 
     Fields are verbatim copies of the individual payloads, mapped into the
     ``session`` and ``inventory`` keys. No per-KPI HTTP round-trip is needed.
+    ``business_timezone`` rides on ``today_payload`` so the single composite
+    call carries the IANA zone the client needs for all localized formatting.
     """
     payload = today_payload()
     payload['session'] = current_session_payload(user)

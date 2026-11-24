@@ -10,6 +10,8 @@ import './DashboardPanels.css';
 interface LastBackupPanelProps {
   /** Opt-in test seam: seed data and skip the network effect. */
   initialStatus?: BackupStatus;
+  /** IANA zone name used to format the last-backup wall clock (S2). */
+  businessTimezone?: string | null;
 }
 
 /**
@@ -31,6 +33,7 @@ interface LastBackupPanelProps {
  */
 export default function LastBackupPanel({
   initialStatus,
+  businessTimezone,
 }: LastBackupPanelProps) {
   const [status, setStatus] = useState<BackupStatus | null>(
     initialStatus ?? null,
@@ -108,7 +111,7 @@ export default function LastBackupPanel({
     const configured = status?.backup_path_configured ?? false;
     const neverBackedUp = !status?.last_backup_at;
     const lastLabel = status?.last_backup_at_local
-      ? formatDateTime(status.last_backup_at_local)
+      ? formatDateTime(status.last_backup_at_local, businessTimezone)
       : '';
 
     const button = (

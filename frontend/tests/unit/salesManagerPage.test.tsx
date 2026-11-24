@@ -27,10 +27,13 @@ vi.mock('../../src/api', async (importOriginal) => {
 const currentRole = vi.hoisted(() => ({ value: 'admin' as string }))
 vi.mock('../../src/authContext', () => ({
   useAuth: () => ({
-    me: { user: { role: currentRole.value, username: 'maya' } },
+    me: { user: { role: currentRole.value, username: 'maya' }, business_timezone: currentTimezone.value },
     setMe: () => {},
   }),
 }))
+
+// Mutable holder for the business IANA timezone returned by /api/auth/me/.
+const currentTimezone = vi.hoisted(() => ({ value: 'UTC' }))
 
 const mockedFetch = vi.mocked(apiFetch)
 
@@ -90,6 +93,7 @@ function renderPage(initialSales?: Sale[]) {
 
 beforeEach(() => {
   currentRole.value = 'admin'
+  currentTimezone.value = 'UTC'
   mockedFetch.mockReset()
 })
 
@@ -282,6 +286,20 @@ describe('SalesManagerPage — KPI derivation', () => {
     // Avg basket = 130 / 2 completed-today.
     expect(screen.getByTestId('kpi-avg-basket')).toHaveTextContent('$65.00')
     expect(screen.getByTestId('kpi-needs-review')).toHaveTextContent('1')
+  })
+
+  it('uses the business timezone for "today", not the browser clock (S5)', () => {
+    // Freeze the business's clock at a UTC instant that is Jan 2 in a +14:00
+    // shop while still Jan 1 in UTC. A sale created at 15:00Z is Jan 2 in
+    // Kiritimati (business-today) but Jan 1 in UTC — so counting it proves the
+    // business timezone, not the browser clock, drives isToday.
+    vi.setSystemTime(new Date('2026-01-01T20:30:00Z'))
+    currentTimezone.value = 'Pacific/Kiritimati' // +14:00
+    renderPage([
+      sale({ id: 1, number: 1001, status: 'completed', total: '40.00', created_at: '2026-01-01T15:00:00Z' }),
+    ])
+    expect(screen.getByTestId('kpi-revenue')).toHaveTextContent('$40.00')
+    vi.useRealTimers()
   })
 
   it('clicking the Needs Review KPI applies the needs_review filter', async () => {
