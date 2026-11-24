@@ -125,6 +125,8 @@ export default function SalesPage() {
   const [paySaving, setPaySaving] = useState(false);
   const [paymentRecorded, setPaymentRecorded] = useState(false);
   const [saleNote, setSaleNote] = useState('');
+  const [saleNoteDraft, setSaleNoteDraft] = useState('');
+  const [saleNoteModalOpen, setSaleNoteModalOpen] = useState(false);
   const [changeDue, setChangeDue] = useState('0');
   const [changeModalOpen, setChangeModalOpen] = useState(false);
 
@@ -422,6 +424,16 @@ export default function SalesPage() {
 
   const closeChange = () => {
     setChangeModalOpen(false);
+  };
+
+  const closeSaleNoteModal = () => {
+    setSaleNoteModalOpen(false);
+  };
+
+  const handleSaleNoteSubmit = (event: FormEvent) => {
+    event.preventDefault();
+    setSaleNote(saleNoteDraft.trim());
+    setSaleNoteModalOpen(false);
   };
 
   const cartLines = sale?.lines ?? [];
@@ -814,15 +826,20 @@ export default function SalesPage() {
               </div>
             )}
 
-            <label className="mm-field">
+            <div className="mm-field">
               <span>Sale note</span>
-              <textarea
-                className="mm-textarea"
-                value={saleNote}
-                onChange={(e) => setSaleNote(e.target.value)}
-                placeholder="Required for zero sales"
-              />
-            </label>
+              <button
+                type="button"
+                className="mm-btn mm-btn--ghost"
+                onClick={() => {
+                  setSaleNoteDraft(saleNote);
+                  setSaleNoteModalOpen(true);
+                }}
+              >
+                Add sale note
+              </button>
+              <p className="mm-muted small">Required for zero sale</p>
+            </div>
 
             {payError && (
               <p className="mm-alert mm-alert--danger" role="alert">
@@ -1024,6 +1041,52 @@ export default function SalesPage() {
             <footer className="mm-modal-footer">
               <button type="button" className="mm-btn mm-btn--primary" onClick={closeChange}>Close</button>
             </footer>
+          </div>
+        </div>
+      )}
+
+      {saleNoteModalOpen && (
+        <div
+          className="mm-modal-backdrop"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) closeSaleNoteModal();
+          }}
+        >
+          <div className="mm-modal" role="dialog" aria-modal="true">
+            <header className="mm-modal-header">
+              <h2>Sale note</h2>
+              <button
+                type="button"
+                className="mm-modal-close"
+                onClick={closeSaleNoteModal}
+              >
+                ×
+              </button>
+            </header>
+            <form className="mm-modal-body" onSubmit={handleSaleNoteSubmit}>
+              <label className="mm-field">
+                <span>Note</span>
+                <textarea
+                  className="mm-textarea"
+                  value={saleNoteDraft}
+                  onChange={(e) => setSaleNoteDraft(e.target.value)}
+                  placeholder="Required for zero sale"
+                  autoFocus
+                />
+              </label>
+              <footer className="mm-modal-footer">
+                <button
+                  type="button"
+                  className="mm-btn mm-btn--ghost"
+                  onClick={closeSaleNoteModal}
+                >
+                  Cancel
+                </button>
+                <button type="submit" className="mm-btn mm-btn--primary">
+                  Confirm
+                </button>
+              </footer>
+            </form>
           </div>
         </div>
       )}
