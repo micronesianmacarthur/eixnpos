@@ -3,7 +3,7 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 from suppliers.models import Supplier
 from products.models import Product
-from inventory.models import StockMovement, CostLayer
+from inventory.models import StockMovement, CostLayer, Receipt, ReceiptLine
 from decimal import Decimal
 
 User = get_user_model()
@@ -63,6 +63,65 @@ class InventoryTests(TestCase):
         self.assertEqual(res.status_code, 201)
         layer = CostLayer.objects.get(product=self.product)
         self.assertEqual(layer.source_reference, 'INV-99')
+
+    def test_receive_creates_receipt_and_receipt_line(self):
+        res = self.client.post(
+            f'/api/products/{self.product.id}/receive/',
+            {'quantity': 4, 'unit_cost': '7.50', 'note': 'PO-77'},
+        )
+        self.assertEqual(res.status_code, 201)
+        self.assertIn('receipt_id', res.data)
+        self.assertIn('receipt_line_id', res.data)
+        self.assertIn('movement_id', res.data)
+
+        receipt = Receipt.objects.get(pk=res.data['receipt_id'])
+        self.assertEqual(receipt.supplier, self.supplier)  # defaults from product
+        self.assertEqual(receipt.operator, self.user)
+        self.assertIsNotNone(receipt.received_at)
+        self.assertEqual(receipt.reference, 'PO-77')  # falls back to note
+        self.assertEqual(receipt.note, 'PO-77')
+
+        line = ReceiptLine.objects.get(pk=res.data['receipt_line_id'])
+        self.assertEqual(line.receipt, receipt)
+        self.assertEqual(line.product, self.product)
+        self.assertEqual(line.quantity, 4)
+        self.assertEqual(line.unit_cost, Decimal('7.50'))
+        self.assertEqual(receipt.lines.count(), 1)
+
+    def test_receive_supplier_override(self):
+        other = Supplier.objects.create(name='Beta Supplies')
+        res = self.client.post(
+            f'/api/products/{self.product.id}/receive/',
+            {'quantity': 2, 'unit_cost': '3.00', 'supplier': other.id},
+        )
+        self.assertEqual(res.status_code, 201)
+        receipt = Receipt.objects.get(pk=res.data['receipt_id'])
+        self.assertEqual(receipt.supplier, other)
+        # product-supplier unchanged by the override
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.supplier, self.supplier)
+
+    def test_receive_rejects_missing_supplier(self):
+        # A product with no supplier, and no supplier supplied, cannot be
+        # received because a Receipt always requires a supplier.
+        unsupplied = Product.objects.create(name='Loose', price=5)
+        res = self.client.post(
+            f'/api/products/{unsupplied.id}/receive/',
+            {'quantity': 2, 'unit_cost': '3.00'},
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('supplier', res.data['detail'].lower())
+        self.assertEqual(Receipt.objects.count(), 0)
+
+    def test_receive_rejects_nonexistent_supplier(self):
+        res = self.client.post(
+            f'/api/products/{self.product.id}/receive/',
+            {'quantity': 2, 'unit_cost': '3.00', 'supplier': 999999},
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('Supplier does not exist', res.data['detail'])
+        self.assertEqual(Receipt.objects.count(), 0)
+
 
     def test_receive_rejects_missing_unit_cost(self):
         # missing and blank unit_cost → rejected (multipart/JSON both)

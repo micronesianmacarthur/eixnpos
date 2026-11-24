@@ -89,20 +89,73 @@ class ProductViewSet(viewsets.ModelViewSet):
             )
         unit_cost = unit_cost.quantize(Decimal('0.01'))
 
+        # Supplier defaults to the product's supplier and may be overridden by
+        # an explicit ``supplier`` id. A Receipt always needs a supplier, so we
+        # reject the request when none can be resolved.
+        supplier = product.supplier
+        supplier_override = request.data.get('supplier')
+        if supplier_override is not None and str(supplier_override).strip() != '':
+            from suppliers.models import Supplier
+            try:
+                supplier = Supplier.objects.get(pk=int(supplier_override))
+            except (TypeError, ValueError, Supplier.DoesNotExist):
+                return response.Response(
+                    {'detail': 'Supplier does not exist.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        if supplier is None:
+            return response.Response(
+                {'detail': 'A supplier is required when receiving stock.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         note = request.data.get('note', '')
         source_reference = request.data.get('source_reference') or note
 
-        from inventory.models import StockMovement, CostLayer
+        from inventory.models import Receipt, ReceiptLine, StockMovement, CostLayer
         with transaction.atomic():
-            m = StockMovement.objects.create(
-                product=product, movement_type='receive', quantity=qty,
-                note=note, reference=source_reference,
+            receipt = Receipt.objects.create(
+                supplier=supplier,
+                operator=request.user,
+                received_at=timezone.now(),
+                reference=source_reference,
+                note=note,
             )
+            line = ReceiptLine.objects.create(
+                receipt=receipt,
+                product=product,
+                quantity=qty,
+                unit_cost=unit_cost,
+            )
+            # Inventory quantity tracking. ``unit_cost``/``operator`` are set
+            # when the fields exist on StockMovement (added in the sibling
+            # inventory/0004 migration); the guard keeps this compatible with
+            # the pre-0004 schema so the two changes integrate cleanly.
+            movement_kwargs = {
+                'product': product,
+                'movement_type': 'receive',
+                'quantity': qty,
+                'reference': receipt.reference,
+                'note': receipt.note,
+            }
+            if hasattr(StockMovement, 'unit_cost'):
+                movement_kwargs['unit_cost'] = unit_cost
+            if hasattr(StockMovement, 'operator'):
+                movement_kwargs['operator'] = request.user
+            m = StockMovement.objects.create(**movement_kwargs)
+            # CostLayer preserved as the backward-compatibility valuation path
+            # during the transition to the Receipt/ReceiptLine pattern.
             layer = CostLayer.objects.create(
                 product=product, quantity=qty, unit_cost=unit_cost,
                 received_at=timezone.now(), source_reference=source_reference,
             )
         return response.Response(
-            {'movement_id': m.id, 'cost_layer_id': layer.id, 'quantity': product.quantity},
+            {
+                'receipt_id': receipt.id,
+                'receipt_line_id': line.id,
+                'movement_id': m.id,
+                'cost_layer_id': layer.id,
+                'quantity': product.quantity,
+            },
             status=status.HTTP_201_CREATED,
         )
