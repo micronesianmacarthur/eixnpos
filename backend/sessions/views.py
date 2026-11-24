@@ -5,6 +5,7 @@ from rest_framework.permissions import IsAuthenticated
 from django.http import HttpResponse
 from django.utils import timezone
 from django.db import IntegrityError
+from django.db import transaction
 from django.db.models import Q, Sum
 from decimal import Decimal
 from .models import Session, Register, local_date_of
@@ -217,16 +218,32 @@ class SessionViewSet(viewsets.ModelViewSet):
         session.closed_at = timezone.now()
         if 'cash_removed' in request.data:
             session.cash_removed = request.data['cash_removed']
-        session.save()
+
+        # Persist the closed session and its immutable Z-report snapshot in one
+        # database transaction. The snapshot records the exact summary inputs
+        # needed to re-render the filed PDF, so a re-download can never diverge
+        # from what was filed — even if sales are later refunded or edited. If
+        # the summary cannot be captured, the close fails and rolls back: better
+        # to leave the shift open than to file it with no immutable report.
+        from sales.summary import compute_session_summary
+        from .models import ZReportSnapshot
+
+        with transaction.atomic():
+            session.save()
+            _data = compute_session_summary(session.id)
+            _data['store_name'] = _store_name()
+            ZReportSnapshot.objects.create(session=session, summary_data=_data)
 
         # Persist the Z-report PDF and back up the session transactions so the
         # shift's data survives the close. A failure here must not block the
         # close itself — log it and continue, mirroring the previous behaviour.
+        pdf_bytes = None
+        pdf_relpath = None
         try:
-            pdf_bytes = None
-            pdf_relpath = None
-            from sales.zreport import build_session_zreport_pdf
-            pdf_bytes = build_session_zreport_pdf(session.id, store_name=_store_name())
+            from sales.zreport import build_zreport_pdf
+            # Render from the freshly-filed snapshot so the backed-up file is
+            # byte-for-byte what re-downloading the shift now would return.
+            pdf_bytes = build_zreport_pdf(_data)
             try:
                 from business.models import BusinessInfo
                 bp = BusinessInfo.get().backup_path
@@ -264,10 +281,36 @@ class SessionViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'])
     def zreport(self, request, pk=None):
-        """Return the session's Z-report PDF (revenue and profit/loss)."""
+        """Return the session's Z-report PDF.
+
+        A shift closed after Z-report snapshots were introduced serves the
+        snapshot that was filed at close, re-rendered from the stored inputs —
+        so the figures are identical to those filed, immune to later refunds
+        or edits. A *legacy* closed shift with no snapshot returns an explicit
+        404 instead of silently recomputing live data and presenting it as
+        filed. An *open* shift serves a live preview (nothing has been filed
+        yet, so live recomputation is the intended behaviour).
+        """
         session = self.get_object()
-        from sales.zreport import build_session_zreport_pdf
-        pdf_bytes = build_session_zreport_pdf(session.id, store_name=_store_name())
+        from sales.zreport import build_session_zreport_pdf, build_zreport_pdf
+        from .models import ZReportSnapshot
+
+        snapshot = ZReportSnapshot.objects.filter(session=session).first()
+        if snapshot is not None:
+            pdf_bytes = build_zreport_pdf(snapshot.summary_data)
+        elif session.status == Session.STATUS_CLOSED:
+            return Response(
+                {
+                    'detail': 'This shift was closed before Z-report snapshots '
+                              'were introduced, so no immutable filed report '
+                              'exists to re-download. It is not recomputed from '
+                              'live data, which may have changed since close.',
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        else:
+            pdf_bytes = build_session_zreport_pdf(session.id, store_name=_store_name())
+
         response = HttpResponse(pdf_bytes, content_type='application/pdf')
         response['Content-Disposition'] = (
             f'attachment; filename="zreport_session_{session.id}.pdf"'
