@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 from products.models import Product
@@ -39,6 +40,49 @@ class CostLayer(models.Model):
 
     class Meta:
         ordering = ['received_at']
+
+    def __str__(self):
+        return f"{self.product} x{self.quantity} @ {self.unit_cost}"
+
+
+class Receipt(models.Model):
+    """An inventory receiving audit record.
+
+    Captures who received stock (``operator``), from which supplier
+    (``supplier``), and when (``received_at``). ``reference`` holds an
+    external identifier (PO number, delivery note) and ``note`` free text.
+    The goods received are recorded on the related :class:`ReceiptLine`
+    rows.
+    """
+
+    supplier = models.ForeignKey('suppliers.Supplier', on_delete=models.PROTECT, related_name='receipts')
+    received_at = models.DateTimeField(default=timezone.now)
+    operator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='receipts')
+    reference = models.CharField(max_length=128, blank=True)  # PO number, delivery note, etc.
+    note = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-received_at']
+
+    def __str__(self):
+        return f"Receipt {self.reference or self.pk} ({self.supplier})"
+
+
+class ReceiptLine(models.Model):
+    """One product line on a :class:`Receipt`.
+
+    ``quantity`` x ``unit_cost`` = line total; no line total is stored, it is
+    always computed from the two fields.
+    """
+
+    receipt = models.ForeignKey(Receipt, on_delete=models.CASCADE, related_name='lines')
+    product = models.ForeignKey('products.Product', on_delete=models.PROTECT, related_name='receipt_lines')
+    quantity = models.IntegerField()
+    unit_cost = models.DecimalField(max_digits=12, decimal_places=2)
+
+    class Meta:
+        ordering = ['receipt', 'id']
 
     def __str__(self):
         return f"{self.product} x{self.quantity} @ {self.unit_cost}"

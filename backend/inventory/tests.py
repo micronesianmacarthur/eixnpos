@@ -1,10 +1,13 @@
+from decimal import Decimal
+
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from rest_framework.test import APIClient
 
 from products.models import Product
+from suppliers.models import Supplier
 
-from .models import StockMovement
+from .models import Receipt, ReceiptLine, StockMovement
 
 User = get_user_model()
 
@@ -177,3 +180,89 @@ class StockMovementProductScopeTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self._rows(response), [])
+
+
+class ReceiptModelTests(TestCase):
+    """Model-level tests for the Receipt/ReceiptLine receiving audit trail."""
+
+    def setUp(self):
+        self.operator = User.objects.create_user(username='recv', password='pw', role='admin')
+        self.supplier = Supplier.objects.create(name='Acme Wholesale')
+        self.product = Product.objects.create(name='Widget', price='10.00')
+
+    def _make_receipt(self, **kwargs):
+        defaults = dict(supplier=self.supplier, operator=self.operator)
+        defaults.update(kwargs)
+        return Receipt.objects.create(**defaults)
+
+    def test_receipt_links_supplier_and_operator(self):
+        receipt = self._make_receipt(reference='PO-1001')
+
+        self.assertEqual(receipt.supplier, self.supplier)
+        self.assertEqual(receipt.operator, self.operator)
+
+    def test_related_names_allow_supplier_and_user_lookup(self):
+        receipt = self._make_receipt(reference='PO-2002')
+
+        self.assertIn(receipt, self.supplier.receipts.all())
+        self.assertIn(receipt, self.operator.receipts.all())
+
+    def test_receipt_ordering_is_newest_first(self):
+        r_old = self._make_receipt()
+        r_new = self._make_receipt()
+        Receipt.objects.filter(pk=r_old.pk).update(received_at='2020-01-01T00:00:00Z')
+        Receipt.objects.filter(pk=r_new.pk).update(received_at='2020-01-02T00:00:00Z')
+
+        self.assertEqual(list(Receipt.objects.all()), [r_new, r_old])
+
+    def test_receipt_defaults_reference_and_note_blank(self):
+        receipt = self._make_receipt()
+
+        self.assertEqual(receipt.reference, '')
+        self.assertEqual(receipt.note, '')
+        self.assertIsNotNone(receipt.created_at)
+
+    def test_receipt_line_links_receipt_and_product_with_qty_and_cost(self):
+        receipt = self._make_receipt(reference='PO-3003')
+        line = ReceiptLine.objects.create(
+            receipt=receipt,
+            product=self.product,
+            quantity=10,
+            unit_cost='4.50',
+        )
+        persisted = ReceiptLine.objects.get(pk=line.pk)
+
+        self.assertEqual(persisted.receipt, receipt)
+        self.assertEqual(persisted.product, self.product)
+        self.assertEqual(persisted.quantity, 10)
+        self.assertEqual(persisted.unit_cost, Decimal('4.50'))
+
+    def test_receipt_line_related_names_allow_lookup(self):
+        receipt = self._make_receipt(reference='PO-4004')
+        line = ReceiptLine.objects.create(
+            receipt=receipt,
+            product=self.product,
+            quantity=2,
+            unit_cost='1.25',
+        )
+
+        self.assertIn(line, receipt.lines.all())
+        self.assertIn(line, self.product.receipt_lines.all())
+
+    def test_receipt_line_cascades_with_receipt(self):
+        receipt = self._make_receipt(reference='PO-5005')
+        ReceiptLine.objects.create(
+            receipt=receipt,
+            product=self.product,
+            quantity=3,
+            unit_cost='2.00',
+        )
+
+        receipt.delete()
+
+        self.assertEqual(ReceiptLine.objects.count(), 0)
+
+    def test_inventory_lookup_smoke(self):
+        self._make_receipt(reference='PO-6006')
+
+        self.assertEqual(Receipt.objects.count(), 1)

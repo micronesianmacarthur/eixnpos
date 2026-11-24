@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import StockMovement
+from .models import Receipt, ReceiptLine, StockMovement
 from accounts.admin_base import RoleAwareModelAdmin
 
 
@@ -10,3 +10,19 @@ class StockMovementAdmin(RoleAwareModelAdmin):
     list_filter = ['movement_type']
     search_fields = ['reference', 'note', 'product__name']
     ordering = ['-created_at']
+
+
+@admin.register(Receipt)
+class ReceiptAdmin(RoleAwareModelAdmin):
+    list_display = ['reference', 'supplier', 'operator', 'received_at', 'created_at']
+    list_filter = ['received_at']
+    search_fields = ['reference', 'note', 'supplier__name', 'operator__username']
+    ordering = ['-received_at']
+    raw_id_fields = ['supplier', 'operator']
+
+
+@admin.register(ReceiptLine)
+class ReceiptLineAdmin(RoleAwareModelAdmin):
+    list_display = ['receipt', 'product', 'quantity', 'unit_cost']
+    search_fields = ['product__name', 'receipt__reference']
+    raw_id_fields = ['receipt', 'product']
