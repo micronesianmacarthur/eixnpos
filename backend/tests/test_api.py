@@ -92,7 +92,7 @@ class ProductApiTests(TestCase):
 
         response = self.client.post(
             f'/api/products/{product.id}/receive/',
-            {'quantity': 5, 'note': 'delivery'},
+            {'quantity': 5, 'note': 'delivery', 'unit_cost': '7.00'},
             format='json',
         )
 
@@ -110,7 +110,7 @@ class ProductApiTests(TestCase):
 
         response = self.client.post(
             f'/api/products/{product.id}/receive/',
-            {'quantity': 2},
+            {'quantity': 2, 'unit_cost': '4.00'},
             format='json',
         )
 

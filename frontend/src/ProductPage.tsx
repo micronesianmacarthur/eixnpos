@@ -355,7 +355,11 @@ export default function ProductPage() {
         if (initialQty > 0) {
           await apiFetch(`/api/products/${saved.id}/receive/`, {
             method: 'POST',
-            body: JSON.stringify({ quantity: initialQty, note: 'Initial stock' }),
+            body: JSON.stringify({
+              quantity: initialQty,
+              unit_cost: payload.cost,
+              note: 'Initial stock',
+            }),
           });
         }
         navigate('/inventory', { replace: true });

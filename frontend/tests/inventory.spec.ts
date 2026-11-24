@@ -218,11 +218,13 @@ async function installApiMocks(
     if (receiveMatch && method === 'POST') {
       const body = (request.postDataJSON() ?? {}) as {
         quantity?: number;
+        unit_cost?: string;
         note?: string;
       };
       const quantity = Number(body.quantity ?? 0);
+      const unit_cost = String(body.unit_cost ?? '');
       const note = String(body.note ?? '');
-      state.receiveRequests.push({ quantity, note });
+      state.receiveRequests.push({ quantity, unit_cost, note });
 
       if (options.receiveError) {
         await route.fulfill(json({ detail: options.receiveError }, 400));
@@ -415,12 +417,13 @@ test('receive-stock modal posts the same payload and refreshes the list', async 
   );
 
   await dialog.getByLabel('Quantity to receive').fill('6');
+  await dialog.getByLabel('Unit cost').fill('0.75');
   await dialog.getByLabel('Note').fill('PO 42');
   await dialog.getByRole('button', { name: 'Confirm receive' }).click();
 
   await expect(dialog).toBeHidden();
   await expect.poll(() => state.receiveRequests.length).toBe(1);
-  expect(state.receiveRequests[0]).toEqual({ quantity: 6, note: 'PO 42' });
+  expect(state.receiveRequests[0]).toEqual({ quantity: 6, unit_cost: '0.75', note: 'PO 42' });
 
   // The list is reloaded after a successful receive.
   expect(state.productsRequests).toBeGreaterThanOrEqual(2);
@@ -446,6 +449,7 @@ test('receive-stock modal shows errors and closes with Escape', async ({
   await expect(dialog).toBeVisible();
 
   await dialog.getByLabel('Quantity to receive').fill('2');
+  await dialog.getByLabel('Unit cost').fill('1.25');
   await dialog.getByRole('button', { name: 'Confirm receive' }).click();
 
   await expect(dialog.getByRole('alert')).toHaveText('Shelf is full');

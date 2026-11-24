@@ -578,6 +578,7 @@ test('creates a product and posts initial stock before returning to inventory', 
   const received = await receiveRequest;
   expect(received.postDataJSON()).toEqual({
     quantity: 5,
+    unit_cost: '6.50',
     note: 'Initial stock',
   });
 
