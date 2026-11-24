@@ -5,12 +5,13 @@ from django.contrib.auth import authenticate
 from django.utils import timezone
 from decimal import Decimal, InvalidOperation
 
-from .models import Sale, SaleLine, Payment
+from .models import Sale, SaleLine, Payment, ImmutableSaleError
 from .serializers import SaleSerializer, SaleLineSerializer, PaymentSerializer
 from .services import TransactionService, CartService, CartError, CartItemNotFoundError, InvalidQuantityError, SaleNotModifiableError, TransactionError, InsufficientPaymentError, InvalidPaymentMethodError
 from products.models import Product
 from customers.models import Customer
 from accounts.utils import is_manager
+from accounts.roles import has_admin_role
 
 
 class SaleViewSet(viewsets.ModelViewSet):
@@ -57,10 +58,34 @@ class SaleViewSet(viewsets.ModelViewSet):
             )
         return None
 
+    def _immutability_guard(self, request, sale):
+        """Reject a PATCH/PUT that would mutate an immutable sale's identity.
+
+        Completed, voided and refunded sales are immutable records. Any payload
+        touching an inviolate field (number, cashier, customer, session, totals)
+        on a non-open sale is rejected regardless of role — there is no
+        correction path through generic update; corrections only happen via the
+        dedicated void/refund actions which write the audit trail. Returns an
+        error Response to short-circuit, or None to allow.
+        """
+        if sale.is_open():
+            return None
+        data_keys = set(request.data.keys()) if hasattr(request.data, 'keys') else set()
+        touched = sorted(sale.INVIOLATE_FIELDS.intersection(data_keys))
+        if touched:
+            return Response(
+                {'detail': f'Cannot change field(s) on a completed sale: {", ".join(touched)}.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return None
+
     def update(self, request, *args, **kwargs):
-        """Update a sale; gate the `cashier` write behind manager authority."""
+        """Update a sale; gate `cashier` (manager) and immutable identity (all)."""
         instance = self.get_object()
         guard = self._reassign_guard(request, instance)
+        if guard is not None:
+            return guard
+        guard = self._immutability_guard(request, instance)
         if guard is not None:
             return guard
         partial = kwargs.pop('partial', False)
@@ -74,6 +99,31 @@ class SaleViewSet(viewsets.ModelViewSet):
     def partial_update(self, request, *args, **kwargs):
         kwargs['partial'] = True
         return self.update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        """Delete a sale is admin-only and open-sale-only.
+
+        Only a hard-delete of an open/pending (draft) sale is ever allowed, and
+        only by admin authority. Completed/corrected sales refuse deletion at
+        the model level (``Sale.delete`` raises ``ImmutableSaleError``) — a
+        completed sale must be voided/refunded, never erased. A non-admin gets
+        403; any attempt to hard-delete an immutable sale gets 400.
+        """
+        if not has_admin_role(request.user):
+            return Response(
+                {'detail': 'Only admins can delete a sale.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        instance = self.get_object()
+        if not instance.is_open():
+            return Response(
+                {'detail': 'Only open (draft) sales can be deleted.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            return super().destroy(request, *args, **kwargs)
+        except ImmutableSaleError as e:
+            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=True, methods=['post'])
     def add_line(self, request, pk=None):
@@ -295,8 +345,7 @@ class SaleViewSet(viewsets.ModelViewSet):
                 from django.db import transaction as db_transaction
                 from django.utils import timezone
                 with db_transaction.atomic():
-                    sale.status = Sale.STATUS_COMPLETED
-                    sale.completed_at = timezone.now()
+                    sale.transition_to(Sale.STATUS_COMPLETED)
                     sale.note = sale.note
                     sale.needs_review = True
                     sale.save(update_fields=['status', 'completed_at', 'note', 'needs_review'])
@@ -339,21 +388,30 @@ class SaleViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def void(self, request, pk=None):
+        """Void an open/pending sale; manager/admin-only, records audit trail."""
+        if not is_manager(request.user):
+            return Response(
+                {'detail': 'Only managers and admins can void a sale.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         sale = self.get_object()
-        if sale.status == Sale.STATUS_COMPLETED:
-            return Response({'detail': 'cannot void completed'}, status=400)
-        if sale.status == Sale.STATUS_REFUNDED:
-            return Response({'detail': 'cannot void refunded'}, status=400)
-        
-        # Use TransactionService to void
+        if not (sale.status == Sale.STATUS_OPEN or sale.status == Sale.STATUS_PENDING):
+            return Response(
+                {'detail': 'Only open/pending sales can be voided.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        reason = request.data.get('reason', '')
+        # Use TransactionService to void (writes voided_by/voided_at/void_reason
+        # atomically with the status change).
         try:
             ts = TransactionService()
             ts._current_sale = sale
             ts._cart = CartService(sale)
-            ts.void_sale()
-        except TransactionError as e:
+            sale = ts.void_sale(by=request.user, reason=reason)
+        except (TransactionError, ImmutableSaleError) as e:
             return Response({'detail': str(e)}, status=400)
-        
+
         return Response(SaleSerializer(sale).data)
 
     @action(detail=True, methods=['post'])
@@ -382,7 +440,8 @@ class SaleViewSet(viewsets.ModelViewSet):
             refunded_sale = ts.refund_sale(
                 sale_id=sale.id,
                 reason=reason,
-                manager_approved=manager_approved
+                manager_approved=manager_approved,
+                by=request.user,
             )
         except TransactionError as e:
             return Response({'detail': str(e)}, status=400)

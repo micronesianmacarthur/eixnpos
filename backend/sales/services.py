@@ -18,7 +18,7 @@ from inventory.models import StockMovement
 from products.models import Product
 from customers.models import Customer
 
-from .models import Sale, SaleLine, Payment
+from .models import Sale, SaleLine, Payment, ImmutableSaleError
 from .payments import (
     PaymentMethod,
     PaymentProcessor,
@@ -580,8 +580,7 @@ class TransactionService:
 
         # Complete the sale - create stock movements
         with db_transaction.atomic():
-            sale.status = Sale.STATUS_COMPLETED
-            sale.completed_at = timezone.now()
+            sale.transition_to(Sale.STATUS_COMPLETED)
             sale.save(update_fields=['status', 'completed_at'])
 
             # Create stock movements for each stock product only
@@ -641,8 +640,7 @@ class TransactionService:
 
         # Complete the sale - create stock movements
         with db_transaction.atomic():
-            sale.status = Sale.STATUS_COMPLETED
-            sale.completed_at = timezone.now()
+            sale.transition_to(Sale.STATUS_COMPLETED)
             sale.save(update_fields=['status', 'completed_at'])
 
             # Create stock movements for each stock product only
@@ -662,31 +660,45 @@ class TransactionService:
 
         return sale
 
-    def void_sale(self) -> Sale:
+    def void_sale(
+        self,
+        *,
+        by=None,
+        reason: str = '',
+    ) -> Sale:
         """
         Void the current sale.
 
-        Only allowed for open/pending sales. No stock movements created.
+        Only allowed for open/pending sales, and only by manager/admin
+        authority (*by* is the operator). The audit trail (voided_by, voided_at,
+        void_reason) is written in the same atomic update as the status change,
+        so a voided sale always carries a complete, unfabricatable record.
+        No stock movements were created for an open sale, so nothing to reverse.
 
         Returns:
             The voided Sale
 
         Raises:
-            TransactionError: If no sale in progress or sale is completed
+            TransactionError: If no sale in progress or sale is not voidable.
+            ImmutableSaleError: If the status transition is not permitted.
         """
         if not self._current_sale:
             raise TransactionError('No sale in progress. Call start_sale() first.')
 
         sale = self._current_sale
 
-        if sale.status == Sale.STATUS_COMPLETED:
-            raise TransactionError('Cannot void a completed sale')
+        if not sale.is_open():
+            raise TransactionError(
+                f'Only open/pending sales can be voided, current status: {sale.status}'
+            )
 
-        if sale.status == Sale.STATUS_REFUNDED:
-            raise TransactionError('Cannot void a refunded sale')
-
-        sale.status = Sale.STATUS_VOIDED
-        sale.save(update_fields=['status'])
+        with db_transaction.atomic():
+            sale.transition_to(
+                Sale.STATUS_VOIDED,
+                by=by,
+                reason=reason,
+            )
+            sale.save(update_fields=['status', 'voided_by', 'voided_at', 'void_reason'])
 
         self._current_sale = None
         self._cart = None
@@ -698,7 +710,9 @@ class TransactionService:
         sale_id: int,
         reason: str = '',
         manager_approved: bool = False,
-        manager_credentials: Optional[Dict[str, str]] = None
+        manager_credentials: Optional[Dict[str, str]] = None,
+        *,
+        by=None,
     ) -> Sale:
         """
         Refund a completed sale.
@@ -740,9 +754,11 @@ class TransactionService:
 
         # Process refund - create reverse stock movements
         with db_transaction.atomic():
-            sale.status = Sale.STATUS_REFUNDED
-            sale.refunded_at = timezone.now()
-            sale.save(update_fields=['status', 'refunded_at'])
+            sale.transition_to(
+                Sale.STATUS_REFUNDED,
+                by=by,
+            )
+            sale.save(update_fields=['status', 'refunded_at', 'refunded_by'])
 
             # Create reverse stock movements (positive quantity for return)
             for line in sale.lines.all():

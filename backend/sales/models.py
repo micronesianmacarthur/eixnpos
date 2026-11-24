@@ -1,9 +1,78 @@
-from django.db import models
+from django.db import models, transaction, IntegrityError
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from decimal import Decimal
 
 User = get_user_model()
+
+# Maximum bounded-retry attempts for allocating a unique sale number.
+NUMBER_ALLOCATION_ATTEMPTS = 10
+
+
+class SaleNumberError(Exception):
+    """Raised when a unique sale number cannot be allocated after retry."""
+
+
+class ImmutableSaleError(Exception):
+    """Raised when a completed/corrected sale is mutated or hard-deleted.
+
+    Completed, voided and refunded sales are immutable records: they cannot be
+    hard-deleted nor have their identity fields (number, customer, cashier,
+    session) changed through any ORM path. Status changes must go through the
+    controlled ``transition_to`` whitelist rather than direct field writes.
+    """
+
+
+class SaleNumberSequence(models.Model):
+    """Single-row monotonic high-water mark for ``Sale.number``.
+
+    Keeps the "last allocated number" independent of the ``sales_sale`` table,
+    so deleting the max-numbered sale never frees that number for reuse, and
+    (together with the DB ``unique`` constraint on ``Sale.number`` and the
+    bounded retry in ``Sale.save``) guarantees unique numbers even under
+    concurrent creates.
+
+    The row must have id=1; the data migration seeds it to the max existing
+    sale number (0 for an empty table).
+    """
+
+    id = models.PositiveIntegerField(primary_key=True)  # forced to 1
+    last_value = models.PositiveBigIntegerField(default=0)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(id=1),
+                name='single_sale_number_sequence_row',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(last_value__gte=0),
+                name='sale_number_sequence_non_negative',
+            ),
+        ]
+
+    def allocate_next(self) -> int:
+        """Atomically increment and return the next sale number.
+
+        Locked read+write on the single sequence row so concurrent allocators
+        observe a strictly increasing value. (``select_for_update`` is a no-op
+        on SQLite, which serializes writes anyway; on PostgreSQL it takes a
+        real row lock.)
+        """
+        for _ in range(NUMBER_ALLOCATION_ATTEMPTS):
+            try:
+                with transaction.atomic():
+                    try:
+                        seq = SaleNumberSequence.objects.select_for_update().get(pk=1)
+                    except SaleNumberSequence.DoesNotExist:
+                        seq = SaleNumberSequence.objects.create(pk=1, last_value=0)
+                    seq.last_value += 1
+                    seq.save(update_fields=['last_value'])
+                    return seq.last_value
+            except IntegrityError:
+                # Concurrent writer beat us to the increment; retry.
+                continue
+        raise SaleNumberError('Could not allocate a unique sale number after retry')
 
 
 class Sale(models.Model):
@@ -43,17 +112,133 @@ class Sale(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     refunded_at = models.DateTimeField(null=True, blank=True)
+    # Audit trail for voiding. voided_by / voided_at / void_reason are written
+    # by the service layer in the same atomic update that flips the sale to
+    # voided; they are immutable once set, so a client can never fabricate an
+    # audit record after the fact. refunded_by mirrors refunded_at for symmetry.
+    voided_by = models.ForeignKey(
+        User, related_name='voided_sales',
+        null=True, blank=True, on_delete=models.PROTECT,
+    )
+    voided_at = models.DateTimeField(null=True, blank=True)
+    void_reason = models.TextField(blank=True)
+    refunded_by = models.ForeignKey(
+        User, related_name='refunded_sales',
+        null=True, blank=True, on_delete=models.PROTECT,
+    )
     note = models.TextField(blank=True)
     needs_review = models.BooleanField(default=False)
 
     class Meta:
         ordering = ['-created_at']
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(voided_at__isnull=True) | models.Q(status='voided'),
+                name='voided_at_implies_voided_status',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(refunded_at__isnull=True) | models.Q(status='refunded'),
+                name='refunded_at_implies_refunded_status',
+            ),
+        ]
+
+    # Fields that (once a sale leaves open/pending) may never change through any
+    # write path: they form the sale's immutable identity.
+    INVIOLATE_FIELDS = frozenset({
+        'number', 'cashier', 'customer', 'session',
+        'subtotal', 'discount_total', 'tax_total', 'total',
+    })
 
     def save(self, *args, **kwargs):
         if not self.number:
-            last = Sale.objects.order_by('-number').first()
-            self.number = (last.number + 1) if last else 1
+            self.number = self._allocate_number()
         super().save(*args, **kwargs)
+
+    def _allocate_number(self) -> int:
+        """Allocate a unique, never-reused sale number.
+
+        Uses the single-row SaleNumberSequence high-water mark; never frees a
+        number on deletion. Number is immutable once assigned to a sale.
+        """
+        return SaleNumberSequence().allocate_next()
+
+    def is_immutable(self) -> bool:
+        """A sale is immutable once it leaves the open/pending state."""
+        return not self.is_open()
+
+    def delete(self, *args, **kwargs):
+        """Refuse to hard-delete a completed, voided, or refunded sale.
+
+        Completed/corrected sales are immutable accounting records. Only
+        open/pending (draft) sales may be hard-deleted; a completed sale must
+        be voided/refunded (which records an audit trail), never erased.
+        """
+        if self.is_immutable():
+            raise ImmutableSaleError(
+                f'Cannot hard-delete sale #{self.number}: status is '
+                f'{self.status} (only open/pending sales may be deleted).'
+            )
+        return super().delete(*args, **kwargs)
+
+    def check_inviolate_fields(self, payload):
+        """Raise if *payload* would mutate an inviolate field on this sale.
+
+        *payload* is a mapping of candidate field names. Only enforced once the
+        sale is immutable (status outside open/pending).
+        """
+        if not self.is_immutable():
+            return
+        touched = sorted(self.INVIOLATE_FIELDS.intersection(payload.keys()))
+        if touched:
+            raise ImmutableSaleError(
+                f'Cannot change field(s) on a completed sale: {", ".join(touched)}.'
+            )
+
+    def transition_to(
+        self,
+        new_status: str,
+        *,
+        by: 'User' = None,
+        reason: str = '',
+    ) -> 'Sale':
+        """Transition the sale via the controlled status whitelist.
+
+        This is the ONLY sanctioned way to change ``status`` once a sale is
+        immutable, and it records the corresponding audit fields atomically in
+        the caller's transaction.
+
+        Allowed transitions:
+            pending/open  -> completed | voided
+            completed     -> refunded
+            voided/refunded are terminal.
+        """
+        allowed = self._allowed_transitions().get(self.status, set())
+        if new_status not in allowed:
+            raise ImmutableSaleError(
+                f'Illegal status transition {self.status} -> {new_status}.'
+            )
+        self.status = new_status
+        now = timezone.now()
+        if new_status == self.STATUS_COMPLETED:
+            self.completed_at = now
+        elif new_status == self.STATUS_VOIDED:
+            self.voided_at = now
+            self.voided_by = by
+            self.void_reason = reason
+        elif new_status == self.STATUS_REFUNDED:
+            self.refunded_at = now
+            self.refunded_by = by
+        return self
+
+    @classmethod
+    def _allowed_transitions(cls):
+        return {
+            cls.STATUS_PENDING: {cls.STATUS_COMPLETED, cls.STATUS_VOIDED},
+            cls.STATUS_OPEN: {cls.STATUS_COMPLETED, cls.STATUS_VOIDED},
+            cls.STATUS_COMPLETED: {cls.STATUS_REFUNDED},
+            cls.STATUS_VOIDED: set(),
+            cls.STATUS_REFUNDED: set(),
+        }
 
     def recompute(self, tax_rate: Decimal = Decimal('0')):
         """Recalculate sale totals from line items.

@@ -632,16 +632,29 @@ class SaleApiTests(TestCase):
 
     def test_void_open_sale_has_no_stock_side_effects(self):
         sale = self.make_sale_with_line(quantity=2)
+        self.client.force_authenticate(self.manager)
 
         response = self.client.post(f'/api/sales/{sale.id}/void/')
 
         self.assertEqual(response.status_code, 200)
         sale.refresh_from_db()
         self.assertEqual(sale.status, Sale.STATUS_VOIDED)
+        self.assertIsNotNone(sale.voided_by)
+        self.assertIsNotNone(sale.voided_at)
         self.assertFalse(StockMovement.objects.filter(movement_type='sale').exists())
+
+    def test_cashier_cannot_void_a_sale(self):
+        sale = self.make_sale_with_line(quantity=2)
+
+        response = self.client.post(f'/api/sales/{sale.id}/void/')
+
+        self.assertEqual(response.status_code, 403)
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, Sale.STATUS_OPEN)
 
     def test_void_completed_sale_is_rejected(self):
         sale = self.make_sale(status=Sale.STATUS_COMPLETED)
+        self.client.force_authenticate(self.manager)
 
         response = self.client.post(f'/api/sales/{sale.id}/void/')
 
@@ -655,6 +668,94 @@ class SaleApiTests(TestCase):
         response = anonymous.get('/api/sales/')
 
         self.assertIn(response.status_code, (401, 403))
+
+    def test_cashier_cannot_delete_a_sale(self):
+        sale = self.make_sale_with_line()
+
+        response = self.client.delete(f'/api/sales/{sale.id}/')
+
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(Sale.objects.filter(pk=sale.pk).exists())
+
+    def test_admin_can_delete_an_open_sale(self):
+        admin = User.objects.create_user(
+            username='administrator', password='pw', role='admin'
+        )
+        sale = self.make_sale_with_line()
+        self.client.force_authenticate(admin)
+
+        response = self.client.delete(f'/api/sales/{sale.id}/')
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Sale.objects.filter(pk=sale.pk).exists())
+
+    def test_completed_sale_cannot_be_deleted(self):
+        admin = User.objects.create_user(
+            username='administrator', password='pw', role='admin'
+        )
+        sale = self.make_sale(status=Sale.STATUS_COMPLETED)
+        self.client.force_authenticate(admin)
+
+        response = self.client.delete(f'/api/sales/{sale.id}/')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(Sale.objects.filter(pk=sale.pk).exists())
+
+    def test_customer_immutable_on_completed_sale(self):
+        sale = self.make_sale(status=Sale.STATUS_COMPLETED)
+
+        response = self.client.patch(
+            f'/api/sales/{sale.id}/',
+            {'customer': self.customer.id},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        sale.refresh_from_db()
+        self.assertIsNone(sale.customer)
+
+    def test_customer_immutable_on_voided_sale(self):
+        sale = self.make_sale(status=Sale.STATUS_VOIDED)
+
+        response = self.client.patch(
+            f'/api/sales/{sale.id}/',
+            {'customer': self.customer.id},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        sale.refresh_from_db()
+        self.assertIsNone(sale.customer)
+
+    def test_refund_records_refunded_by_and_reverses_stock(self):
+        manager = User.objects.create_user(
+            username='refundmgr', password='pw', role='manager'
+        )
+        sale = self.make_sale_with_line(quantity=2)
+        StockMovement.objects.create(
+            product=self.product, movement_type='receive', quantity=10
+        )
+        # Complete the sale to create a sale movement.
+        self.client.force_authenticate(manager)
+        self.client.post(f'/api/sales/{sale.id}/complete/')
+        self.assertEqual(
+            StockMovement.objects.filter(movement_type='sale').count(), 1
+        )
+
+        response = self.client.post(
+            f'/api/sales/{sale.id}/refund/',
+            {'reason': 'customer return'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, Sale.STATUS_REFUNDED)
+        self.assertEqual(sale.refunded_by, manager)
+        # Reverse stock movement written.
+        self.assertEqual(
+            StockMovement.objects.filter(movement_type='adjustment').count(), 1
+        )
 
 
 class CashCountTests(SimpleTestCase):
