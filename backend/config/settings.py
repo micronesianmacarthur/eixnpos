@@ -26,6 +26,7 @@ INSTALLED_APPS = [
     'sales',
     'sessions',
     'backups',
+    'dashboard',
 
 ]
 
