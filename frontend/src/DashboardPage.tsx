@@ -53,9 +53,6 @@ export default function DashboardPage() {
     setLoading(true);
     setTodayError(null);
     setSessionError(null);
-    setLastUpdatedAt(
-      (prev) => prev ?? new Date().toISOString(),
-    );
     apiFetch<DashboardOverview>('/api/dashboard/')
       .then((data) => {
         setOverview(data);

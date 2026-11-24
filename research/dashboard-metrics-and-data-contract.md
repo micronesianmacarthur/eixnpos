@@ -324,7 +324,7 @@ The dashboard page lives at `/` (the authenticated app landing; **see the S5 rou
    - `Low stock` (number; hint `items at/below threshold`)
    Each tile is clickable → drills down to the matching filter/chart. **Failed composites render an em-dash `—`, never a misleading `0`, in the affected tile** (S7).
 3. **Chart.** Monthly revenue bar chart (primary y). Optional secondary axis = `avg_basket`. M/M change shown as a small annotated table or a third series. Zero/negative revenue months render as a visible "0" axis tick, never as a missing bar.
-4. **Top items.** Tabs for `Today / Week / Month`. Table with `Rank | Product | Units | Revenue | Avg unit price`. "N more" affordance when `total_items > 5`. **Tabs use roving-tabindex with arrow/Home/End keyboard navigation and the tab panel is `aria-labelledby` the active tab** (S9).
+4. **Top items.** Tabs for `Today / Week / Month`. Table with `Rank | Product | Units | Revenue | Avg unit price`. "N more" affordance when `total_items > 5`. **Tabs use roving-tabindex with arrow/Home/End keyboard navigation; the tab panel is `aria-labelledby` the panel's section heading (`top-items-title`), not the active tab** (S9).
 5. **Low-stock panel.** List of `Product | Stock | Min` rows, sorted ascending by stock. Header shows count. Empty state: `"No items below threshold"`. The 5th `Low stock` KPI tile scrolls to the low-stock panel on drill-down (S9).
 6. **Session card.** Shows the current open shift(s) for the business day, scoped by caller tier (§4.5). When `open:false`: `"No open shift — open a register to start selling"`. When exactly one shift is open: `"Open since <opened_at_local> · Register <register_name> · Opener <opened_by.username> · Starting cash $X"`. When multiple shifts are open (manager sees all registers): a summary header `"<N> open shifts · Across <N> registers"` plus one row per register — `"Open since <opened_at_local> · Register <register_name> · Opener <opened_by.username> · Starting cash $X"`. Each row may also list the register's `cashiers` (assigned user names). All `opened_at_local` rendering passes `businessTimezone` to `formatDateTime(value, businessTimezone)` (S2).
 7. **Empty states (by view).**
@@ -335,7 +335,7 @@ The dashboard page lives at `/` (the authenticated app landing; **see the S5 rou
    - No open session → `"No open shift"`.
    All empty states use the `mm-empty` / `mm-muted` design tokens (consistent with the existing `SalesManagerEmpty`).
 8. **Formatting.** All money via `Intl.NumberFormat('en-US', {style:'currency', currency:'USD'})`. All dates via the business-local timezone passed to `formatDateTime(value, businessTimeZone)` (S2). The client must never round a money value; it only formats it.
-9. **Stale data.** `DashboardPage` auto-refreshes every 30s and shows a "Data from <time>" pill plus a manual Refresh button (S6). If no server refresh arrives within 30s, the pill reads "Data may be stale" and clicking it re-requests the endpoints.
+9. **Stale data.** `DashboardPage` auto-refreshes every 30s and shows a "Data from <time>" pill — always the server's `generated_at` from the last successful composite payload — plus a separate manual Refresh button (S6). Until the first successful load the pill reads "Data not yet loaded"; it does **not** ever show a client-clock timestamp, and there is no stale-transition copy or clickable pill (the server timestamp is simply kept across a later failed refresh).
 
 ## 9. Acceptance tests (how we verify the contract)
 

@@ -342,6 +342,36 @@ describe('DashboardPage — stale-data pill and refresh (S6)', () => {
     await userEvent.click(refresh)
     expect(mockedFetch).toHaveBeenCalledWith('/api/dashboard/')
   })
+
+  it('does not stamp a client clock on first-load failure, then updates on a successful refresh (F1)', async () => {
+    let mainCalls = 0
+    // The composite and the backup panel each make a call; only the composite
+    // fails on the first load, then succeeds on the manual refresh.
+    mockedFetch.mockImplementation((path: string) => {
+      if (path === '/api/dashboard/') {
+        mainCalls += 1
+        return mainCalls === 1
+          ? Promise.reject(new ApiError('Server error', 500, undefined))
+          : Promise.resolve(overview())
+      }
+      // /api/dashboard/backup/ — not under test, just keep it harmless.
+      return Promise.resolve(overview())
+    })
+    render(<DashboardPage />)
+
+    // First load rejects: the pill must NOT claim a server timestamp it never
+    // received — a client-clock "Data from <now>" would be fabricated.
+    expect(await screen.findByText('Server error')).toBeInTheDocument()
+    expect(screen.queryByText(/Data from/)).not.toBeInTheDocument()
+    expect(screen.getByText('Data not yet loaded')).toBeInTheDocument()
+
+    // A later successful refresh fills in the honest, server-provided time.
+    const stale = (screen.getByText('Data not yet loaded').closest(
+      '.dashboard-stale',
+    )) as HTMLElement
+    await userEvent.click(within(stale).getByRole('button', { name: 'Refresh' }))
+    expect(await screen.findByText(/Data from/)).toBeInTheDocument()
+  })
 })
 
 describe('DashboardPage — low-stock KPI tile drill-down (S9)', () => {
