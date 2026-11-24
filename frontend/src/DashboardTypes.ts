@@ -59,6 +59,8 @@ export interface DashboardSession {
 export interface DashboardOverview {
   business_day: string;
   generated_at: string;
+  /** IANA name of the business's configured timezone (contract §3.2 / S2). */
+  business_timezone: string;
   period: { scope: string; start: string; end: string };
   today: TodayKpi;
   session: DashboardSession;

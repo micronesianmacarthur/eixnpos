@@ -15,11 +15,14 @@ export function SessionSummaryCard({
   loading,
   error,
   onRetry,
+  businessTimezone,
 }: {
   session: DashboardSession | null;
   loading: boolean;
   error: string | null;
   onRetry: () => void;
+  /** IANA zone name used to format the "open since" wall clock (S2). */
+  businessTimezone?: string | null;
 }) {
   if (error && !session) {
     return (
@@ -83,7 +86,7 @@ export function SessionSummaryCard({
     );
   }
 
-  const openedLabel = formatDateTime(session.started_at_local);
+  const openedLabel = formatDateTime(session.started_at_local, businessTimezone);
   return (
     <section className="mm-card dashboard-session">
       <div className="dashboard-session-header">

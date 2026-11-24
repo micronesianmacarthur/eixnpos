@@ -12,6 +12,7 @@ export function KpiCard({
   tone = 'mm-icon-tile--info',
   testId,
   loading,
+  onClick,
 }: {
   label: string;
   value: string;
@@ -20,9 +21,11 @@ export function KpiCard({
   tone?: string;
   testId: string;
   loading: boolean;
+  /** When set, the tile renders as a button (drill-down target, S9). */
+  onClick?: () => void;
 }) {
-  return (
-    <article className={`mm-card dashboard-kpi${loading ? ' dashboard-kpi--loading' : ''}`}>
+  const inner = (
+    <>
       <span className={`mm-icon-tile ${tone}`}>
         <Icon name={icon} size={22} />
       </span>
@@ -45,23 +48,51 @@ export function KpiCard({
         <span className="dashboard-kpi-label">{label}</span>
         <span className="dashboard-kpi-hint">{hint}</span>
       </div>
-    </article>
+    </>
   );
+
+  const className = `mm-card dashboard-kpi${loading ? ' dashboard-kpi--loading' : ''}`;
+  if (onClick && !loading) {
+    return (
+      <button
+        type="button"
+        className={`${className} dashboard-kpi--link`}
+        onClick={onClick}
+        aria-label={`${label}: ${value}. ${hint}`}
+      >
+        {inner}
+      </button>
+    );
+  }
+  return <article className={className}>{inner}</article>;
 }
 
 /**
- * The headline KPI row: sales today, revenue today, cash sales today, and
- * invoices issued with their total. Each tile shows a skeleton while `loading`
- * is true.
+ * The headline KPI row: sales today, revenue today, cash sales today, invoices
+ * issued (count + total), and low stock. Each tile shows a skeleton while
+ * `loading`. On a failed composite (`error && !today`) tiles render "—" so an
+ * operator never mistakes a load failure for a quiet trading day (S7).
+ *
+ * `lowStockCount` / `onLowStockClick` power the 5th tile's drill-down (S9):
+ * clicking it scrolls the page to the low-stock panel.
  */
 export function DashboardKpiRow({
   today,
   loading,
+  error = null,
+  lowStockCount,
+  onLowStockClick,
 }: {
   today: TodayKpi | null;
   loading: boolean;
+  error?: string | null;
+  lowStockCount?: number;
+  onLowStockClick?: () => void;
 }) {
   const money = (v?: string) => (typeof v === 'string' && v ? formatMoney(v) : undefined);
+  const failed = Boolean(error) && !today && !loading;
+  // On failure the tiles must read "unknown", never "0 sales today".
+  const dash = failed ? '—' : '';
 
   // Invoice tile shows "count · total" when the count is positive; a zero
   // count shows just the count with the "no invoices issued" hint text.
@@ -69,6 +100,8 @@ export function DashboardKpiRow({
     today && today.invoice_count > 0
       ? `${today.invoice_count} · ${money(today.invoice_total)}`
       : `${today?.invoice_count ?? 0}`;
+
+  const lowStockValue = today ? `${lowStockCount ?? 0}` : dash;
 
   return (
     <div
@@ -79,7 +112,7 @@ export function DashboardKpiRow({
       <KpiCard
         testId="kpi-sales-today"
         label="Sales"
-        value={loading ? '' : `${today?.sales_count ?? 0}`}
+        value={loading ? '' : failed ? dash : `${today?.sales_count ?? 0}`}
         hint="completed sales today"
         icon="sales"
         tone="mm-icon-tile--info"
@@ -88,7 +121,7 @@ export function DashboardKpiRow({
       <KpiCard
         testId="kpi-revenue-today"
         label="Revenue"
-        value={loading ? '' : money(today?.revenue) ?? '$0.00'}
+        value={loading ? '' : failed ? dash : money(today?.revenue) ?? '$0.00'}
         hint="today's completed sales"
         icon="sales-manager"
         tone="mm-icon-tile--success"
@@ -97,7 +130,7 @@ export function DashboardKpiRow({
       <KpiCard
         testId="kpi-cash-today"
         label="Cash sales"
-        value={loading ? '' : money(today?.cash_sales) ?? '$0.00'}
+        value={loading ? '' : failed ? dash : money(today?.cash_sales) ?? '$0.00'}
         hint="cash payments today"
         icon="sparkles"
         tone="mm-icon-tile--warning"
@@ -106,7 +139,7 @@ export function DashboardKpiRow({
       <KpiCard
         testId="kpi-invoices-today"
         label="Invoices"
-        value={loading ? '' : invoiceValue}
+        value={loading ? '' : failed ? dash : invoiceValue}
         hint={
           loading || !today || today.invoice_count === 0
             ? 'no invoice payments today'
@@ -115,6 +148,16 @@ export function DashboardKpiRow({
         icon="customers"
         tone="mm-icon-tile--secondary"
         loading={loading}
+      />
+      <KpiCard
+        testId="kpi-low-stock"
+        label="Low stock"
+        value={loading ? '' : lowStockValue}
+        hint="items at/below threshold"
+        icon="inventory"
+        tone="mm-icon-tile--danger"
+        loading={loading}
+        onClick={onLowStockClick}
       />
     </div>
   );

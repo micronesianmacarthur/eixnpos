@@ -18,12 +18,16 @@ export interface LoginResponse {
    */
   must_change_password?: boolean;
   business_info_complete: boolean;
+  /** IANA name of the business's configured timezone (default 'UTC'). */
+  business_timezone?: string;
 }
 
 export interface MeResponse {
   user: CurrentUser;
   must_change_password: boolean;
   business_info_complete: boolean;
+  /** IANA name of the business's configured timezone (default 'UTC'). */
+  business_timezone?: string;
 }
 
 export interface AuthContextValue {

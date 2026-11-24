@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   fetchTopItems,
   formatMoney,
@@ -30,6 +30,9 @@ export default function TopItemsPanel({
   const [data, setData] = useState<TopItemsPayload | null>(initialData ?? null);
   const [loading, setLoading] = useState(!initialData);
   const [error, setError] = useState('');
+  // When this id changes, we move DOM focus to the corresponding tab so arrow
+  // keys follow the roving-tabindex pattern (a11y, S9).
+  const focusedScope = useRef<TopScope | null>(null);
 
   const load = useCallback(
     async (target: TopScope) => {
@@ -59,6 +62,46 @@ export default function TopItemsPanel({
     // A user switching scope always fetches — even in seeded (test) mode,
     // where only the initial render is supplied without a network call.
     void load(next);
+  };
+
+  // Roving tabindex (WAI-ARIA tabs pattern): ArrowLeft/Right move focus
+  // (without activating) between tabs; Home/End jump to ends. The focused tab
+  // carries tabIndex 0 and receives DOM focus (a11y, S9).
+  const tabRefs = useRef<Record<TopScope, HTMLButtonElement | null>>({
+    today: null,
+    week: null,
+    month: null,
+  });
+
+  useEffect(() => {
+    if (focusedScope.current) {
+      tabRefs.current[focusedScope.current]?.focus();
+      focusedScope.current = null;
+    }
+  }, [scope]);
+
+  const onTabKeyDown = (e: React.KeyboardEvent, value: TopScope) => {
+    const index = TOP_SCOPES.indexOf(value);
+    if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      const next = TOP_SCOPES[(index + 1) % TOP_SCOPES.length];
+      focusedScope.current = next;
+      switchScope(next); // selection follows focus (WAI-ARIA automatic activation)
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      const next = TOP_SCOPES[(index - 1 + TOP_SCOPES.length) % TOP_SCOPES.length];
+      focusedScope.current = next;
+      switchScope(next);
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      focusedScope.current = TOP_SCOPES[0];
+      switchScope(TOP_SCOPES[0]);
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      const last = TOP_SCOPES[TOP_SCOPES.length - 1];
+      focusedScope.current = last;
+      switchScope(last);
+    }
   };
 
   const headingLabel = `Top items — ${TOP_SCOPE_LABELS[scope]}`;
@@ -162,8 +205,13 @@ export default function TopItemsPanel({
                 role="tab"
                 aria-selected={selected}
                 aria-controls="top-items-panel"
+                tabIndex={selected ? 0 : -1}
+                ref={(el) => {
+                  tabRefs.current[value] = el;
+                }}
                 className={`dashboard-tab${selected ? ' is-active' : ''}`}
                 onClick={() => switchScope(value)}
+                onKeyDown={(e) => onTabKeyDown(e, value)}
               >
                 {TOP_SCOPE_LABELS[value]}
               </button>
@@ -171,7 +219,11 @@ export default function TopItemsPanel({
           })}
         </div>
       </header>
-      <div id="top-items-panel" role="tabpanel">
+      <div
+        id="top-items-panel"
+        role="tabpanel"
+        aria-labelledby="top-items-title"
+      >
         {content}
       </div>
     </section>

@@ -128,15 +128,32 @@ function formatMoney(value: string | number): string {
   return currency.format(toNumber(value));
 }
 
-function isToday(isoDate: string): boolean {
+/**
+ * Serialize a date as `YYYY-MM-DD` in the given IANA timezone.
+ * Without a zone argument it falls back to the host's own zone (which the old
+ * browser-clock bug used); callers pass `me.business_timezone` (S5).
+ */
+function ymdInZone(instant: Date | string, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(instant));
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '00';
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}
+
+/**
+ * True when the ISO instant falls on the business-local calendar date of
+ * "now" — i.e. same `YYYY-MM-DD` in the business timezone. This replaces the
+ * old browser-clock comparison so `/sales-manager` and the `/` dashboard agree
+ * on what day it is regardless of the viewer's timezone (S5, contract §3.4).
+ */
+function isToday(isoDate: string, timeZone: string): boolean {
   const date = new Date(isoDate);
   if (Number.isNaN(date.getTime())) return false;
-  const now = new Date();
-  return (
-    date.getFullYear() === now.getFullYear() &&
-    date.getMonth() === now.getMonth() &&
-    date.getDate() === now.getDate()
-  );
+  return ymdInZone(isoDate, timeZone) === ymdInZone(new Date(), timeZone);
 }
 
 /** Local date as `YYYY-MM-DD` (matches the `<input type="date">` value format). */
@@ -1007,6 +1024,7 @@ function Toasts({
 
 export default function SalesManagerPage({ initialSales }: SaleManagerPageProps) {
   const { me } = useAuth();
+  const businessTimezone = me?.business_timezone || 'UTC';
   const [searchParams, setSearchParams] = useSearchParams();
 
   const seeded = initialSales !== undefined;
@@ -1161,13 +1179,13 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
   const kpis = useMemo(() => {
     const open = sales.filter((s) => OPEN_STATUSES.includes(s.status));
     const completedToday = sales.filter(
-      (s) => s.status === 'completed' && isToday(s.created_at),
+      (s) => s.status === 'completed' && isToday(s.created_at, businessTimezone),
     );
     const revenue = completedToday.reduce((sum, s) => sum + toNumber(s.total), 0);
     const avgBasket = completedToday.length > 0 ? revenue / completedToday.length : 0;
     const review = sales.filter((s) => s.needs_review).length;
     return { open: open.length, revenue, avgBasket, review };
-  }, [sales]);
+  }, [sales, businessTimezone]);
 
   const statuses = useMemo(
     () => statusFilter.split(',').filter(Boolean),

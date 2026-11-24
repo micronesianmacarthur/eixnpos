@@ -14,7 +14,7 @@
 
 .dashboard-kpis {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 16px;
 }
 
@@ -23,6 +23,26 @@
   align-items: flex-start;
   gap: 14px;
   padding: 18px 20px;
+}
+
+/* Drill-down KPI tile renders as a focusable button (S9). */
+.dashboard-kpi--link {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.dashboard-kpi--link:hover {
+  border-color: var(--mm-border-strong);
+}
+
+.dashboard-kpi--link:focus-visible {
+  outline: 2px solid var(--mm-focus-ring, var(--mm-primary));
+  outline-offset: 2px;
 }
 
 .dashboard-kpi-text {
@@ -135,13 +155,44 @@
 
 @media (max-width: 1023px) {
   .dashboard-kpis {
+    display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
   }
 }
 
 @media (max-width: 520px) {
   .dashboard-kpis {
+    display: grid;
     grid-template-columns: 1fr;
     gap: 12px;
   }
 }
+
+/* Empty-sales banner (S9) ------------------------------------------------ */
+
+.dashboard-empty-sales {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+/* Stale-data pill + refresh (S6) ------------------------------------------ */
+
+.dashboard-stale {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.dashboard-stale-copy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--mm-text-muted);
+  font-size: 13px;
+}
+
