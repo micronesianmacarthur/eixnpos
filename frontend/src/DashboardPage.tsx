@@ -97,7 +97,7 @@ export default function DashboardPage() {
           )}
 
           <SessionSummaryCard
-            session={session ?? null}
+            session={session}
             loading={loading && !overview}
             error={sessionError}
             onRetry={load}
