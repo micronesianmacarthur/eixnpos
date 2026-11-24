@@ -157,3 +157,29 @@ export function fetchMonthly(months = 12): Promise<MonthlyPayload> {
 export function fetchLowStock(): Promise<LowStockPayload> {
   return apiFetch<LowStockPayload>('/api/dashboard/inventory/low-stock/');
 }
+
+/* ----------------------------------------------------------------------- */
+/* — Backups (contract §4.7 / §5.8)                                        */
+/* ----------------------------------------------------------------------- */
+
+/** GET /api/dashboard/backup/ — last-backup status (§5.8). */
+export interface BackupStatus {
+  /** Whether a backup destination is configured (``BusinessInfo.backup_path``). */
+  backup_path_configured: boolean;
+  /** ISO-8601 UTC instant the newest backup was written, or null. */
+  last_backup_at: string | null;
+  /** Same instant in the business IANA timezone (offset embedded), or null. */
+  last_backup_at_local: string | null;
+  /** Full path of the newest backup dump, or null. */
+  last_backup_path: string | null;
+}
+
+/** GET /api/dashboard/backup/  */
+export function fetchBackupStatus(): Promise<BackupStatus> {
+  return apiFetch<BackupStatus>('/api/dashboard/backup/');
+}
+
+/** POST /api/backups/trigger/ — write a database dump now (manager quick action). */
+export function triggerBackup(): Promise<{ path: string }> {
+  return apiFetch<{ path: string }>('/api/backups/trigger/', { method: 'POST' });
+}

@@ -184,6 +184,49 @@
   font-weight: 400;
 }
 
+/* --- Backup status panel (contract §4.7 / §5.8) --- */
+.dashboard-panel--backup {
+  grid-column: 1 / -1;
+}
+
+.last-backup-panel-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.last-backup-info {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.last-backup-info > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* Inline spinner inside a busy action button. */
+.mm-spinner--inline {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-right: 6px;
+  vertical-align: -2px;
+  border-width: 2px;
+}
+
+/* Native title tooltip anchor (element with a `title` attr). The button's
+   disabled state keeps it focusable via aria-disabled semantics in the code. */
+.mm-tooltip-anchor {
+  display: inline-flex;
+}
+
 /* --- Responsive: single column below 768px --- */
 @media (max-width: 768px) {
   .dashboard-panels {
@@ -192,6 +235,10 @@
   }
 
   .dashboard-panel--performance {
+    grid-column: auto;
+  }
+
+  .dashboard-panel--backup {
     grid-column: auto;
   }
 
