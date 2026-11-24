@@ -2,6 +2,7 @@ from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.contrib.auth import authenticate
+from django.db import transaction as db_transaction
 from django.utils import timezone
 from decimal import Decimal, InvalidOperation
 
@@ -10,6 +11,7 @@ from .serializers import SaleSerializer, SaleLineSerializer, PaymentSerializer
 from .services import TransactionService, CartService, CartError, CartItemNotFoundError, InvalidQuantityError, SaleNotModifiableError, TransactionError, InsufficientPaymentError, InvalidPaymentMethodError
 from products.models import Product
 from customers.models import Customer
+from customers.services import LedgerService, LedgerError, can_override_credit
 from accounts.utils import is_manager
 
 
@@ -214,6 +216,7 @@ class SaleViewSet(viewsets.ModelViewSet):
         
         # invoice gating
         customer = None
+        account_exception = False
         if method == Payment.METHOD_INVOICE:
             customer = sale.customer
             if customer is None and request.data.get('customer') is not None:
@@ -227,12 +230,20 @@ class SaleViewSet(viewsets.ModelViewSet):
                 return Response({'detail': 'manager required'}, status=403)
             sale.customer = customer
             sale.save(update_fields=['customer'])
-            new_balance = customer.balance + amount
-            if new_balance > customer.credit_limit and not manager_approved:
-                return Response({'detail': 'credit limit exceeded'}, status=400)
-            customer.balance = new_balance
-            customer.save(update_fields=['balance'])
-        
+            # Credit-limit semantics: manager approval authorizes the invoice
+            # sale itself; the credit ceiling is a separate, hard policy on the
+            # running ledger balance and is enforced even for manager-approved
+            # invoices. Breaching it needs an account exception, which only an
+            # operator with ``can_override_credit`` authority may grant.
+            account_exception = can_override_credit(request.user)
+            try:
+                LedgerService.preflight(
+                    customer, amount, direction='credit',
+                    approved=account_exception,
+                )
+            except LedgerError as e:
+                return Response({'detail': str(e)}, status=400)
+
         # Change due is the tender excess over the outstanding sale balance this
         # tender settles: an over-tender returns change, exact/under returns none.
         change_due = Decimal('0')
@@ -240,15 +251,26 @@ class SaleViewSet(viewsets.ModelViewSet):
             settled = sum((p.amount for p in sale.payments.all()), Decimal('0'))
             remaining = max(Decimal('0'), sale.total - settled)
             change_due = max(Decimal('0'), tendered - min(tendered, remaining))
-        
-        payment = Payment.objects.create(
-            sale=sale,
-            method=method,
-            amount=amount,
-            tendered=tendered,
-            change_due=change_due,
-            manager_approved=manager_approved
-        )
+
+        # Record the payment and (for invoices) the ledger/balance entry in one
+        # atomic block so a failed write can never leave them inconsistent.
+        try:
+            with db_transaction.atomic():
+                payment = Payment.objects.create(
+                    sale=sale,
+                    method=method,
+                    amount=amount,
+                    tendered=tendered,
+                    change_due=change_due,
+                    manager_approved=manager_approved
+                )
+                if method == Payment.METHOD_INVOICE:
+                    LedgerService.record_invoice_payment(
+                        customer, amount, operator=request.user, sale=sale,
+                        account_exception=account_exception,
+                    )
+        except LedgerError as e:
+            return Response({'detail': str(e)}, status=400)
         return Response(PaymentSerializer(payment).data, status=201)
 
     @action(detail=True, methods=['post'])

@@ -17,6 +17,7 @@ from accounts.utils import is_manager
 from inventory.models import StockMovement
 from products.models import Product
 from customers.models import Customer
+from customers.services import LedgerService, LedgerError, can_override_credit
 
 from .models import Sale, SaleLine, Payment
 from .payments import (
@@ -527,6 +528,7 @@ class TransactionService:
                     effective_manager_approved = True
 
         # Validate invoice payment
+        account_exception = False
         if method == PaymentMethod.INVOICE:
             target_customer = customer or sale.customer
             if not target_customer:
@@ -535,16 +537,28 @@ class TransactionService:
             if not effective_manager_approved:
                 raise TransactionError('Manager approval required for invoice payment')
 
-            # Check credit limit
-            new_balance = target_customer.balance + amount
-            if new_balance > target_customer.credit_limit and not effective_manager_approved:
-                raise TransactionError('Credit limit exceeded')
+            # Credit-limit semantics: the customer's running ledger balance may
+            # not exceed their credit_limit. Manager approval authorizes
+            # *creating the invoice sale* only; it does NOT grant a credit-limit
+            # pass, because every invoice is manager-approved and the ceiling
+            # would otherwise be dead code. Breaching the ceiling requires a
+            # separate account exception (`approved` on the ledger entry), which
+            # only an operator with ``can_override_credit`` authority may grant.
+            # Debits generally (pay-downs) lower the balance and never trip the
+            # ceiling, so the ceiling is a hard policy on the running balance.
+            account_exception = can_override_credit(sale.cashier)
+            try:
+                LedgerService.preflight(
+                    target_customer, amount, direction='credit',
+                    approved=account_exception,
+                )
+            except LedgerError as e:
+                raise TransactionError(str(e))
 
-            # Update customer
+            # Link the sale to the customer. The authoritative ledger/balance
+            # write happens only after the processor succeeds (see below).
             sale.customer = target_customer
             sale.save(update_fields=['customer'])
-            target_customer.balance = new_balance
-            target_customer.save(update_fields=['balance'])
 
         # Prepare payment metadata
         metadata: dict[str, Any] = {"manager_approved": effective_manager_approved}
@@ -583,6 +597,20 @@ class TransactionService:
             sale.status = Sale.STATUS_COMPLETED
             sale.completed_at = timezone.now()
             sale.save(update_fields=['status', 'completed_at'])
+
+            # Record the invoice against the customer's ledger and re-derive the
+            # balance. Done here — after the processor succeeded — so a failed
+            # payment can never leave a balance changed without a ledger row and
+            # a payment record.
+            if method == PaymentMethod.INVOICE:
+                try:
+                    LedgerService.record_invoice_payment(
+                        sale.customer, amount,
+                        operator=sale.cashier, sale=sale,
+                        account_exception=account_exception,
+                    )
+                except LedgerError as e:
+                    raise TransactionError(str(e))
 
             # Create stock movements for each stock product only
             for line in sale.lines.all():
