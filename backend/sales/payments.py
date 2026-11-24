@@ -336,6 +336,7 @@ class SplitProcessor(PaymentProcessor):
 
         # Process each split
         results = []
+        split_info = []
         transaction_ids = []
         for split in splits:
             try:
@@ -364,11 +365,22 @@ class SplitProcessor(PaymentProcessor):
 
             results.append(result)
             transaction_ids.append(result.transaction_id)
+            # Enrich each component's metadata so callers can build one
+            # top-level Payment row per component method (e.g. the cash
+            # component becomes an independent method='cash' row visible to
+            # cash-up).
+            component = dict(result.metadata or {})
+            component["method"] = split_method.value
+            component["amount"] = str(split_amount)
+            component["tendered"] = split_meta.get("tendered")
+            component["change_due"] = str(result.change_due)
+            component["transaction_id"] = result.transaction_id
+            split_info.append(component)
 
         return PaymentResult.success_result(
             transaction_id="-".join(transaction_ids),
             amount_processed=amount,
-            metadata={"splits": [r.metadata for r in results]},
+            metadata={"splits": split_info},
         )
 
 

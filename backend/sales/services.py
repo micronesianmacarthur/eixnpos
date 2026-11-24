@@ -564,7 +564,10 @@ class TransactionService:
         if not result.success:
             raise TransactionError(f'Payment failed: {result.error_message}')
 
-        # Create payment record
+        # Create payment record atomically with sale completion so a crash
+        # never leaves a completed sale without its payment or a dangling
+        # payment on an open sale. Keyed by a stable per-sale idempotency key
+        # so a duplicated completion reuses the existing recorded payment.
         payment_kwargs = {
             "sale": sale,
             "method": method.value,
@@ -576,10 +579,17 @@ class TransactionService:
             payment_kwargs["tendered"] = Decimal(str(metadata.get("tendered", amount)))
             payment_kwargs["change_due"] = result.change_due
 
-        Payment.objects.create(**payment_kwargs)
+        idempotency_key = f"sale:{sale.id}:service:{method.value}:{result.amount_processed}"
+        payment_kwargs["idempotency_key"] = idempotency_key
+        payment_kwargs["source"] = Payment.SOURCE_SERVICE
+        payment_kwargs["transaction_id"] = result.transaction_id
 
         # Complete the sale - create stock movements
         with db_transaction.atomic():
+            existing = Payment.objects.filter(idempotency_key=idempotency_key).select_for_update().first()
+            if existing is None:
+                Payment.objects.create(**payment_kwargs)
+
             sale.status = Sale.STATUS_COMPLETED
             sale.completed_at = timezone.now()
             sale.save(update_fields=['status', 'completed_at'])

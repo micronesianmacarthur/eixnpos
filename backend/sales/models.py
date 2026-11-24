@@ -122,10 +122,32 @@ class Payment(models.Model):
         (METHOD_INVOICE, 'Invoice'),
     ]
 
+    # Capacity/origin of each payment row: how the write happened, so cash-up
+    # and auditors can gauge the trust level of each recorded payment.
+    SOURCE_UI = 'ui'
+    SOURCE_SERVICE = 'service'
+    SOURCE_COMPLETE_FLOW = 'complete_flow'
+    SOURCE_RECONCILIATION = 'reconciliation'
+    SOURCE_CHOICES = [
+        (SOURCE_UI, 'UI set_payment'),
+        (SOURCE_SERVICE, 'TransactionService.complete_sale'),
+        (SOURCE_COMPLETE_FLOW, 'complete endpoint fallback'),
+        (SOURCE_RECONCILIATION, 'Reconciliation/import'),
+    ]
+
     sale = models.ForeignKey(Sale, on_delete=models.CASCADE, related_name='payments')
     method = models.CharField(max_length=16, choices=METHOD_CHOICES)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     tendered = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     change_due = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     manager_approved = models.BooleanField(default=False)
+    # Idempotency: a stable key uniquely ties a Payment row to one logical
+    # tender action so a retried/duplicated request cannot double-record.
+    # NULL + unique lets legacy/backfill rows coexist with new keyed rows.
+    idempotency_key = models.CharField(max_length=64, unique=True, null=True, blank=True)
+    source = models.CharField(max_length=24, choices=SOURCE_CHOICES, default=SOURCE_UI)
+    transaction_id = models.CharField(max_length=64, null=True, blank=True)
+    # Groups the per-method rows of one split payment into a single logical
+    # tender (each split component is one top-level Payment row).
+    correlation_id = models.CharField(max_length=64, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
