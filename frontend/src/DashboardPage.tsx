@@ -1,6 +1,7 @@
 import BusinessInfoForm from './BusinessInfoForm';
 import { useAuth } from './authContext';
 import { Icon, type IconName } from './Icon';
+import DashboardAnalyticsPanels from './dashboard/DashboardAnalyticsPanels';
 import './DashboardPage.css';
 
 interface DashboardCard {
@@ -62,6 +63,10 @@ export default function DashboardPage() {
           </article>
         ))}
       </div>
+
+      {/* Analytics panels (t_bf2c1a7e): top items, monthly comparison,
+          low stock. Each handles its own loading/error/empty states. */}
+      <DashboardAnalyticsPanels />
     </div>
   );
 }

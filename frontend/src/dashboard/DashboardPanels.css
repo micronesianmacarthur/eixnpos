@@ -1,0 +1,207 @@
+/*
+ * Shared styles for the dashboard analytics panels (top items, performance
+ * chart, low stock). Follows the mm- design tokens + component vocab
+ * (mm-card, mm-table, mm-badge, mm-alert) from theme.css; only the panel-
+ * specific layout is added here. Responsive below 768px.
+ */
+
+/* --- Panels container: two-column layout on wide screens, stacked on small. */
+.dashboard-panels {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+/* The performance chart spans the full width; top items and low stock share
+ * a row beneath it. */
+.dashboard-panel--performance {
+  grid-column: 1 / -1;
+}
+
+.dashboard-panel {
+  min-width: 0;
+}
+
+/* --- Panel header action layout --- */
+.dashboard-panels .mm-card-header {
+  align-items: center;
+}
+
+/* --- Tabs (used by Top Items selector) --- */
+.dashboard-tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--mm-surface-muted);
+  border-radius: var(--mm-radius-pill);
+}
+
+.dashboard-tab {
+  padding: 8px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--mm-text-muted);
+  border-radius: var(--mm-radius-pill);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+  white-space: nowrap;
+}
+
+.dashboard-tab:hover {
+  color: var(--mm-text);
+}
+
+.dashboard-tab.is-active {
+  color: var(--mm-primary);
+  background: var(--mm-surface);
+  box-shadow: var(--mm-shadow-sm);
+}
+
+/* --- Loading / empty / retry --- */
+.dashboard-panel-loading {
+  min-height: 120px;
+}
+
+.dashboard-panel-empty {
+  min-height: 160px;
+  border-radius: var(--mm-radius-sm);
+}
+
+.dashboard-panel-retry {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mm-primary);
+  background: transparent;
+  border: none;
+  padding: 0 2px;
+  cursor: pointer;
+}
+
+/* --- Table tweaks for panels --- */
+.dashboard-table-wrap {
+  margin-top: 4px;
+}
+
+.dashboard-table-wrap .num,
+.low-stock-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.dashboard-panel-note {
+  margin-top: 12px;
+  color: var(--mm-text-muted);
+  font-size: 13px;
+}
+
+/* --- Low stock metadata + status --- */
+.low-stock-name {
+  display: block;
+  font-weight: 500;
+}
+
+.low-stock-meta {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+}
+
+.low-stock-table .mm-badge {
+  white-space: nowrap;
+}
+
+/* --- Performance chart --- */
+.performance-chart {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.performance-chart-svg {
+  display: block;
+  width: 100%;
+  min-width: 560px;
+  height: auto;
+}
+
+.performance-chart-grid {
+  stroke: var(--mm-border);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+}
+
+.performance-chart-axis {
+  stroke: var(--mm-text-muted);
+  stroke-width: 2;
+}
+
+.performance-chart-tick {
+  fill: var(--mm-text-muted);
+  font-size: 11px;
+}
+
+.performance-chart-bar {
+  fill: var(--mm-primary);
+}
+
+.performance-chart-bar--dim {
+  opacity: 0.35;
+}
+
+.performance-chart-bar.is-zero {
+  fill: var(--mm-border);
+}
+
+.performance-chart-bar-label {
+  fill: var(--mm-text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.performance-chart-xlabel {
+  fill: var(--mm-text-muted);
+  font-size: 11px;
+}
+
+.performance-mom--up {
+  color: var(--mm-success-foreground);
+  font-weight: 600;
+}
+
+.performance-mom--down {
+  color: var(--mm-error-foreground);
+  font-weight: 600;
+}
+
+.performance-mom--flat {
+  color: var(--mm-text-muted);
+}
+
+.performance-table .mm-muted {
+  font-weight: 400;
+}
+
+/* --- Responsive: single column below 768px --- */
+@media (max-width: 768px) {
+  .dashboard-panels {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .dashboard-panel--performance {
+    grid-column: auto;
+  }
+
+  .dashboard-tabs {
+    width: 100%;
+  }
+
+  /* Allow the row of tabs to wrap rather than overflow on narrow screens. */
+  .dashboard-tabs {
+    display: flex;
+    flex-wrap: wrap;
+  }
+}
