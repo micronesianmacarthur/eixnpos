@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation
 
 from .models import Sale, SaleLine, Payment
 from .serializers import SaleSerializer, SaleLineSerializer, PaymentSerializer
-from .services import TransactionService, CartService, CartError, CartItemNotFoundError, InvalidQuantityError, SaleNotModifiableError, TransactionError, InsufficientPaymentError, InvalidPaymentMethodError
+from .services import TransactionService, CartService, CartError, CartItemNotFoundError, InvalidQuantityError, SaleNotModifiableError, TransactionError, InsufficientPaymentError, InvalidPaymentMethodError, validate_sale_stock
 from products.models import Product
 from customers.models import Customer
 from accounts.utils import is_manager
@@ -295,6 +295,7 @@ class SaleViewSet(viewsets.ModelViewSet):
                 from django.db import transaction as db_transaction
                 from django.utils import timezone
                 with db_transaction.atomic():
+                    validate_sale_stock(sale)
                     sale.status = Sale.STATUS_COMPLETED
                     sale.completed_at = timezone.now()
                     sale.note = sale.note
