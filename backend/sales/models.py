@@ -100,6 +100,10 @@ class SaleLine(models.Model):
     product = models.ForeignKey('products.Product', on_delete=models.PROTECT)
     quantity = models.IntegerField(default=1)
     unit_price = models.DecimalField(max_digits=12, decimal_places=2)
+    # Snapshot of the product's cost at sale time, captured when the line is
+    # created so later edits to Product.cost never restate historical COGS.
+    # NULL for pre-migration rows (no reliable historical source).
+    unit_cost = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     discount_type = models.CharField(max_length=16, choices=DISCOUNT_CHOICES, default=DISCOUNT_NONE)
     discount_value = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
