@@ -38,6 +38,14 @@ vi.mock('../../src/authContext', () => ({
   }),
 }))
 
+// The analytics panels (top items / performance / low stock) are sibling
+// components with their own suites; the apiFetch stub below returns the
+// composite overview shape, which those panels' own endpoints do not use.
+// Stub them out so page-level tests only exercise KPIs + session.
+vi.mock('../../src/dashboard/DashboardAnalyticsPanels', () => ({
+  default: () => null,
+}))
+
 const mockedFetch = vi.mocked(apiFetch)
 
 /** A realistic composite payload matching the server contract (§5.7). */
