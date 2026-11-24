@@ -12,6 +12,7 @@ from rest_framework.response import Response
 
 from .permissions import IsDashboardReader
 from .services import (
+    backup_payload,
     composite_payload,
     current_session_payload,
     low_stock_payload,
@@ -121,6 +122,13 @@ def session_view(request):
 def low_stock_view(request):
     """GET /api/dashboard/inventory/low-stock/ — low-stock alerts."""
     return Response(low_stock_payload())
+
+
+@api_view(['GET'])
+@permission_classes([IsDashboardReader])
+def backup_view(request):
+    """GET /api/dashboard/backup/ — last-backup status + quick-action readiness."""
+    return Response(backup_payload())
 
 
 @api_view(['GET'])

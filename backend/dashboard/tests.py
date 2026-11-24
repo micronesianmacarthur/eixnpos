@@ -1,4 +1,6 @@
 """Tests for the dashboard aggregation service (contract §9 acceptance suite)."""
+import os
+import tempfile
 from datetime import date, datetime, time as dtime, timedelta
 from decimal import Decimal
 from typing import Optional
@@ -103,6 +105,7 @@ class DashboardAccessTests(DashboardBase):
                     '/api/dashboard/sales/monthly/',
                     '/api/dashboard/sessions/current/',
                     '/api/dashboard/inventory/low-stock/',
+                    '/api/dashboard/backup/',
                     '/api/dashboard/'):
             response = self.client.get(url)
             self.assertEqual(response.status_code, 403, msg=url)
@@ -115,6 +118,7 @@ class DashboardAccessTests(DashboardBase):
                     '/api/dashboard/sales/monthly/',
                     '/api/dashboard/sessions/current/',
                     '/api/dashboard/inventory/low-stock/',
+                    '/api/dashboard/backup/',
                     '/api/dashboard/'):
             response = self.client.get(url)
             self.assertEqual(response.status_code, 200, msg=url)
@@ -452,3 +456,68 @@ class TimezoneTests(DashboardBase):
             payload = services.monthly_payload(2)
             self.assertEqual(payload['latest_period'], '2026-11')
             self.assertEqual(payload['periods'][-1]['label'], 'Nov 2026')
+
+
+class BackupStatusTests(DashboardBase):
+    """GET /api/dashboard/backup/ (contract §4.7 / §5.8)."""
+
+    def assert_not_configured(self, data):
+        self.assertIs(data['backup_path_configured'], False)
+        self.assertIsNone(data['last_backup_at'])
+        self.assertIsNone(data['last_backup_path'])
+
+    def test_returns_null_status_when_no_backup_path_configured(self):
+        info = BusinessInfo.get()
+        info.backup_path = ''
+        info.save(update_fields=['backup_path'])
+
+        self.client.force_authenticate(self.manager)
+        data = self.client.get('/api/dashboard/backup/').json()
+
+        self.assert_not_configured(data)
+
+    def test_returns_newest_backup_at_and_path_when_configured(self):
+        info = BusinessInfo.get()
+        with tempfile.TemporaryDirectory() as tmp:
+            info.backup_path = tmp
+            info.save(update_fields=['backup_path'])
+
+            # Two dumps with distinct mtimes; the newer must win.
+            old = os.path.join(tmp, 'backup_20260101_000000.json')
+            new = os.path.join(tmp, 'backup_20261124_120000.json')
+            for p in (old, new):
+                with open(p, 'w', encoding='utf-8') as f:
+                    f.write('[]')
+            os.utime(old, (1767225600, 1767225600))
+            os.utime(new, (1795521600, 1795521600))
+
+            self.client.force_authenticate(self.manager)
+            data = self.client.get('/api/dashboard/backup/').json()
+
+            self.assertIs(data['backup_path_configured'], True)
+            self.assertEqual(data['last_backup_path'], new)
+            self.assertTrue(data['last_backup_at'].startswith('2026-11-24T'))
+            # local variant is ISO-8601 with an offset
+            self.assertIn('+', data['last_backup_at_local'])
+
+    def test_reports_configured_but_no_backup_yet(self):
+        info = BusinessInfo.get()
+        with tempfile.TemporaryDirectory() as tmp:
+            info.backup_path = tmp
+            info.save(update_fields=['backup_path'])
+
+            self.client.force_authenticate(self.manager)
+            data = self.client.get('/api/dashboard/backup/').json()
+
+            self.assertIs(data['backup_path_configured'], True)
+            self.assertIsNone(data['last_backup_at'])
+            self.assertIsNone(data['last_backup_path'])
+
+    def test_cashier_gets_403(self):
+        self.client.force_authenticate(self.cashier)
+        response = self.client.get('/api/dashboard/backup/')
+        self.assertEqual(response.status_code, 403)
+
+    def test_anonymous_is_rejected(self):
+        response = self.client.get('/api/dashboard/backup/')
+        self.assertIn(response.status_code, (401, 403))

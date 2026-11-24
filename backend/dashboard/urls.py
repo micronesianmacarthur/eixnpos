@@ -18,4 +18,5 @@ urlpatterns = [
         views.low_stock_view,
         name='dashboard-inventory-low-stock',
     ),
+    path('backup/', views.backup_view, name='dashboard-backup'),
 ]

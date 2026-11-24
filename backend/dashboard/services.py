@@ -13,6 +13,8 @@ queries (``Count``/``Sum`` with ``filter=``, grouped ``values``+``annotate``,
 """
 from __future__ import annotations
 
+import glob
+import os
 from datetime import date, datetime, time as dtime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional, Tuple
@@ -21,6 +23,7 @@ from django.db.models import Count, Q, Sum
 from django.db.models.functions import TruncMonth
 from django.utils import timezone
 
+from business.models import BusinessInfo
 from inventory.models import StockMovement
 from products.models import Product
 from sales.models import Payment, Sale, SaleLine
@@ -440,3 +443,52 @@ def composite_payload(user) -> Dict[str, Any]:
     payload['session'] = current_session_payload(user)
     payload['inventory'] = low_stock_payload()
     return payload
+
+
+# --------------------------------------------------------------------------- #
+# Last backup status (contract §4.7 / endpoint §5.8)
+# --------------------------------------------------------------------------- #
+def backup_payload() -> Dict[str, Any]:
+    """Contract §4.7 / 5.8 — last-backup status and quick-action readiness.
+
+    ``backup_path_configured`` reflects whether ``BusinessInfo.backup_path`` is
+    set. When it is, we look for the newest ``backup_*.json`` dump the backup
+    service writes there (``backups.utils.run_backup`` names them
+    ``backup_<ts>.json``): ``last_backup_at`` is that file's write instant as
+    ISO-8601 UTC, ``last_backup_at_local`` the same instant in the business
+    IANA timezone (offset embedded) so a client can render the store's own
+    clock, and ``last_backup_path`` its full path. All three datetime/path
+    fields are ``null`` when no path is configured or no backup exists yet.
+    """
+    info = BusinessInfo.get()
+    backup_path = (info.backup_path or '').strip()
+    if not backup_path:
+        return {
+            'backup_path_configured': False,
+            'last_backup_at': None,
+            'last_backup_at_local': None,
+            'last_backup_path': None,
+        }
+
+    files = []
+    for candidate in glob.glob(os.path.join(backup_path, 'backup_*.json')):
+        try:
+            files.append((os.path.getmtime(candidate), candidate))
+        except OSError:
+            continue
+    newest = max(files, default=None)
+
+    last_utc = None
+    if newest is not None:
+        last_utc = datetime.fromtimestamp(newest[0], tz=timezone.UTC)
+
+    return {
+        'backup_path_configured': True,
+        'last_backup_at': last_utc.isoformat() if last_utc else None,
+        'last_backup_at_local': (
+            timezone.localtime(last_utc, business_tzinfo()).isoformat()
+            if last_utc else None
+        ),
+        'last_backup_path': newest[1] if newest is not None else None,
+    }
+

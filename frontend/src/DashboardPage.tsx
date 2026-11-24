@@ -7,6 +7,7 @@ import type { DashboardOverview, DashboardSession, TodayKpi } from './DashboardT
 import { apiFetch, ApiError } from './api';
 import { Icon } from './Icon';
 import DashboardAnalyticsPanels from './dashboard/DashboardAnalyticsPanels';
+import LastBackupPanel from './dashboard/LastBackupPanel';
 import './DashboardPage.css';
 
 /**
@@ -102,6 +103,11 @@ export default function DashboardPage() {
             error={sessionError}
             onRetry={load}
           />
+
+          {/* Last backup status + quick action (B1): "when was the system
+              last backed up", with a one-click Backup now button. Placed
+              below the KPI row, above the analytics panels. */}
+          <LastBackupPanel />
 
           {/* Analytics panels (t_bf2c1a7e): top items, monthly comparison,
               low stock. Each handles its own loading/error/empty states. */}

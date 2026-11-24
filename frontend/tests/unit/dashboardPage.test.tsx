@@ -145,6 +145,18 @@ describe('DashboardPage — data fetching states', () => {
     expect(screen.getByText(/Starting cash \$100\.00/)).toBeInTheDocument()
   })
 
+  it('renders the LastBackupPanel for managers', async () => {
+    mockedFetch.mockResolvedValue(overview())
+    render(<DashboardPage />)
+
+    // The page mounts the backup card next to the KPIs + session summary.
+    expect(await screen.findByRole('heading', { name: 'Backups' })).toBeInTheDocument()
+    // The panel's own GET /api/dashboard/backup/ fires (it shares the mocked
+    // fetch; the overview-shaped stub leaves it as a "never backed up" card
+    // rather than an error).
+    expect(mockedFetch).toHaveBeenCalledWith('/api/dashboard/backup/')
+  })
+
   it('surfaces the API error and offers retry', async () => {
     mockedFetch.mockRejectedValue(new ApiError('Server error', 500, undefined))
     render(<DashboardPage />)
