@@ -1,20 +1,4 @@
-.dashboard-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 24px;
-}
-
-.dashboard-card {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-}
-
-.dashboard-card-text {
-  margin-top: 6px;
-  color: var(--mm-text-muted);
-  font-size: 14px;
-}
+/* Manager dashboard page layout. All primitives come from theme.css. */
 
 .dashboard-setup {
   display: flex;
@@ -22,9 +6,142 @@
   gap: 12px;
 }
 
-@media (max-width: 768px) {
-  .dashboard-grid {
+.dashboard-error-message {
+  margin: 0;
+}
+
+/* KPI row ---------------------------------------------------------------- */
+
+.dashboard-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.dashboard-kpi {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 18px 20px;
+}
+
+.dashboard-kpi-text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.dashboard-kpi-value {
+  color: var(--mm-text);
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.dashboard-kpi-label {
+  margin-top: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mm-text);
+}
+
+.dashboard-kpi-hint {
+  margin-top: 2px;
+  color: var(--mm-text-muted);
+  font-size: 12px;
+}
+
+/* Loading skeleton tile -------------------------------------------------- */
+
+.dashboard-kpi-skeleton,
+.dashboard-session-skeleton {
+  display: inline-block;
+  width: 92px;
+  height: 22px;
+  border-radius: 6px;
+  background: linear-gradient(
+    90deg,
+    var(--mm-surface-muted) 25%,
+    var(--mm-surface-hover) 50%,
+    var(--mm-surface-muted) 75%
+  );
+  background-size: 200% 100%;
+  animation: dashboard-shimmer 1.1s ease-in-out infinite;
+  color: transparent;
+}
+
+.dashboard-session-skeleton {
+  width: 180px;
+  height: 20px;
+}
+
+@keyframes dashboard-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* Session summary -------------------------------------------------------- */
+
+.dashboard-session-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.dashboard-session-title-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.dashboard-session-title {
+  font-size: 17px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.dashboard-session-subtitle {
+  font-size: 13px;
+}
+
+.dashboard-session-error {
+  color: var(--mm-error-foreground);
+  margin-bottom: 12px;
+}
+
+/* Non-manager notice ----------------------------------------------------- */
+
+.dashboard-nonmanager {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.dashboard-nonmanager > div {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Responsive ------------------------------------------------------------- */
+
+@media (max-width: 1023px) {
+  .dashboard-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  .dashboard-kpis {
     grid-template-columns: 1fr;
-    gap: 16px;
+    gap: 12px;
   }
 }
