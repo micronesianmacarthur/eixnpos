@@ -232,7 +232,7 @@ class SaleViewSet(viewsets.ModelViewSet):
             if not result.success:
                 raise PaymentProcessingRejected(result.error_message)
             rows = []
-            for idx, comp in enumerate(result.metadata['splits']):
+            for comp in result.metadata['splits']:
                 comp_tendered = comp.get('tendered')
                 if comp_tendered is not None:
                     try:
@@ -246,7 +246,13 @@ class SaleViewSet(viewsets.ModelViewSet):
                     tendered=comp_tendered,
                     change_due=Decimal(comp.get('change_due') or 0),
                     manager_approved=manager_approved,
-                    idempotency_key=f"{idempotency_key}:{comp['method']}:{idx}",
+                    # R4: each split component gets a fresh UUID key. Deriving a
+                    # component key from the client key (f"{idempotency_key}:{method}:
+                    # {idx}") overflowed the 64-char column for a long client key
+                    # (accepted by SQLite, DataError → 500 on PostgreSQL). Idempotent
+                    # replay of a split is keyed by correlation_id (== client key),
+                    # never by the per-component key, so a fixed-length UUID is safe.
+                    idempotency_key=str(uuid.uuid4()),
                     source=Payment.SOURCE_UI,
                     transaction_id=comp.get('transaction_id'),
                     correlation_id=idempotency_key,
@@ -307,9 +313,37 @@ class SaleViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def set_payment(self, request, pk=None):
         sale = self.get_object()
+        method = request.data.get('method')
+
+        # Resolve the idempotency key up front so key-length validation returns
+        # a clean 400 and the R5 replay guard can run before the open-status
+        # check.
+        try:
+            effective_key, client_key = self._idempotency_key(request)
+        except PaymentProcessingRejected as e:
+            return Response({'detail': str(e)}, status=400)
+
+        # R5 — a tender already recorded under this client key replays its
+        # existing row(s) even if the sale has since been completed. Without
+        # this, tender-with-key → complete → resubmit-same-key returned 400
+        # "sale not open" even though the row exists. Scoped to this sale only
+        # (never another sale's payment body).
+        if client_key is not None:
+            if method == Payment.METHOD_SPLIT:
+                comps = list(
+                    Payment.objects.filter(sale=sale, correlation_id=client_key).order_by('id')
+                )
+                if comps:
+                    return Response(PaymentSerializer(comps, many=True).data, status=200)
+            else:
+                existing = Payment.objects.filter(
+                    sale=sale, idempotency_key=client_key,
+                ).first()
+                if existing is not None:
+                    return Response(PaymentSerializer(existing).data, status=200)
+
         if not sale.is_open():
             return Response({'detail': 'sale not open'}, status=400)
-        method = request.data.get('method')
         if method not in dict(Payment.METHOD_CHOICES):
             return Response({'detail': 'invalid payment method'}, status=400)
         try:
@@ -364,8 +398,8 @@ class SaleViewSet(viewsets.ModelViewSet):
         # in dedupe. A keyless tender gets a fresh random key (per-tender nonce)
         # and is therefore never replayed — two genuine equal-amount tenders
         # always record two rows (B1). We scope every lookup to this sale so a
-        # key can never leak another sale's payment body (B2).
-        effective_key, client_key = self._idempotency_key(request)
+        # key can never leak another sale's payment body (B2). The key is
+        # resolved at the top of set_payment (see R5 guard).
 
         if client_key is not None:
             # B2 (cross-sale): a client key already owned by another sale must
@@ -449,9 +483,23 @@ class SaleViewSet(viewsets.ModelViewSet):
         key = f'sale:{sale.id}:complete:backcompat'
         try:
             with db_transaction.atomic():
-                existing = Payment.objects.filter(idempotency_key=key).select_for_update().first()
+                # R2a: scope the dedupe to THIS sale (a key is only meaningful on
+                # one sale) AND to genuine complete-flow rows, so a client row
+                # that squats the backcompat key can never shadow the real cash
+                # tender. Because idempotency_key is globally unique, a squat on
+                # ANY sale (this or another) makes the deterministic key unusable
+                # for this write — in that case record the genuine tender under a
+                # fresh UUID so the payment is never lost and never collides.
+                effective_key = key
+                existing = Payment.objects.filter(
+                    sale=sale,
+                    idempotency_key=key,
+                    source=Payment.SOURCE_COMPLETE_FLOW,
+                ).select_for_update().first()
                 if existing is not None:
                     return True
+                if Payment.objects.filter(idempotency_key=key).exists():
+                    effective_key = str(uuid.uuid4())
                 settled = sum((p.amount for p in sale.payments.all()), Decimal('0'))
                 remaining = max(Decimal('0'), sale.total - settled)
                 change_due = max(Decimal('0'), amount - min(amount, remaining))
@@ -462,7 +510,7 @@ class SaleViewSet(viewsets.ModelViewSet):
                     tendered=amount,
                     change_due=change_due,
                     manager_approved=True,
-                    idempotency_key=key,
+                    idempotency_key=effective_key,
                     source=Payment.SOURCE_COMPLETE_FLOW,
                     transaction_id=result.transaction_id,
                 )

@@ -8,6 +8,7 @@ models for stock management.
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Optional, Dict, Any, List
+import uuid
 
 from django.contrib.auth import authenticate
 from django.db import transaction as db_transaction
@@ -579,11 +580,27 @@ class TransactionService:
 
         # Complete the sale - create stock movements
         with db_transaction.atomic():
+            # R2b: dedupe is scoped to genuine SOURCE_SERVICE rows (clients can
+            # only write SOURCE_UI via set_payment), so a client row can never
+            # shadow the service-recorded payment. Source-filtering also matches
+            # the suggested fix (dedupe by source). If a client row squats the
+            # deterministic service key on the SAME sale, the payload write with
+            # that key would violate the unique constraint (or silently skip),
+            # so record under a fresh UUID — the genuine payment is never lost.
             existing = Payment.objects.filter(
                 sale=sale, idempotency_key=idempotency_key,
+                source=Payment.SOURCE_SERVICE,
             ).select_for_update().first()
             if existing is None:
-                Payment.objects.create(**payment_kwargs)
+                effective_key = idempotency_key
+                if Payment.objects.filter(
+                    idempotency_key=idempotency_key,
+                ).exists():
+                    effective_key = str(uuid.uuid4())
+                Payment.objects.create(**{
+                    **payment_kwargs,
+                    "idempotency_key": effective_key,
+                })
 
             # S1/S2: charge the customer only when the whole completion commits.
             # Re-read and lock the customer row under select_for_update so the

@@ -114,11 +114,13 @@ class SaleLine(models.Model):
 class Payment(models.Model):
     METHOD_CASH = 'cash'
     METHOD_CARD = 'card'
+    METHOD_MOBILE = 'mobile'
     METHOD_SPLIT = 'split'
     METHOD_INVOICE = 'invoice'
     METHOD_CHOICES = [
         (METHOD_CASH, 'Cash'),
         (METHOD_CARD, 'Card'),
+        (METHOD_MOBILE, 'Mobile'),
         (METHOD_SPLIT, 'Split'),
         (METHOD_INVOICE, 'Invoice'),
     ]
