@@ -288,6 +288,50 @@ class BackfillLedgerMigrationTests(TransactionTestCase):
             entries = Ledger.objects.filter(customer_id=customer.pk)
             self.assertEqual(_ledger_sum(entries), customer.balance)
 
+    def test_rerun_leaves_balance_and_every_ledger_row_untouched(self):
+        # Static idempotency on a provenance-marked-only ledger: a re-run must
+        # be a strict no-op — no new rows, no changed running balances, and
+        # Customer.balance untouched.
+        self._seed_production_shaped_data()
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_to)
+        new_apps = executor.loader.project_state(self.migrate_to).apps
+        Customer = new_apps.get_model('customers', 'Customer')
+        Ledger = new_apps.get_model('customers', 'LedgerEntry')
+
+        balances_before = {c.name: c.balance for c in Customer.objects.all()}
+        ledger_before = list(
+            Ledger.objects.all().order_by('id').values_list(
+                'customer_id', 'amount', 'direction', 'running_balance',
+                'reference'))
+        count_before = len(ledger_before)
+        self.assertGreater(count_before, 0)
+
+        schema_editor = connection.schema_editor().__enter__()
+        try:
+            m0003.backfill(new_apps, schema_editor)
+        finally:
+            schema_editor.__exit__(None, None, None)
+
+        # No new row was written by the re-run.
+        ledger_after = list(
+            Ledger.objects.all().order_by('id').values_list(
+                'customer_id', 'amount', 'direction', 'running_balance',
+                'reference'))
+        self.assertEqual(ledger_after, ledger_before)
+        self.assertEqual(len(ledger_after), count_before)
+        # Running balance of every row is untouched.
+        self.assertEqual(
+            [row[3] for row in ledger_after],
+            [row[3] for row in ledger_before])
+        # Customer.balance untouched for every customer.
+        for name, balance in balances_before.items():
+            self.assertEqual(Customer.objects.get(name=name).balance, balance)
+        # And the ledger still reconciles to the balance.
+        for customer in Customer.objects.all():
+            entries = Ledger.objects.filter(customer_id=customer.pk)
+            self.assertEqual(_ledger_sum(entries), customer.balance)
+
     # -- reviewer B3 regressions ------------------------------------------
 
     def _make_operator(self):
