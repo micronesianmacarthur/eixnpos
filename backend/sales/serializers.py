@@ -16,7 +16,7 @@ class SaleLineSerializer(serializers.ModelSerializer):
 class PaymentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Payment
-        fields = ['id', 'method', 'amount', 'tendered', 'change_due', 'manager_approved', 'created_at']
+        fields = ['id', 'method', 'amount', 'tendered', 'change_due', 'manager_approved', 'voided', 'voided_at', 'created_at']
 
 
 class SaleSerializer(serializers.ModelSerializer):

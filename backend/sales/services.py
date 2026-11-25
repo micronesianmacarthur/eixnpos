@@ -725,25 +725,39 @@ class TransactionService:
 
             for p in payments:
                 # A fully-refunded payment is neutralized by the refund, not by
-                # this void; never void it, or we'd double-reverse the balance.
-                # An already-voided payment stays voided (idempotent per row).
-                if p.voided or p.is_fully_refunded():
+                # this void; never reverse it, or we'd double-reverse the
+                # balance. An already-voided payment stays voided (idempotent
+                # per row). A *partially* refunded payment has only its
+                # un-refunded remainder left to reverse: credit the customer by
+                # ``remaining_refundable()`` — the refund already reversed its
+                # portion — never by the full ``p.amount`` (B1).
+                if p.voided:
+                    continue
+                remaining = p.remaining_refundable()
+                if remaining <= 0:
                     continue
                 p.voided = True
                 p.voided_at = timezone.now()
                 p.save(update_fields=['voided', 'voided_at'])
                 if p.method == Payment.METHOD_INVOICE and customer is not None:
-                    customer.balance = (customer.balance or Decimal('0')) - p.amount
+                    customer.balance = (customer.balance or Decimal('0')) - remaining
                     customer_dirty = True
 
             if customer_dirty:
                 customer.save(update_fields=['balance'])
 
             # A completed sale moved goods out at completion; restore them.
+            # A line already returned by a partial refund must not be restocked
+            # again by the void — restock only the not-yet-returned quantity
+            # (B1, parallel to the money reversal above).
             if sale.status == Sale.STATUS_COMPLETED:
                 for line in sale.lines.all():
+                    returned = sum(r.quantity for r in line.refunds.all())
+                    to_restock = line.quantity - returned
+                    if to_restock <= 0:
+                        continue
                     self._restock(
-                        sale, line.product, line.quantity,
+                        sale, line.product, to_restock,
                         reference=f'void:sale:{sale.number}', note='Void',
                     )
 
@@ -878,7 +892,17 @@ class TransactionService:
                     for line in lines
                 ]
             else:
-                specs = []
+                # Aggregate the request per line_id before validating (B3).
+                # Refund capacity is a per-line/request whole: two duplicate
+                # line_id entries must not each validate against the pre-write
+                # snapshot independently. Sum quantities and amounts per line,
+                # then validate the cumulative whole. quantity (drives restock)
+                # and amount (drives money returned) stay independent inputs,
+                # each bounded by its own remaining capacity.
+                if not items:
+                    raise RefundValidationError('refund items must not be empty')
+                by_line = {}
+                order = []
                 for item in items:
                     try:
                         line_id = int(item.get('line_id'))
@@ -902,11 +926,21 @@ class TransactionService:
                             amount = Decimal(str(raw_amount))
                         except (InvalidOperation, TypeError, ValueError):
                             raise RefundValidationError('invalid amount')
-                    specs.append(
-                        {'line': line, 'quantity': quantity, 'amount': amount}
-                    )
+                    if line_id not in by_line:
+                        by_line[line_id] = {
+                            'line': line, 'quantity': quantity, 'amount': amount,
+                        }
+                        order.append(line_id)
+                    else:
+                        by_line[line_id]['quantity'] += quantity
+                        by_line[line_id]['amount'] += amount
+                specs = [by_line[lid] for lid in order]
 
             # Per-line validation: positive, no double refund, within capacity.
+            # ``already_qty``/``remaining`` are read under the lock (the lines
+            # and their refunds were fetched via select_for_update above), so
+            # this re-validates against the locked re-read, not a stale
+            # snapshot (B4).
             for spec in specs:
                 line = spec['line']
                 quantity = spec['quantity']
@@ -1002,13 +1036,18 @@ class TransactionService:
                 customer.save(update_fields=['balance'])
 
             # Full refund => sale is refunded; partial stays completed.
-            captured = sum(p.amount for p in payments if not p.voided)
+            # "Full" is decided from line quantities plus the sale's OWN total,
+            # never from summed captured payments (S1): an overpaid cash sale
+            # (20.00 captured on a 10.00 total) that returns every line and its
+            # 10.00 of value is a full refund even though 20.00 was captured,
+            # so it must flip to REFUNDED — otherwise it stays completed with
+            # money still refundable and reaches B1's double-restock path.
             total_refunded = sum(r.amount for r in Refund.objects.filter(sale=sale))
             all_lines_full = all(
                 sum(r.quantity for r in line.refunds.all()) >= line.quantity
                 for line in lines
             )
-            if all_lines_full and total_refunded >= captured:
+            if all_lines_full and total_refunded >= sale.total:
                 sale.status = Sale.STATUS_REFUNDED
                 sale.refunded_at = timezone.now()
                 sale.save(update_fields=['status', 'refunded_at'])

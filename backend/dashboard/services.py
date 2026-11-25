@@ -27,7 +27,7 @@ from accounts.roles import has_manager_role
 from business.models import BusinessInfo
 from inventory.models import StockMovement
 from products.models import Product
-from sales.models import Payment, Sale, SaleLine
+from sales.models import Payment, Refund, Sale, SaleLine
 from sessions.models import Session, business_tzinfo, local_date_of
 
 CENTS = Decimal('0.01')
@@ -118,10 +118,25 @@ def _range_aggregates(start_utc, end_utc) -> Dict[str, Any]:
         sale__status__in=SETTLED_STATUSES,
         sale__created_at__gte=start_utc,
         sale__created_at__lt=end_utc,
+        voided=False,
     ).aggregate(
         cash_sales=Sum('amount', filter=Q(method=Payment.METHOD_CASH)),
         invoice_count=Count('id', filter=Q(method=Payment.METHOD_INVOICE)),
         invoice_total=Sum('amount', filter=Q(method=Payment.METHOD_INVOICE)),
+    )
+    # Reconcile the doorstep totals against what was actually given back (S4):
+    # a refunded/partially-refunded cash sale's tenders were returned, so the
+    # drawer keeps only the net-of-refund amount. Subtract the real Refund rows
+    # (cash refunds from cash_sales, invoice refunds from invoice_total) so the
+    # dashboard agrees with the session close. Voided payments were already
+    # excluded above (their sale is never 'completed').
+    refunds = Refund.objects.filter(
+        sale__status__in=SETTLED_STATUSES,
+        sale__created_at__gte=start_utc,
+        sale__created_at__lt=end_utc,
+    ).aggregate(
+        cash=Sum('amount', filter=Q(method=Payment.METHOD_CASH)),
+        invoice=Sum('amount', filter=Q(method=Payment.METHOD_INVOICE)),
     )
 
     sales_count = agg['sales_count'] or 0
@@ -131,9 +146,13 @@ def _range_aggregates(start_utc, end_utc) -> Dict[str, Any]:
     return {
         'sales_count': sales_count,
         'revenue': _money(revenue),
-        'cash_sales': _money(_pq(payments['cash_sales'])),
+        'cash_sales': _money(
+            _pq(payments['cash_sales']) - _pq(refunds['cash'])
+        ),
         'invoice_count': payments['invoice_count'] or 0,
-        'invoice_total': _money(_pq(payments['invoice_total'])),
+        'invoice_total': _money(
+            _pq(payments['invoice_total']) - _pq(refunds['invoice'])
+        ),
         'void_count': agg['void_count'] or 0,
         'refund_count': agg['refund_count'] or 0,
         'avg_basket': _money(avg_basket),
@@ -298,12 +317,34 @@ def monthly_payload(months: int) -> Dict[str, Any]:
                 method=Payment.METHOD_CASH,
                 sale__status__in=SETTLED_STATUSES,
                 sale__created_at__gte=window_start_utc,
+                voided=False,
             )
             .annotate(month=TruncMonth('sale__created_at', tzinfo=tz))
             .values('month')
             .annotate(cash_sales=Sum('amount'))
         )
     }
+    # Handed back out of the drawer (S4): cash refunds net against cash sales
+    # so the monthly figure agrees with the range KPI and the session close.
+    cash_refunded_by_month = {
+        row['month'].date(): _pq(row['cash_refunded'])
+        for row in (
+            Refund.objects
+            .filter(
+                method=Payment.METHOD_CASH,
+                sale__status__in=SETTLED_STATUSES,
+                sale__created_at__gte=window_start_utc,
+            )
+            .annotate(month=TruncMonth('sale__created_at', tzinfo=tz))
+            .values('month')
+            .annotate(cash_refunded=Sum('amount'))
+        )
+    }
+    for month in set(list(cash_by_month) + list(cash_refunded_by_month)):
+        cash_by_month[month] = (
+            cash_by_month.get(month, Decimal('0'))
+            - cash_refunded_by_month.get(month, Decimal('0'))
+        )
 
     periods: List[Dict[str, Any]] = []
     for start in period_starts:

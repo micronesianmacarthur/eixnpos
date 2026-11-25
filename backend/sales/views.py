@@ -2,6 +2,7 @@ from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.contrib.auth import authenticate
+from django.db.models import Q
 from django.utils import timezone
 from decimal import Decimal, InvalidOperation
 
@@ -17,6 +18,19 @@ class SaleViewSet(viewsets.ModelViewSet):
     queryset = Sale.objects.all()
     serializer_class = SaleSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        # A manager/admin may operate on any sale. A cashier is scoped to the
+        # sales they handle: open/pending sales (which they run at the POS) and
+        # completed sales they themselves recorded. This is both a data-scope
+        # guard and the substrate for the B2 authorisation gate on voiding a
+        # completed sale (only managers/admin may void a financial sale).
+        if is_manager(self.request.user):
+            return Sale.objects.all()
+        return Sale.objects.filter(
+            Q(status__in=[Sale.STATUS_PENDING, Sale.STATUS_OPEN])
+            | Q(cashier=self.request.user)
+        )
     
     # Transactions are instantiated per-request (see checkout/void handlers).
     # Do NOT instantiate a TransactionService at import time: its constructor
@@ -340,6 +354,17 @@ class SaleViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def void(self, request, pk=None):
         sale = self.get_object()
+
+        # Void of a *completed* sale is a financial reversal (tender
+        # neutralised, receivable reversed, goods restocked) — the same
+        # operation as a refund — so it carries the same manager/admin gate
+        # (B2). Voiding an open/pending sale (no money moved yet) stays open to
+        # the cashier who is running it at the POS.
+        if sale.status == Sale.STATUS_COMPLETED and not is_manager(request.user):
+            return Response(
+                {'detail': 'Only managers and admins can void a completed sale.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         # Void is allowed on pending/open/completed sales. A voided or refunded
         # sale is rejected by the service as a 409 conflict so duplicate void

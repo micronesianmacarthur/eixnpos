@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from customers.models import Customer
@@ -10,7 +11,7 @@ from products.models import Product
 from suppliers.models import Supplier
 
 from .cash_count import calculate_removal, calculate_totals
-from .models import Payment, Sale, SaleLine
+from .models import Payment, Sale, SaleLine, Refund
 
 User = get_user_model()
 
@@ -640,14 +641,116 @@ class SaleApiTests(TestCase):
         self.assertEqual(sale.status, Sale.STATUS_VOIDED)
         self.assertFalse(StockMovement.objects.filter(movement_type='sale').exists())
 
-    def test_void_completed_sale_is_allowed(self):
+    def test_cashier_cannot_void_a_completed_sale(self):
+        # B2: void of a completed sale is a financial reversal (same as a
+        # refund) and carries the same manager/admin gate.
         sale = self.make_sale(status=Sale.STATUS_COMPLETED)
 
         response = self.client.post(f'/api/sales/{sale.id}/void/')
 
+        self.assertEqual(response.status_code, 403)
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, Sale.STATUS_COMPLETED)
+
+    def test_manager_can_void_a_completed_sale(self):
+        sale = self.make_sale(status=Sale.STATUS_COMPLETED)
+        client = APIClient()
+        client.force_authenticate(self.manager)
+
+        response = client.post(f'/api/sales/{sale.id}/void/')
+
         self.assertEqual(response.status_code, 200)
         sale.refresh_from_db()
         self.assertEqual(sale.status, Sale.STATUS_VOIDED)
+
+    def test_cashier_refund_of_completed_sale_is_403(self):
+        # Refund carries the manager gate; a cashier gets 403 (B2 parity).
+        sale = self.make_sale(status=Sale.STATUS_COMPLETED)
+        line = SaleLine.objects.create(
+            sale=sale, product=self.product, quantity=1, unit_price=self.product.price,
+        )
+        sale.recompute()
+
+        response = self.client.post(
+            f'/api/sales/{sale.id}/refund/', {'items': []}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(Refund.objects.filter(sale=sale).exists())
+
+    def test_refund_empty_items_is_400(self):
+        sale = self.make_sale(status=Sale.STATUS_COMPLETED)
+        SaleLine.objects.create(
+            sale=sale, product=self.product, quantity=1, unit_price=self.product.price,
+        )
+        sale.recompute()
+        client = APIClient()
+        client.force_authenticate(self.manager)
+
+        response = client.post(
+            f'/api/sales/{sale.id}/refund/', {'items': []}, format='json',
+        )
+
+        # B3: an item-less refund is a silent no-op; reject it as 400.
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(Refund.objects.filter(sale=sale).exists())
+
+    def test_refund_over_capacity_is_400(self):
+        sale = self.make_sale(status=Sale.STATUS_COMPLETED)
+        line = SaleLine.objects.create(
+            sale=sale, product=self.product, quantity=1, unit_price=self.product.price,
+        )
+        sale.recompute()
+        Payment.objects.create(sale=sale, method='cash', amount=Decimal('10.00'))
+        client = APIClient()
+        client.force_authenticate(self.manager)
+
+        response = client.post(
+            f'/api/sales/{sale.id}/refund/',
+            {'items': [{'line_id': line.id, 'quantity': 1, 'amount': '99.00'}]},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(Refund.objects.filter(sale=sale).exists())
+
+    def test_refund_with_voided_payment_is_409(self):
+        # A completed sale whose tender was already neutralised cannot be
+        # refunded; the capacity guard raises 409 (RefundConflictError).
+        sale = self.make_sale(status=Sale.STATUS_COMPLETED)
+        SaleLine.objects.create(
+            sale=sale, product=self.product, quantity=1, unit_price=self.product.price,
+        )
+        sale.recompute()
+        payment = Payment.objects.create(sale=sale, method='cash', amount=Decimal('10.00'))
+        payment.voided = True
+        payment.voided_at = timezone.now()
+        payment.save(update_fields=['voided', 'voided_at'])
+        client = APIClient()
+        client.force_authenticate(self.manager)
+
+        response = client.post(f'/api/sales/{sale.id}/refund/', {}, format='json')
+
+        self.assertEqual(response.status_code, 409)
+        self.assertFalse(Refund.objects.filter(sale=sale).exists())
+
+    def test_void_refunded_sale_is_409_over_http(self):
+        sale = self.make_sale(status=Sale.STATUS_COMPLETED)
+        SaleLine.objects.create(
+            sale=sale, product=self.product, quantity=1, unit_price=self.product.price,
+        )
+        sale.recompute()
+        Payment.objects.create(sale=sale, method='cash', amount=Decimal('10.00'))
+        client = APIClient()
+        client.force_authenticate(self.manager)
+        # Full refund (no items) flips the sale to refunded.
+        client.post(f'/api/sales/{sale.id}/refund/', {}, format='json')
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, Sale.STATUS_REFUNDED)
+
+        response = client.post(f'/api/sales/{sale.id}/void/')
+
+        self.assertEqual(response.status_code, 409)
 
     def test_sales_api_requires_authentication(self):
         anonymous = APIClient()

@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Payment, Sale, SaleLine
+from .models import Payment, Refund, Sale, SaleLine
 from accounts.admin_base import RoleAwareModelAdmin
 
 
@@ -22,7 +22,15 @@ class SaleLineAdmin(RoleAwareModelAdmin):
 
 @admin.register(Payment)
 class PaymentAdmin(RoleAwareModelAdmin):
-    list_display = ['sale', 'method', 'amount', 'tendered', 'change_due', 'manager_approved', 'created_at']
-    list_filter = ['method', 'manager_approved']
+    list_display = ['sale', 'method', 'amount', 'tendered', 'change_due', 'voided', 'manager_approved', 'created_at']
+    list_filter = ['method', 'manager_approved', 'voided']
     search_fields = ['sale__number']
+    ordering = ['-created_at']
+
+
+@admin.register(Refund)
+class RefundAdmin(RoleAwareModelAdmin):
+    list_display = ['sale', 'line', 'payment', 'amount', 'quantity', 'method', 'manager_approved', 'created_at']
+    list_filter = ['method', 'manager_approved']
+    search_fields = ['sale__number', 'line__product__name']
     ordering = ['-created_at']
