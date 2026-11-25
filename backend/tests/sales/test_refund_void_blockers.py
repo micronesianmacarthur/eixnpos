@@ -104,14 +104,16 @@ class TestRefundCapacityAggregation:
         sale = _complete_cash(cashier_user, product, qty=6)  # 6 sold
         line = sale.lines.first()
 
-        # Two entries for the same line, each 5 < 6 capacity individually, but
-        # 10 cumulative > 6. Must be rejected outright (nothing written).
-        with pytest.raises(RefundValidationError):
+        # Two entries for the same line, each 4 units inside the 6-unit
+        # capacity individually, but 8 cumulative > 6. Amounts are consistent
+        # (qty x unit price), so it is rejected for *capacity*, not for
+        # goods/money mismatch. Must write nothing.
+        with pytest.raises(RefundValidationError, match='exceeds remaining line capacity'):
             TransactionService().refund_sale(
                 sale.id, manager_approved=True,
                 items=[
-                    {'line_id': line.id, 'quantity': 5, 'amount': Decimal('10.00')},
-                    {'line_id': line.id, 'quantity': 5, 'amount': Decimal('10.00')},
+                    {'line_id': line.id, 'quantity': 4, 'amount': Decimal('40.00')},
+                    {'line_id': line.id, 'quantity': 4, 'amount': Decimal('40.00')},
                 ],
             )
         assert sum(r.quantity for r in Refund.objects.filter(sale=sale)) == 0
@@ -120,20 +122,20 @@ class TestRefundCapacityAggregation:
     def test_duplicate_line_id_aggregation_within_capacity(self, cashier_user, product):
         """Two same-line entries summing inside capacity apply once, not twice."""
         StockMovement.objects.create(product=product, quantity=20, movement_type='receive')
-        sale = _complete_cash(cashier_user, product, qty=6)
+        sale = _complete_cash(cashier_user, product, qty=6)  # 6 @ 10.00 = 60.00
         line = sale.lines.first()
 
         result = TransactionService().refund_sale(
             sale.id, manager_approved=True,
             items=[
-                {'line_id': line.id, 'quantity': 2, 'amount': Decimal('5.00')},
-                {'line_id': line.id, 'quantity': 2, 'amount': Decimal('5.00')},
+                {'line_id': line.id, 'quantity': 2, 'amount': Decimal('20.00')},
+                {'line_id': line.id, 'quantity': 2, 'amount': Decimal('20.00')},
             ],
         )
 
-        assert result.status == Sale.STATUS_COMPLETED  # partial
+        assert result.status == Sale.STATUS_COMPLETED  # partial (4 of 6)
         assert sum(r.quantity for r in Refund.objects.filter(sale=sale)) == 4
-        assert sum(r.amount for r in Refund.objects.filter(sale=sale)) == Decimal('10.00')
+        assert sum(r.amount for r in Refund.objects.filter(sale=sale)) == Decimal('40.00')
         assert _restocked(product) == 4
 
     def test_empty_items_rejected(self, cashier_user, product):
@@ -144,20 +146,40 @@ class TestRefundCapacityAggregation:
             )
         assert Refund.objects.filter(sale=sale).count() == 0
 
-    def test_quantity_and_amount_each_bounded_by_own_capacity(self, cashier_user, product):
-        """quantity drives restock, amount drives money; each is capped."""
+    def test_quantity_and_amount_must_be_consistent(self, cashier_user, product):
+        """B3: amount is tied to qty x unit price; a diverging amount is rejected.
+
+        A 6-unit / $60 cash sale refunded with qty=6 but amount=1.00 used to
+        restock all 6 units while releasing only $1, stranding the remaining
+        $59 unrecoverable in a completed sale. The money released must equal
+        the returned quantity x the line's unit contribution.
+        """
         StockMovement.objects.create(product=product, quantity=20, movement_type='receive')
         sale = _complete_cash(cashier_user, product, qty=6)
         line = sale.lines.first()
 
-        with pytest.raises(RefundValidationError):
+        with pytest.raises(RefundValidationError, match='quantity x unit price'):
             TransactionService().refund_sale(
                 sale.id, manager_approved=True,
-                items=[{'line_id': line.id, 'quantity': 5, 'amount': Decimal('70.00')}],
+                items=[{'line_id': line.id, 'quantity': 6, 'amount': Decimal('1.00')}],
             )
-        # In an over-amount: nothing written.
+        # Nothing written: goods and money stay coupled.
         assert Refund.objects.filter(sale=sale).count() == 0
         assert _restocked(product) == 0
+
+    def test_quantity_and_amount_matched_amount_is_accepted(self, cashier_user, product):
+        """The same quantity with the proportional amount succeeds."""
+        StockMovement.objects.create(product=product, quantity=20, movement_type='receive')
+        sale = _complete_cash(cashier_user, product, qty=6)
+        line = sale.lines.first()
+
+        result = TransactionService().refund_sale(
+            sale.id, manager_approved=True,
+            items=[{'line_id': line.id, 'quantity': 2, 'amount': Decimal('20.00')}],
+        )
+        assert result.status == Sale.STATUS_COMPLETED
+        assert _restocked(product) == 2
+        assert sum(r.amount for r in Refund.objects.filter(sale=sale)) == Decimal('20.00')
 
 
 @pytest.mark.django_db

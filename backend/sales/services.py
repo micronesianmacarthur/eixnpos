@@ -831,8 +831,15 @@ class TransactionService:
         With ``items`` a list of ``{'line_id', 'quantity', 'amount'}`` only
         the named lines/amounts are refunded; the sale stays ``completed`` and
         an invoice customer's balance is reduced by exactly the refunded
-        amount. Guards: no refund of a voided payment (409), no double refund
-        (409), refund amount <= captured amount and <= line capacity (400).
+        amount. ``amount`` is tied to ``quantity x unit price``: the money
+        released must equal the returned quantity times the line's per-unit
+        contribution, so goods and money cannot move independently (a refund
+        that restocks goods can't release a different dollar figure than the
+        goods' pro-rata value). Pure fee/adjustment-only refunds (money without
+        returned goods) are the documented exception and are not expressible
+        through this goods-return ``items`` form. Guards: no refund of a voided
+        payment (409), no double refund (409), refund amount <= captured amount
+        and <= line capacity (400), and qty/amount must be consistent (400).
 
         The whole operation runs inside an ``atomic`` transaction with the
         sale, its lines and payments locked via ``select_for_update`` so
@@ -897,8 +904,11 @@ class TransactionService:
                 # line_id entries must not each validate against the pre-write
                 # snapshot independently. Sum quantities and amounts per line,
                 # then validate the cumulative whole. quantity (drives restock)
-                # and amount (drives money returned) stay independent inputs,
-                # each bounded by its own remaining capacity.
+                # and amount (drives money returned) are tied together: the
+                # refunded money must equal the returned quantity × the line's
+                # unit contribution, so goods and money cannot move
+                # independently (a 6-unit / $60 line refunded for $1 with all
+                # 6 units restocked would leave $59 unrecoverable).
                 if not items:
                     raise RefundValidationError('refund items must not be empty')
                 by_line = {}
@@ -936,11 +946,11 @@ class TransactionService:
                         by_line[line_id]['amount'] += amount
                 specs = [by_line[lid] for lid in order]
 
-            # Per-line validation: positive, no double refund, within capacity.
-            # ``already_qty``/``remaining`` are read under the lock (the lines
-            # and their refunds were fetched via select_for_update above), so
-            # this re-validates against the locked re-read, not a stale
-            # snapshot (B4).
+            # Per-line validation: positive, no double refund, within capacity,
+            # and goods/money consistency. ``already_qty``/``remaining`` are read
+            # under the lock (the lines and their refunds were fetched via
+            # select_for_update above), so this re-validates against the locked
+            # re-read, not a stale snapshot (B4).
             for spec in specs:
                 line = spec['line']
                 quantity = spec['quantity']
@@ -949,6 +959,26 @@ class TransactionService:
                     raise RefundValidationError('refund quantity must be positive')
                 if amount <= 0:
                     raise RefundValidationError('refund amount must be positive')
+                # B3 goods/money consistency: the refunded money must correspond
+                # to the returned quantity at the line's per-unit contribution
+                # (line_total / quantity, which already reflects line discounts).
+                # A refund is a *pro-rata* reversal: returning `quantity` units
+                # reverses quantity × unit_contribution. Allowing `amount` to
+                # diverge would let goods come back at one price while the money
+                # released at another (a 6-unit / $60 line refunded for $1 with
+                # all 6 units restocked), stranding $59 in a never-refundable
+                # completed sale. Pure fee/adjustment-only refunds (money without
+                # returned goods) are not expressible through the goods-return
+                # `items` path — that is the documented exception, handled outside
+                # this per-line form.
+                unit_contribution = line.line_total / line.quantity
+                expected_amount = (
+                    unit_contribution * quantity
+                ).quantize(Decimal('0.01'))
+                if abs(amount - expected_amount) > Decimal('0.01'):
+                    raise RefundValidationError(
+                        'refund amount must equal quantity x unit price'
+                    )
                 already_qty = sum(r.quantity for r in line.refunds.all())
                 if already_qty >= line.quantity:
                     raise RefundConflictError('already fully refunded')
