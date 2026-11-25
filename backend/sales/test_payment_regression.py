@@ -477,3 +477,135 @@ class PaymentBlockerAcceptanceTests(TestCase):
         row2 = Payment.objects.create(sale=sale, method="cash", amount=Decimal("1.00"))
         self.assertIsNotNone(row2.idempotency_key)
         self.assertNotEqual(row.idempotency_key, row2.idempotency_key, "each keyless row gets a unique key")
+
+
+class PaymentRemediationRound2Tests(TestCase):
+    """Acceptance tests for round-2 remediation R1-R5 (review of f5adca2).
+
+    Each maps to a blocker/should-fix from the review and must FAIL on
+    f5adca2 (or at least pin the newly-safe behavior) and pass here.
+    """
+
+    def setUp(self):
+        self.cashier = User.objects.create_user(username="round2", password="pw", role="cashier")
+        self.client = APIClient()
+        self.client.force_authenticate(self.cashier)
+        self.product = Product.objects.create(name="Widget", price=Decimal("10.00"))
+
+    def make_sale_with_line(self, quantity=2):
+        sale = Sale.objects.create(cashier=self.cashier)
+        SaleLine.objects.create(
+            sale=sale, product=self.product, quantity=quantity, unit_price=self.product.price,
+        )
+        sale.recompute()
+        sale.refresh_from_db()
+        return sale
+
+    def post_payment(self, sale, payload):
+        return self.client.post(f"/api/sales/{sale.id}/set_payment/", payload, format="json")
+
+    # R1 (backend mechanism) — two rapid submissions of ONE tender, as the fixed
+    # POS client sends it (one per-tender idempotency_key), record exactly one
+    # Payment row totalling the sale total. On f5adca2 the POS sent no key and
+    # keyless POSTs are deliberately non-idempotent, so the real regression was
+    # fixed client-side (frontend test asserts the key) — this pins the server
+    # half of the contract the fixed client relies on.
+    def test_accept_r1_two_rapid_submissions_one_tender_single_row(self):
+        import uuid as _uuid
+        sale = self.make_sale_with_line(quantity=2)  # 20.00
+        key = _uuid.uuid4().hex  # a per-tender nonce like the POS now sends
+        payload = {"method": "cash", "amount": "20.00", "tendered": "20.00", "idempotency_key": key}
+
+        first = self.post_payment(sale, payload)
+        second = self.post_payment(sale, payload)  # double-click / network retry of the same attempt
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 200)
+        rows = Payment.objects.filter(sale=sale)
+        self.assertEqual(rows.count(), 1, "one tender, two submissions -> exactly one Payment row")
+        self.assertEqual(rows.aggregate(s=Sum("amount"))["s"], sale.total)
+        self.assertEqual(rows.get().idempotency_key, key, "the recorded row carries the per-tender key")
+
+    # R2 — squatting sale:<A>:complete:backcompat on sale B must not block
+    # /complete/ on A from recording its cash payment.
+    def test_accept_r2_complete_key_squat_on_other_sale_does_not_shadow(self):
+        sale_a = self.make_sale_with_line(quantity=2)  # 20.00, no payments
+        sale_b = self.make_sale_with_line(quantity=1)  # 10.00
+
+        squat_key = f"sale:{sale_a.id}:complete:backcompat"
+        # Register the key that sale A's complete flow will use, on sale B.
+        squat = self.post_payment(sale_b, {"method": "cash", "amount": "5.00", "tendered": "5.00", "idempotency_key": squat_key})
+        self.assertEqual(squat.status_code, 201, "the squat key must be registrable on sale B")
+
+        complete = self.client.post(f"/api/sales/{sale_a.id}/complete/")
+        self.assertEqual(complete.status_code, 200, "sale A must complete despite the squat on sale B")
+        sale_a.refresh_from_db()
+        self.assertEqual(sale_a.status, Sale.STATUS_COMPLETED)
+        a_cash = Payment.objects.filter(sale=sale_a, method=Payment.METHOD_CASH).first()
+        self.assertIsNotNone(a_cash, "sale A's genuine cash payment must be recorded")
+        self.assertEqual(a_cash.amount, sale_a.total)
+
+    # R3 — a split with a mobile component persists a row whose method is a
+    # member of Payment.METHOD_CHOICES (reconciled with PaymentMethod.MOBILE).
+    def test_accept_r3_split_mobile_component_method_is_in_choices(self):
+        sale = self.make_sale_with_line(quantity=2)
+        resp = self.post_payment(sale, {
+            "method": "split", "amount": "20.00",
+            "splits": [
+                {"method": "cash", "amount": "10.00", "metadata": {"tendered": "10.00"}},
+                {"method": "mobile", "amount": "10.00", "metadata": {}},
+            ],
+        })
+        self.assertEqual(resp.status_code, 201)
+        rows = list(Payment.objects.filter(sale=sale))
+        self.assertEqual(len(rows), 2)
+        methods = {p.method for p in rows}
+        self.assertIn("mobile", methods, "mobile split component must be persisted")
+        valid = {c[0] for c in Payment.METHOD_CHOICES}
+        for p in rows:
+            self.assertIn(p.method, valid, f"persisted method {p.method!r} must be in METHOD_CHOICES")
+
+    # R4 — a long (60-char) client key on a split never produces component
+    # keys longer than 64 chars (PostgreSQL-safe), and the retry is idempotent.
+    def test_accept_r4_long_split_key_component_keys_leq_64_and_retry_idempotent(self):
+        sale = self.make_sale_with_line(quantity=2)
+        long_key = "k" * 60
+        self.assertEqual(len(long_key), 60)
+        payload = {
+            "method": "split", "amount": "20.00", "idempotency_key": long_key,
+            "splits": [
+                {"method": "cash", "amount": "10.00", "metadata": {"tendered": "10.00"}},
+                {"method": "card", "amount": "10.00", "metadata": {}},
+            ],
+        }
+        first = self.post_payment(sale, payload)
+        self.assertEqual(first.status_code, 201)
+        rows = list(Payment.objects.filter(sale=sale))
+        self.assertEqual(len(rows), 2)
+        for r in rows:
+            self.assertLessEqual(len(r.idempotency_key), 64,
+                                 f"component key {len(r.idempotency_key)} chars must fit the 64-char column")
+            self.assertEqual(r.correlation_id, long_key, "correlation_id keeps the client key for replay")
+
+        # Retry with the same key is idempotent (no new rows).
+        second = self.post_payment(sale, payload)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(Payment.objects.filter(sale=sale).count(), 2)
+
+    # R5 — a keyed tender replayed AFTER completion returns 200 with the
+    # existing row instead of 400 'sale not open'.
+    def test_accept_r5_keyed_replay_after_completion_returns_existing_row(self):
+        sale = self.make_sale_with_line(quantity=2)
+        key = "post-complete-replay-key"
+        payload = {"method": "cash", "amount": "20.00", "tendered": "20.00", "idempotency_key": key}
+
+        created = self.post_payment(sale, payload)
+        self.assertEqual(created.status_code, 201)
+        complete = self.client.post(f"/api/sales/{sale.id}/complete/")
+        self.assertEqual(complete.status_code, 200)
+        self.assertEqual(Payment.objects.filter(sale=sale).count(), 1)
+
+        replay = self.post_payment(sale, payload)  # same key, sale now completed
+        self.assertEqual(replay.status_code, 200, "replay after completion must not 400")
+        self.assertEqual(replay.data["id"], created.data["id"], "replay returns the existing row")
+        self.assertEqual(Payment.objects.filter(sale=sale).count(), 1, "no new row on replay")
