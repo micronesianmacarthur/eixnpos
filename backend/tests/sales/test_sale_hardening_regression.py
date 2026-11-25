@@ -16,6 +16,7 @@ from decimal import Decimal
 import pytest
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
+from django.db.models.deletion import ProtectedError
 from rest_framework.test import APIClient
 
 from customers.models import Customer
@@ -384,7 +385,7 @@ class TestProductCascadeProtection:
         StockMovement.objects.create(
             product=product, movement_type='receive', quantity=5,
         )
-        with pytest.raises(IntegrityError) or pytest.raises(Exception):
+        with pytest.raises(ProtectedError):
             product.delete()
         assert StockMovement.objects.filter(product=product).count() == 1
         assert Product.objects.filter(pk=product.pk).exists()
@@ -418,7 +419,7 @@ class TestProductCascadeProtection:
         )
         with pytest.raises(ImmutableSaleError):
             sale.delete()
-        with pytest.raises(Exception):
+        with pytest.raises(ProtectedError):
             product.delete()
         assert StockMovement.objects.count() == 1
         assert StockMovement.objects.filter(product__isnull=True).count() == 0
@@ -499,6 +500,14 @@ class TestDatabaseConstraints:
         sale.save(update_fields=['status', 'voided_by', 'voided_at', 'void_reason'])
         sale.refresh_from_db()
         assert sale.status == Sale.STATUS_VOIDED
+
+    @pytest.mark.django_db
+    def test_voided_status_without_voided_at_rejected(self, cashier):
+        """Reverse of the voided audit pair: a bare status='voided' flip with no
+        voided_at timestamp is impossible at the DB layer too."""
+        with transaction.atomic():
+            with pytest.raises(IntegrityError):
+                Sale.objects.create(cashier=cashier, status=Sale.STATUS_VOIDED)
 
 
 class TestQuerySetHardDeleteRefusal:

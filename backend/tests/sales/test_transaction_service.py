@@ -420,7 +420,7 @@ class TestTransactionServiceVoidSale:
         service.start_sale(cashier_user)
         service.add_item(product, quantity=2)
 
-        sale = service.void_sale()
+        sale = service.void_sale(by=cashier_user, reason='duplicate')
 
         assert sale.status == Sale.STATUS_VOIDED
         assert service.current_sale is None
@@ -433,7 +433,7 @@ class TestTransactionServiceVoidSale:
         sale = service.start_sale(cashier_user)
         service.add_item(product, quantity=1)
 
-        voided = service.void_sale()
+        voided = service.void_sale(by=cashier_user, reason='customer cancelled')
 
         assert voided.status == Sale.STATUS_VOIDED
 
@@ -471,6 +471,25 @@ class TestTransactionServiceVoidSale:
         with pytest.raises(TransactionError, match='No sale in progress'):
             service.void_sale()
 
+    def test_void_requires_operator(self, cashier_user, product):
+        """A voided sale must carry the operator; a blank operator is refused."""
+        service = TransactionService()
+        service.start_sale(cashier_user)
+        service.add_item(product, quantity=1)
+
+        with pytest.raises(TransactionError, match='operator is required'):
+            service.void_sale(reason='duplicate')
+
+    def test_void_requires_reason(self, cashier_user, product):
+        """A voided sale must carry a non-empty reason (root spec: record a
+        reason); a silent/blank void is refused."""
+        service = TransactionService()
+        service.start_sale(cashier_user)
+        service.add_item(product, quantity=1)
+
+        with pytest.raises(TransactionError, match='void reason is required'):
+            service.void_sale(by=cashier_user, reason='   ')
+
     def test_void_does_not_create_stock_movements(self, cashier_user, product):
         """Test that voiding doesn't create stock movements."""
         StockMovement.objects.create(product=product, quantity=10, movement_type='receive')
@@ -478,7 +497,7 @@ class TestTransactionServiceVoidSale:
         service = TransactionService()
         service.start_sale(cashier_user)
         service.add_item(product, quantity=2)
-        service.void_sale()
+        service.void_sale(by=cashier_user, reason='signature void')
 
         assert not StockMovement.objects.filter(movement_type='sale').exists()
 
@@ -601,6 +620,52 @@ class TestTransactionServiceRefundSale:
         assert expensive_movements.count() == 1
         assert expensive_movements.first().quantity == 1
 
+    def test_refund_skips_non_stock_lines(self, cashier_user, product, supplier):
+        """Refund posts reverse movements only for stock products; non-stock
+        lines (which never had a sale ledger row on completion) are skipped."""
+        non_stock = Product.objects.create(
+            name='Repack Container', price=Decimal('0.00'), cost=Decimal('0.00'),
+            supplier=supplier, non_stock=True,
+        )
+        service = TransactionService()
+        service.start_sale(cashier_user)
+        service.add_item(product, quantity=2)
+        service.add_item(non_stock, quantity=1)
+        StockMovement.objects.create(product=product, quantity=10, movement_type='receive')
+        sale = service.complete_sale('cash', Decimal('20.00'), tendered=Decimal('20.00'))
+
+        # Completion created a sale movement only for the stock product.
+        assert StockMovement.objects.filter(
+            product=product, movement_type='sale', reference=f'sale:{sale.number}'
+        ).count() == 1
+
+        service.refund_sale(sale.id, reason='customer return', manager_approved=True)
+
+        refund_ref = f'refund:sale:{sale.number}'
+        # Stock product gets a reversal; the non-stock product never does.
+        assert StockMovement.objects.filter(
+            product=product, movement_type='adjustment', reference=refund_ref
+        ).count() == 1
+        assert not StockMovement.objects.filter(
+            product=non_stock, reference=refund_ref
+        ).exists()
+
+    def test_refund_persists_reason_on_sale(self, cashier_user, product):
+        """The refund reason is persisted on the sale (not only in ledger
+        notes), so it survives even when no stock reversal rows are written."""
+        service = TransactionService()
+        service.start_sale(cashier_user)
+        service.add_item(product, quantity=2)
+        StockMovement.objects.create(product=product, quantity=10, movement_type='receive')
+        sale = service.complete_sale('cash', Decimal('20.00'), tendered=Decimal('20.00'))
+
+        refunded = service.refund_sale(
+            sale.id, reason='stock damaged on arrival', manager_approved=True
+        )
+
+        refunded.refresh_from_db()
+        assert refunded.refund_reason == 'stock damaged on arrival'
+
 
 @pytest.mark.django_db
 class TestTransactionServiceFinalizeSale:
@@ -680,7 +745,9 @@ class TestTransactionServiceResumeSale:
 
     def test_resume_rejects_voided_sale(self, cashier_user):
         """Test that resuming voided sale is rejected."""
-        voided_sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_VOIDED)
+        voided_sale = Sale.objects.create(cashier=cashier_user)
+        voided_sale.transition_to(Sale.STATUS_VOIDED, by=cashier_user, reason='test')
+        voided_sale.save(update_fields=['status', 'voided_by', 'voided_at', 'void_reason'])
         service = TransactionService()
 
         with pytest.raises(TransactionError, match='Cannot resume sale with status'):
@@ -746,7 +813,7 @@ class TestTransactionServiceConcurrency:
         service2.add_item(product, quantity=1)
 
         # Void service1's sale
-        service1.void_sale()
+        service1.void_sale(by=cashier_user, reason='duplicate entry')
 
         # service2's sale should still be open
         assert service2.current_sale.status == Sale.STATUS_PENDING

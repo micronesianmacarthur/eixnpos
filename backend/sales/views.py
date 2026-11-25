@@ -303,14 +303,18 @@ class SaleViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def complete(self, request, pk=None):
-        """Complete a sale, supporting zero-value sales and multiple tenders."""
+        """Complete a sale, supporting zero-value sales and multiple tenders.
+
+        Routes BOTH the positive-total and zero-total paths through
+        ``TransactionService.finalize_sale`` (the single service completion
+        operation), so the two paths share the same no-items rejection, stock
+        movements and atomic status transition and cannot drift.
+        """
         sale = self.get_object()
         if sale.status != Sale.STATUS_OPEN and sale.status != Sale.STATUS_PENDING:
             return Response({'detail': 'not open'}, status=400)
 
         note = request.data.get('note', '')
-        if sale.total == 0 and not note and not sale.note:
-            return Response({'detail': 'a sales note is required for zero-value sales'}, status=400)
 
         if sale.total > 0 and not sale.payments.exists():
             # Backward-compatible single cash payment for older clients.
@@ -324,61 +328,22 @@ class SaleViewSet(viewsets.ModelViewSet):
             )
             _ = payment
 
-        if sale.total > 0:
-            total_paid = sum((p.amount for p in sale.payments.all()), Decimal('0'))
-            if total_paid < sale.total:
-                return Response({'detail': 'recorded payments are less than the sale total'}, status=400)
-
         if note:
             sale.note = note
-        if sale.total == 0:
-            sale.needs_review = True
 
         # Calculate change from stored cash tender change values.
         change_due = sum((p.change_due for p in sale.payments.all() if p.method == Payment.METHOD_CASH), Decimal('0'))
         if change_due < 0:
             change_due = Decimal('0')
 
-        # Use TransactionService to complete (stock movements only for stock products).
+        # Use TransactionService.finalize_sale for both paths: it does the
+        # no-lines/empty-sale check, the zero-total note + needs_review handling,
+        # the payment coverage check (positive-total) and the stock movements.
         try:
-            if sale.total == 0:
-                from django.db import transaction as db_transaction
-                from django.utils import timezone
-                with db_transaction.atomic():
-                    sale.transition_to(Sale.STATUS_COMPLETED)
-                    sale.note = sale.note
-                    sale.needs_review = True
-                    sale.save(update_fields=['status', 'completed_at', 'note', 'needs_review'])
-                    from inventory.models import StockMovement
-                    for line in sale.lines.all():
-                        if line.product.non_stock:
-                            continue
-                        StockMovement.objects.create(
-                            product=line.product,
-                            quantity=-line.quantity,
-                            movement_type='sale',
-                            reference=f'sale:{sale.number}',
-                        )
-                completed_sale = sale
-            else:
-                if not sale.payments.exists():
-                    Payment.objects.create(
-                        sale=sale,
-                        method=Payment.METHOD_CASH,
-                        amount=sale.total,
-                        tendered=sale.total,
-                        change_due=Decimal('0'),
-                        manager_approved=True,
-                    )
-                ts = TransactionService(require_payment_tokens=False)
-                ts._current_sale = sale
-                ts._cart = CartService(sale)
-                ts._current_sale.note = sale.note
-                ts._current_sale.needs_review = sale.needs_review
-                completed_sale = ts.finalize_sale(sale, generate_receipt=True)
-                completed_sale.note = sale.note
-                completed_sale.needs_review = sale.needs_review
-                completed_sale.save(update_fields=['note', 'needs_review'])
+            ts = TransactionService(require_payment_tokens=False)
+            ts._current_sale = sale
+            ts._cart = CartService(sale)
+            completed_sale = ts.finalize_sale(sale, generate_receipt=True)
         except (TransactionError, InsufficientPaymentError) as e:
             return Response({'detail': str(e)}, status=400)
 

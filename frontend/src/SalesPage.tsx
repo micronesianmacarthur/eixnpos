@@ -404,10 +404,18 @@ export default function SalesPage() {
     }
     const confirmed = window.confirm('Void this sale?');
     if (!confirmed) return;
+    const reason = window.prompt('Reason for voiding this sale? (required)');
+    if (!reason || !reason.trim()) {
+      setError('A reason is required to void a sale.');
+      return;
+    }
     setBusy(true);
     setError('');
     try {
-      await apiFetch(`/api/sales/${sale.id}/void/`, { method: 'POST' });
+      await apiFetch(`/api/sales/${sale.id}/void/`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: reason.trim() }),
+      });
       setSale(null);
       setPaymentRecorded(false);
       setPayTendered('');

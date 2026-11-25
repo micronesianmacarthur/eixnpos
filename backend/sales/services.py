@@ -604,17 +604,25 @@ class TransactionService:
 
         return sale
 
-    def finalize_sale(self, sale: Sale, generate_receipt: bool = True, receipt_format: str = "text") -> Sale:
-        """
-        Finalize a sale that already has payment recorded.
+    def finalize_sale(self, sale: Sale, generate_receipt: bool = True, receipt_format: str = "text", *, note: Optional[str] = None, needs_review: Optional[bool] = None) -> Sale:
+        """Finalize a sale into the completed state.
 
-        This completes the sale without processing additional payment.
-        Used when payment was recorded separately (e.g., via set_payment endpoint).
+        This is the single service operation used by BOTH the positive-total and
+        the zero-total (documented, zero-value) branches of the ``complete``
+        action, so the two paths cannot drift: identical no-lines rejection,
+        identical stock-movement behaviour, identical atomic status transition.
+
+        Empty-sale rule: a sale must contain at least one line item to complete,
+        regardless of total. A zero-total sale simply carries no payment and is
+        flagged for manager review (``needs_review``).
 
         Args:
-            sale: The sale to finalize.
+            sale: The sale to finalize (open/pending).
             generate_receipt: Whether to generate a receipt.
             receipt_format: "text" or "pdf".
+            note: Optional note to persist on completion (required, set via
+                ``sale.note``, for a zero-total documented sale).
+            needs_review: Explicit review-flag override.
 
         Returns:
             The completed Sale.
@@ -628,20 +636,34 @@ class TransactionService:
         if not sale.lines.exists():
             raise TransactionError('Cannot complete sale with no items')
 
-        if not sale.payments.exists():
-            raise TransactionError('Payment required before completion')
-
-        # Verify total paid covers sale total
-        total_paid = sum(p.amount for p in sale.payments.all())
-        if total_paid < sale.total:
-            raise TransactionError(
-                f'Total paid ({total_paid}) is less than sale total ({sale.total})'
-            )
+        if sale.total > 0:
+            if not sale.payments.exists():
+                raise TransactionError('Payment required before completion')
+            # Verify total paid covers sale total
+            total_paid = sum(p.amount for p in sale.payments.all())
+            if total_paid < sale.total:
+                raise TransactionError(
+                    f'Total paid ({total_paid}) is less than sale total ({sale.total})'
+                )
+        elif sale.total == 0:
+            # Zero-total documented sale: payment isn't required, but the sale
+            # must carry a note explaining why (a silent zero-value completion
+            # would be indistinguishable from a bug). It is always marked for
+            # manager review.
+            if not sale.note:
+                raise TransactionError('A sales note is required for zero-value sales')
 
         # Complete the sale - create stock movements
         with db_transaction.atomic():
             sale.transition_to(Sale.STATUS_COMPLETED)
-            sale.save(update_fields=['status', 'completed_at'])
+            if sale.total == 0:
+                sale.needs_review = True
+            if note:
+                sale.note = note
+            if needs_review is not None:
+                sale.needs_review = needs_review
+            update_fields = ['status', 'completed_at', 'note', 'needs_review']
+            sale.save(update_fields=update_fields)
 
             # Create stock movements for each stock product only
             for line in sale.lines.all():
@@ -692,6 +714,15 @@ class TransactionService:
                 f'Only open/pending sales can be voided, current status: {sale.status}'
             )
 
+        # A voided sale is an accounting record: it must carry the operator who
+        # voided it and a non-empty why. Refuse silent/blank voids at the
+        # service so no caller (HTTP or otherwise) can fabricate an incomplete
+        # audit trail.
+        if by is None:
+            raise TransactionError('An operator is required to void a sale')
+        if not reason or not reason.strip():
+            raise TransactionError('A void reason is required')
+
         with db_transaction.atomic():
             sale.transition_to(
                 Sale.STATUS_VOIDED,
@@ -736,9 +767,6 @@ class TransactionService:
         except Sale.DoesNotExist:
             raise TransactionError(f'Sale {sale_id} not found')
 
-        if sale.status != Sale.STATUS_COMPLETED:
-            raise TransactionError(f'Can only refund completed sales, current status: {sale.status}')
-
         # Verify manager approval for refunds
         effective_manager_approved = manager_approved
         if manager_credentials:
@@ -752,25 +780,41 @@ class TransactionService:
         if not effective_manager_approved:
             raise TransactionError('Manager approval required for refunds')
 
-        # Process refund - create reverse stock movements
+        # Process refund - create reverse stock movements. The completed->refunded
+        # transition and the reversal ledger rows happen inside one transaction,
+        # and the sale's status is re-checked under a row lock so two concurrent
+        # refunds of the same sale cannot both pass the guard and both post
+        # reversals (silently defeated on SQLite, real on Postgres).
         with db_transaction.atomic():
-            sale.transition_to(
+            locked = Sale.objects.select_for_update().get(pk=sale_id)
+            if locked.status != Sale.STATUS_COMPLETED:
+                raise TransactionError(
+                    f'Can only refund completed sales, current status: {locked.status}'
+                )
+            locked.transition_to(
                 Sale.STATUS_REFUNDED,
                 by=by,
+                reason=reason,
             )
-            sale.save(update_fields=['status', 'refunded_at', 'refunded_by'])
+            locked.save(update_fields=[
+                'status', 'refunded_at', 'refunded_by', 'refund_reason',
+            ])
 
-            # Create reverse stock movements (positive quantity for return)
-            for line in sale.lines.all():
+            # Create reverse stock movements (positive quantity for return) for
+            # stock products only; non-stock lines have no sale ledger row to
+            # reverse (completion/finalize skip them too).
+            for line in locked.lines.all():
+                if line.product.non_stock:
+                    continue
                 StockMovement.objects.create(
                     product=line.product,
                     quantity=line.quantity,  # Positive for return
                     movement_type='adjustment',  # Using adjustment for returns
-                    reference=f'refund:sale:{sale.number}',
+                    reference=f'refund:sale:{locked.number}',
                     note=f'Refund: {reason}' if reason else 'Refund'
                 )
 
-        return sale
+        return locked
 
     def get_sale(self, sale_id: int) -> Sale:
         """Retrieve a sale by ID."""

@@ -634,7 +634,11 @@ class SaleApiTests(TestCase):
         sale = self.make_sale_with_line(quantity=2)
         self.client.force_authenticate(self.manager)
 
-        response = self.client.post(f'/api/sales/{sale.id}/void/')
+        response = self.client.post(
+            f'/api/sales/{sale.id}/void/',
+            {'reason': 'duplicate entry'},
+            format='json',
+        )
 
         self.assertEqual(response.status_code, 200)
         sale.refresh_from_db()
@@ -715,7 +719,10 @@ class SaleApiTests(TestCase):
         self.assertIsNone(sale.customer)
 
     def test_customer_immutable_on_voided_sale(self):
-        sale = self.make_sale(status=Sale.STATUS_VOIDED)
+        sale = self.make_sale()
+        sale.transition_to(Sale.STATUS_VOIDED, by=self.manager, reason='test')
+        sale.save(update_fields=['status', 'voided_by', 'voided_at', 'void_reason'])
+        sale.refresh_from_db()
 
         response = self.client.patch(
             f'/api/sales/{sale.id}/',

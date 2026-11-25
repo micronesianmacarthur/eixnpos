@@ -155,6 +155,10 @@ class Sale(models.Model):
         User, related_name='refunded_sales',
         null=True, blank=True, on_delete=models.PROTECT,
     )
+    # Operator-supplied reason for a refund, persisted on the sale (not just in
+    # the StockMovement.note / reversal rows). Written atomically with the
+    # completed->refunded transition so the audit record never loses the why.
+    refund_reason = models.TextField(blank=True)
     note = models.TextField(blank=True)
     needs_review = models.BooleanField(default=False)
 
@@ -168,6 +172,12 @@ class Sale(models.Model):
             models.CheckConstraint(
                 condition=models.Q(refunded_at__isnull=True) | models.Q(status='refunded'),
                 name='refunded_at_implies_refunded_status',
+            ),
+            # Reverse direction of the voided audit pair: once a sale is voided
+            # it must carry an audit timestamp (never a bare status flip).
+            models.CheckConstraint(
+                condition=~models.Q(status='voided', voided_at__isnull=True),
+                name='voided_status_requires_voided_at',
             ),
         ]
 
@@ -185,7 +195,8 @@ class Sale(models.Model):
         *INVIOLATE_FIELDS,
         'status',
         'voided_by', 'voided_at', 'void_reason',
-        'refunded_by', 'refunded_at', 'completed_at',
+        'refunded_by', 'refunded_at', 'refund_reason',
+        'completed_at',
     })
 
     #: The default manager now uses :class:`SaleQuerySet`, so bulk deletes fail
@@ -325,6 +336,7 @@ class Sale(models.Model):
         elif new_status == self.STATUS_REFUNDED:
             self.refunded_at = now
             self.refunded_by = by
+            self.refund_reason = reason
         return self
 
     @classmethod

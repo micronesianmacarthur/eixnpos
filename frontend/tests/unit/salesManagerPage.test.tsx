@@ -213,11 +213,13 @@ describe('SalesManagerPage — manager actions', () => {
     await user.click(screen.getByTestId('action-void'))
     const confirm = screen.getByRole('alertdialog')
     expect(confirm).toHaveTextContent('Void sale #1002?')
+    await user.type(within(confirm).getByLabelText(/reason/i), 'Duplicate entry')
     await user.click(within(confirm).getByTestId('action-confirm'))
 
     await waitFor(() =>
       expect(mockedFetch).toHaveBeenCalledWith('/api/sales/2/void/', {
         method: 'POST',
+        body: JSON.stringify({ reason: 'Duplicate entry' }),
       }),
     )
     // The sale #1002 row now shows the Voided badge (chip is separate).
@@ -483,11 +485,21 @@ describe('SalesManagerPage — bulk void', () => {
     await user.click(screen.getByRole('checkbox', { name: 'Select sale 1003' }))
     const bulkbar = screen.getByRole('region', { name: 'Bulk actions' })
     expect(within(bulkbar).getByText('2 selected')).toBeInTheDocument()
+    await user.type(
+      within(bulkbar).getByPlaceholderText(/void reason/i),
+      'Customer dispute',
+    )
 
     await user.click(screen.getByTestId('bulk-void'))
     await waitFor(() => expect(mockedFetch).toHaveBeenCalledTimes(2))
-    expect(mockedFetch).toHaveBeenCalledWith('/api/sales/2/void/', { method: 'POST' })
-    expect(mockedFetch).toHaveBeenCalledWith('/api/sales/3/void/', { method: 'POST' })
+    expect(mockedFetch).toHaveBeenCalledWith('/api/sales/2/void/', {
+      method: 'POST',
+      body: JSON.stringify({ reason: 'Customer dispute' }),
+    })
+    expect(mockedFetch).toHaveBeenCalledWith('/api/sales/3/void/', {
+      method: 'POST',
+      body: JSON.stringify({ reason: 'Customer dispute' }),
+    })
     // The completed sale was never voided.
     expect(mockedFetch).not.toHaveBeenCalledWith('/api/sales/4/void/', { method: 'POST' })
     expect(await screen.findByText('Sale #1002 voided.')).toBeInTheDocument()
@@ -639,6 +651,7 @@ describe('SalesManagerPage — action failures and dismissal', () => {
 
     await user.click(screen.getByTestId('action-void'))
     const confirm = screen.getByRole('alertdialog')
+    await user.type(within(confirm).getByLabelText(/reason/i), 'Duplicate')
     await user.click(within(confirm).getByTestId('action-confirm'))
     expect(await within(confirm).findByRole('alert')).toHaveTextContent(
       'Manager approval required',
