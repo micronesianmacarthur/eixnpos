@@ -589,7 +589,10 @@ class SaleApiTests(TestCase):
         self.assertEqual(self.customer.balance, Decimal('20.00'))
         self.assertTrue(Payment.objects.get(sale=sale).manager_approved)
 
-    def test_manager_can_override_credit_limit(self):
+    def test_manager_approval_does_not_override_credit_limit(self):
+        """Manager approval authorizes the invoice sale itself; breaching the
+        customer's credit ceiling requires a separate account exception
+        (can_override_credit), which a manager does not hold."""
         sale = self.make_sale_with_line(quantity=2)
         self.customer.credit_limit = Decimal('5.00')
         self.customer.save(update_fields=['credit_limit'])
@@ -601,9 +604,30 @@ class SaleApiTests(TestCase):
             format='json',
         )
 
+        self.assertEqual(response.status_code, 400)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.balance, Decimal('0.00'))
+        self.assertEqual(self.customer.ledger_entries.count(), 0)
+
+    def test_admin_account_exception_overrides_credit_limit(self):
+        sale = self.make_sale_with_line(quantity=2)
+        self.customer.credit_limit = Decimal('5.00')
+        self.customer.save(update_fields=['credit_limit'])
+        admin = User.objects.create_user(username='adm-cred', password='pw',
+                                         role='admin', is_superuser=True)
+        self.client.force_authenticate(admin)
+
+        response = self.client.post(
+            f'/api/sales/{sale.id}/set_payment/',
+            {'method': 'invoice', 'amount': '20.00', 'customer': self.customer.id},
+            format='json',
+        )
+
         self.assertEqual(response.status_code, 201)
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.balance, Decimal('20.00'))
+        entry = self.customer.ledger_entries.get()
+        self.assertTrue(entry.approved)
 
     def test_complete_marks_sale_and_moves_stock(self):
         sale = self.make_sale_with_line(quantity=2)
