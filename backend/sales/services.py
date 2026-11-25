@@ -534,17 +534,10 @@ class TransactionService:
 
             if not effective_manager_approved:
                 raise TransactionError('Manager approval required for invoice payment')
-
-            # Check credit limit
-            new_balance = target_customer.balance + amount
-            if new_balance > target_customer.credit_limit and not effective_manager_approved:
-                raise TransactionError('Credit limit exceeded')
-
-            # Update customer
-            sale.customer = target_customer
-            sale.save(update_fields=['customer'])
-            target_customer.balance = new_balance
-            target_customer.save(update_fields=['balance'])
+            # The customer balance increment and credit-limit check happen
+            # inside the atomic block below, on a select_for_update-locked row
+            # (S1/S2): an invoice is only charged if the whole completion
+            # commits, and concurrent invoice tenders cannot lose updates.
 
         # Prepare payment metadata
         metadata: dict[str, Any] = {"manager_approved": effective_manager_approved}
@@ -586,9 +579,25 @@ class TransactionService:
 
         # Complete the sale - create stock movements
         with db_transaction.atomic():
-            existing = Payment.objects.filter(idempotency_key=idempotency_key).select_for_update().first()
+            existing = Payment.objects.filter(
+                sale=sale, idempotency_key=idempotency_key,
+            ).select_for_update().first()
             if existing is None:
                 Payment.objects.create(**payment_kwargs)
+
+            # S1/S2: charge the customer only when the whole completion commits.
+            # Re-read and lock the customer row under select_for_update so the
+            # credit-limit check and the increment happen on the same locked
+            # value (no lost update on concurrent invoice tenders).
+            if method == PaymentMethod.INVOICE:
+                locked_customer = Customer.objects.select_for_update().get(pk=target_customer.pk)
+                new_balance = locked_customer.balance + amount
+                if new_balance > locked_customer.credit_limit and not effective_manager_approved:
+                    raise TransactionError('Credit limit exceeded')
+                locked_customer.balance = new_balance
+                locked_customer.save(update_fields=['balance'])
+                sale.customer = locked_customer
+                sale.save(update_fields=['customer'])
 
             sale.status = Sale.STATUS_COMPLETED
             sale.completed_at = timezone.now()
