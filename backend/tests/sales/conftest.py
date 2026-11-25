@@ -117,12 +117,14 @@ def sale_with_lines(open_sale, product):
 
 @pytest.fixture
 def completed_sale(cashier_user, product):
-    """Create a completed sale with stock movement."""
-    sale = Sale.objects.create(
-        cashier=cashier_user,
-        status=Sale.STATUS_COMPLETED,
-        completed_at=timezone.now(),
-    )
+    """Create a completed sale with stock movement.
+
+    The immutable record is built through the sanctioned status transition so
+    its totals are fixed while the sale is still open; recomputing totals on an
+    already-completed sale is (by design) refused by the model immutability
+    guard.
+    """
+    sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_OPEN)
     SaleLine.objects.create(
         sale=sale,
         product=product,
@@ -130,6 +132,8 @@ def completed_sale(cashier_user, product):
         unit_price=product.price,
     )
     sale.recompute()
+    sale.transition_to(Sale.STATUS_COMPLETED)
+    sale.save(update_fields=['status', 'completed_at'])
     # Create stock movement
     StockMovement.objects.create(
         product=product,

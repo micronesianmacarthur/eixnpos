@@ -449,7 +449,7 @@ class TestTransactionServiceVoidSale:
         service2._current_sale = Sale.objects.get(number=1)
         service2._cart = None  # No cart for completed sale
 
-        with pytest.raises(TransactionError, match='Cannot void a completed sale'):
+        with pytest.raises(TransactionError, match='current status: completed'):
             service2.void_sale()
 
     def test_void_rejects_refunded_sale(self, cashier_user):
@@ -461,7 +461,7 @@ class TestTransactionServiceVoidSale:
         service._current_sale = refunded_sale
         service._cart = None
 
-        with pytest.raises(TransactionError, match='Cannot void a refunded sale'):
+        with pytest.raises(TransactionError, match='current status: refunded'):
             service.void_sale()
 
     def test_void_rejects_no_active_sale(self):

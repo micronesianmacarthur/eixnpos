@@ -233,9 +233,47 @@ class TestImmutability:
 
     @pytest.mark.django_db
     def test_direct_orm_customer_write_blocked(self, cashier, product, customer):
+        """A real ORM write (not the helper) must be refused on a completed sale."""
         sale = complete_sale(make_sale(cashier), product)
+        sale.customer = customer
         with pytest.raises(ImmutableSaleError):
-            sale.check_inviolate_fields({'customer': customer.pk})
+            sale.save()
+        sale.refresh_from_db()
+        assert sale.customer is None
+
+    @pytest.mark.django_db
+    def test_direct_orm_identity_rewrite_blocked(self, cashier, product, customer):
+        """update_fields customer rewrite on a completed sale is refused by save()."""
+        sale = complete_sale(make_sale(cashier), product)
+        sale.customer = customer
+        with pytest.raises(ImmutableSaleError):
+            sale.save(update_fields=['customer'])
+        sale.refresh_from_db()
+        assert sale.customer is None
+
+    @pytest.mark.django_db
+    def test_orm_status_rewrite_back_to_open_blocked(self, cashier, product):
+        """Reverting a completed sale to 'open' via save() is refused."""
+        sale = complete_sale(make_sale(cashier), product)
+        sale.status = Sale.STATUS_OPEN
+        with pytest.raises(ImmutableSaleError):
+            sale.save()
+        sale.refresh_from_db()
+        assert sale.status == Sale.STATUS_COMPLETED
+        # And once the DB row is completed, even the now-stale instance cannot
+        # erase it (it must go through transition_to's whitelist / void/refund).
+        with pytest.raises(ImmutableSaleError):
+            sale.delete()
+
+    @pytest.mark.django_db
+    def test_orm_audit_field_rewrite_blocked(self, cashier, product):
+        """void_reason cannot be back-written onto a completed sale via save()."""
+        sale = complete_sale(make_sale(cashier), product)
+        sale.void_reason = 'fabricated audit record'
+        with pytest.raises(ImmutableSaleError):
+            sale.save(update_fields=['void_reason'])
+        sale.refresh_from_db()
+        assert sale.void_reason == ''
 
 
 class TestTransitionWhitelist:
@@ -461,3 +499,65 @@ class TestDatabaseConstraints:
         sale.save(update_fields=['status', 'voided_by', 'voided_at', 'void_reason'])
         sale.refresh_from_db()
         assert sale.status == Sale.STATUS_VOIDED
+
+
+class TestQuerySetHardDeleteRefusal:
+    """Bulk ``QuerySet.delete()`` must fail closed on immutable sales."""
+
+    @pytest.mark.django_db
+    def test_queryset_delete_refuses_completed_sale(self, cashier, product):
+        sale = complete_sale(make_sale(cashier), product)
+        with pytest.raises(ImmutableSaleError):
+            Sale.objects.filter(pk=sale.pk).delete()
+        assert Sale.objects.filter(pk=sale.pk).exists()
+
+    @pytest.mark.django_db
+    def test_queryset_delete_refuses_voided_sale(self, cashier, manager):
+        sale = make_sale(cashier)
+        sale.transition_to(Sale.STATUS_VOIDED, by=manager, reason='x')
+        sale.save(update_fields=['status', 'voided_by', 'voided_at', 'void_reason'])
+        with pytest.raises(ImmutableSaleError):
+            Sale.objects.filter(pk=sale.pk).delete()
+        assert Sale.objects.filter(pk=sale.pk).exists()
+
+    @pytest.mark.django_db
+    def test_queryset_delete_refuses_mixed_batch_atomically(self, cashier, product):
+        """A batch containing one immutable sale refuses the whole delete."""
+        open_sale = make_sale(cashier)
+        completed = complete_sale(make_sale(cashier), product)
+        with pytest.raises(ImmutableSaleError):
+            Sale.objects.filter(pk__in=[open_sale.pk, completed.pk]).delete()
+        assert Sale.objects.filter(pk=open_sale.pk).exists()
+        assert Sale.objects.filter(pk=completed.pk).exists()
+
+    @pytest.mark.django_db
+    def test_queryset_delete_of_open_sale_still_works(self, cashier):
+        open_sale = make_sale(cashier)
+        Sale.objects.filter(pk=open_sale.pk).delete()
+        assert not Sale.objects.filter(pk=open_sale.pk).exists()
+
+
+class TestStaleInstanceDeleteGuard:
+    """``Sale.delete()`` must trust the DB status, not a stale in-memory one."""
+
+    @pytest.mark.django_db
+    def test_stale_instance_cannot_delete_completed_row(self, cashier):
+        sale = make_sale(cashier)  # in-memory status: open
+        Sale.objects.filter(pk=sale.pk).update(status=Sale.STATUS_COMPLETED)
+        # The stale open instance would pass is_open(); the DB re-read refuses.
+        with pytest.raises(ImmutableSaleError):
+            sale.delete()
+        assert Sale.objects.filter(pk=sale.pk).exists()
+
+    @pytest.mark.django_db
+    def test_stale_instance_cannot_rewrite_completed_row_via_save(self, cashier, customer):
+        sale = make_sale(cashier)
+        Sale.objects.filter(pk=sale.pk).update(status=Sale.STATUS_COMPLETED)
+        sale.customer = customer
+        # Stale in-memory says open, but save() consults the persisted (completed)
+        # row and refuses the identity rewrite.
+        with pytest.raises(ImmutableSaleError):
+            sale.save(update_fields=['customer'])
+        fresh = Sale.objects.get(pk=sale.pk)
+        assert fresh.customer is None
+        assert fresh.status == Sale.STATUS_COMPLETED
