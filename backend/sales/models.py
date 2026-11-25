@@ -2,6 +2,7 @@ from django.db import models
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from decimal import Decimal
+import uuid
 
 User = get_user_model()
 
@@ -142,9 +143,14 @@ class Payment(models.Model):
     change_due = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     manager_approved = models.BooleanField(default=False)
     # Idempotency: a stable key uniquely ties a Payment row to one logical
-    # tender action so a retried/duplicated request cannot double-record.
-    # NULL + unique lets legacy/backfill rows coexist with new keyed rows.
-    idempotency_key = models.CharField(max_length=64, unique=True, null=True, blank=True)
+    # tender action so a retried/duplicated request cannot double-record. The
+    # client supplies this key for a retryable tender; server-derived keys are
+    # no longer generated (they were guessable and enable key-squatting). A
+    # keyless write gets a random UUID via the default, so admin/shell/import
+    # rows are never NULL and always carry a unique (non-replayable) key.
+    # editable=False hides it from the admin add/edit form so provenance keys
+    # cannot be hand-typed.
+    idempotency_key = models.CharField(max_length=64, unique=True, default=uuid.uuid4, editable=False)
     source = models.CharField(max_length=24, choices=SOURCE_CHOICES, default=SOURCE_UI)
     transaction_id = models.CharField(max_length=64, null=True, blank=True)
     # Groups the per-method rows of one split payment into a single logical
