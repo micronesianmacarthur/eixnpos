@@ -19,7 +19,7 @@ import random
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
-from django.contrib.auth.models import Permission
+from django.contrib.auth.models import AnonymousUser, Permission
 from rest_framework.test import APIClient
 
 from customers.models import Customer, LedgerEntry, PayOnAccount
@@ -366,6 +366,73 @@ class CreditLimitTests(TestCase):
         self.assertFalse(can_override_credit(self.cashier))
         self.assertFalse(can_override_credit(self.manager))
         self.assertTrue(can_override_credit(self.admin))
-        # None operator is the legacy/backfill path: unattributed entries are
-        # allowed by design, but a real unprivileged operator can never grant.
-        self.assertTrue(can_override_credit(None))
+        # S1: override authority fails closed — a missing or anonymous operator
+        # is never granted it. Legacy/backfilled entries bypass the ledger
+        # service entirely (they write rows directly with operator=null), so no
+        # sanctioned path needs this predicate to return True for no user.
+        self.assertFalse(can_override_credit(None))
+        self.assertFalse(can_override_credit(AnonymousUser()))
+
+
+class DirectionalGuardTests(TestCase):
+    """B2: the credit ceiling constrains credits only; debits are never blocked
+    by it, so over-limit and default-limit customers can always pay down."""
+
+    def setUp(self):
+        self.cashier = make_user('cash-dir')
+
+    def test_over_limit_customer_can_partial_pay_down(self):
+        """balance 100.00 / limit 50.00, pay down 10.00 -> 200, balance 90.00."""
+        customer = Customer.objects.create(
+            name='OverLim', balance=D('100.00'), credit_limit=D('50.00')
+        )
+        entry = LedgerService.record_pay_down_account(
+            customer, '10.00', operator=self.cashier
+        )
+        self.assertEqual(entry.direction, 'debit')
+        customer.refresh_from_db()
+        self.assertEqual(customer.balance, D('90.00'))
+
+    def test_default_limit_customer_can_partial_pay_down(self):
+        """balance 6.25 / default limit 0.00, pay down 5.00 -> 200, balance 1.25."""
+        customer = Customer.objects.create(
+            name='DefaultLim', balance=D('6.25'), credit_limit=D('0.00')
+        )
+        LedgerService.record_pay_down_account(customer, '5.00', operator=self.cashier)
+        customer.refresh_from_db()
+        self.assertEqual(customer.balance, D('1.25'))
+
+    def test_pay_down_cannot_drive_balance_negative_without_approval(self):
+        """Debits still honour the negative-balance floor (remainder is 0.00 of
+        a 10.00 payoff on 6.25 balance -> would go negative -> rejected)."""
+        customer = Customer.objects.create(
+            name='Short', balance=D('6.25'), credit_limit=D('50.00')
+        )
+        with self.assertRaises(NegativeBalanceError):
+            LedgerService.record_pay_down_account(customer, '10.00', operator=self.cashier)
+        customer.refresh_from_db()
+        self.assertEqual(customer.balance, D('6.25'))
+
+    def test_credit_over_ceiling_without_approval_is_rejected(self):
+        customer = Customer.objects.create(
+            name='OverCred', balance=D('0.00'), credit_limit=D('50.00')
+        )
+        with self.assertRaises(OverLimitError):
+            LedgerService.record_invoice_payment(
+                customer, '60.00', operator=self.cashier, sale=None
+            )
+        customer.refresh_from_db()
+        self.assertEqual(customer.balance, D('0.00'))
+        self.assertEqual(customer.ledger_entries.count(), 0)
+
+    def test_credit_over_ceiling_with_admin_approval_is_accepted_and_approved(self):
+        admin = make_user('adm-dir', role='admin', is_superuser=True)
+        customer = Customer.objects.create(
+            name='OverCredApp', balance=D('0.00'), credit_limit=D('50.00')
+        )
+        entry = LedgerService.record_invoice_payment(
+            customer, '60.00', operator=admin, sale=None, account_exception=True
+        )
+        self.assertTrue(entry.approved)
+        customer.refresh_from_db()
+        self.assertEqual(customer.balance, D('60.00'))

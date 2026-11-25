@@ -3,9 +3,11 @@ from decimal import Decimal
 from django.db import transaction as db_transaction
 from rest_framework import serializers, viewsets, status
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from accounts.roles import has_admin_role
 from .models import Customer, PayOnAccount, LedgerEntry
 from .services import (
     LedgerService,
@@ -39,12 +41,45 @@ class CustomerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Customer
         fields = ['id', 'name', 'phone', 'balance', 'credit_limit', 'notes', 'created_at', 'updated_at']
+        read_only_fields = ['balance']
 
 
 class CustomerViewSet(viewsets.ModelViewSet):
     queryset = Customer.objects.all()
     serializer_class = CustomerSerializer
     permission_classes = [IsAuthenticated]
+
+    def _assert_admin(self):
+        """Require admin role; cashiers/managers get 403 on any customer write.
+
+        Balance is never directly writable through the API (it is read-only in
+        the serializer and every real change routes through LedgerService), and
+        ``credit_limit`` is a privileged policy field that only admins set.
+        """
+        if not has_admin_role(self.request.user):
+            raise PermissionDenied(
+                'Managing customers (create/update/delete) and setting the '
+                'credit limit requires admin authority.'
+            )
+
+    def perform_create(self, serializer):
+        self._assert_admin()
+        serializer.save()
+
+    def perform_update(self, serializer):
+        self._assert_admin()
+        serializer.save()
+
+    def destroy(self, request, *args, **kwargs):
+        self._assert_admin()
+        customer = self.get_object()
+        if customer.ledger_entries.exists():
+            return Response(
+                {'detail': 'Cannot delete a customer with ledger history; '
+                           'the audit trail must be preserved.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return super().destroy(request, *args, **kwargs)
 
     @action(detail=True, methods=['get'], url_path='transactions')
     def transactions(self, request, pk=None):

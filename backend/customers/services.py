@@ -41,15 +41,17 @@ class LedgerAuthorizationError(LedgerError):
 def can_override_credit(user):
     """Return True if *user* may grant the account exception (negative balance / over-limit).
 
-    The override is a distinct, stricter authorization than plain manager
-    approval of an invoice. It is granted to admins and to users holding the
-    explicit ``customers.can_override_credit`` permission; ``is_manager`` alone
-    is deliberately insufficient so that manager approval of a sale can never
-    silently unlock the credit ceiling.
+    Fails **closed**: a missing or anonymous operator is never granted
+    override authority. The check is deliberately strict — it is granted only
+    to authenticated users who are superusers/admins or hold the explicit
+    ``customers.can_override_credit`` permission; ``is_manager`` alone is
+    insufficient so that manager approval of a sale can never silently unlock
+    the credit ceiling. Legacy/backfill writes (which have no real operator)
+    bypass the ledger service entirely and write entries directly, so they do
+    not need this predicate to return True for a missing user.
     """
     if not user or not getattr(user, 'is_authenticated', False):
-        # Null operator is the legacy/backfill path (no real owner to check).
-        return True
+        return False
     if getattr(user, 'is_superuser', False):
         return True
     if has_admin_role(user):
@@ -107,12 +109,21 @@ class LedgerService:
         return balance - amount
 
     @staticmethod
-    def _assert_guards(customer, new_balance, approved):
-        if new_balance < Decimal('0') and not approved:
-            raise NegativeBalanceError(
-                f'This payment would drive the balance below zero '
-                f'({new_balance:.2f}). An approved account exception is required.'
-            )
+    def _assert_guards(customer, new_balance, approved, direction):
+        if direction == 'debit':
+            # A debit (pay-down) lowers the balance; only the negative-balance
+            # floor applies. The credit ceiling is never consulted for debits so
+            # an over-limit customer can still pay their debt down, and a
+            # legacy-balance customer with the default ``credit_limit=0`` is not
+            # locked out of settling.
+            if new_balance < Decimal('0') and not approved:
+                raise NegativeBalanceError(
+                    f'This payment would drive the balance below zero '
+                    f'({new_balance:.2f}). An approved account exception is required.'
+                )
+            return
+        # direction == 'credit': a credit raises the balance, so only the
+        # credit ceiling applies (a credit can never drive the balance negative).
         if new_balance > customer.credit_limit and not approved:
             raise OverLimitError(
                 f'This invoice would exceed the credit limit of '
@@ -160,7 +171,7 @@ class LedgerService:
             # Lock the customer row for the remainder of the transaction.
             customer = Customer.objects.select_for_update().get(pk=customer.pk)
             new_balance = LedgerService._project(customer, amount, direction)
-            LedgerService._assert_guards(customer, new_balance, approved)
+            LedgerService._assert_guards(customer, new_balance, approved, direction)
 
             entry = LedgerEntry.objects.create(
                 customer=customer,
@@ -231,5 +242,5 @@ class LedgerService:
         with transaction.atomic():
             customer = Customer.objects.select_for_update().get(pk=customer.pk)
             new_balance = LedgerService._project(customer, amount, direction)
-            LedgerService._assert_guards(customer, new_balance, bool(approved))
+            LedgerService._assert_guards(customer, new_balance, bool(approved), direction)
             return new_balance
