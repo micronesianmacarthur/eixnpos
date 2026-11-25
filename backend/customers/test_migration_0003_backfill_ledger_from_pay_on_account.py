@@ -14,10 +14,13 @@ unapply/re-apply of ``0003`` actually executes against the test database.
 from decimal import Decimal
 import importlib
 
+from django.contrib.auth import get_user_model
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase
 from django.utils import timezone
+
+from customers.services import LedgerService
 
 # Module name begins with a digit, so normal `from ... import 0003_...`
 # is a syntax error; import it by string instead.
@@ -284,3 +287,105 @@ class BackfillLedgerMigrationTests(TransactionTestCase):
         for customer in Customer.objects.all():
             entries = Ledger.objects.filter(customer_id=customer.pk)
             self.assertEqual(_ledger_sum(entries), customer.balance)
+
+    # -- reviewer B3 regressions ------------------------------------------
+
+    def _make_operator(self):
+        """Return a real operator user for post-migration ledger activity."""
+        return get_user_model().objects.create_user(
+            username=f'op-{id(self)}', password='pw')
+
+    def test_rerun_after_dual_write_payment_raises_and_changes_nothing(self):
+        # Reviewer reproduction: fresh 0002 -> customer(6.25, limit 1000) with
+        # one legacy PayOnAccount(5.00).
+        customer = self._make_customer('dualwrite', '6.25', credit_limit='1000.00')
+        self._make_poa(customer, '5.00', timezone.now() - timezone.timedelta(days=1))
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_to)
+        new_apps = executor.loader.project_state(self.migrate_to).apps
+        Ledger = new_apps.get_model('customers', 'LedgerEntry')
+        Customer = new_apps.get_model('customers', 'Customer')
+
+        # Sanity: forward migration produced opening 11.25 + debit 5.00,
+        # running 6.25 == balance.
+        cust = Customer.objects.get(pk=customer.pk)
+        self.assertEqual(cust.balance, Decimal('6.25'))
+        self.assertEqual(
+            sum(e.amount * _sign(e.direction)
+                for e in Ledger.objects.filter(customer_id=customer.pk)),
+            Decimal('6.25'))
+
+        # Post-migration activity exactly as customers/views.py dual-writes it:
+        # a ledger debit via LedgerService PLUS the retained PayOnAccount row.
+        from customers.models import Customer as RealCustomer, \
+            PayOnAccount as RealPOA
+        operator = self._make_operator()
+        real_customer = RealCustomer.objects.get(pk=customer.pk)
+        LedgerService.record_pay_down_account(
+            real_customer, '1.00', operator=operator, note='post-migration')
+        RealPOA.objects.create(customer=real_customer, amount=Decimal('1.00'))
+
+        # Now balance is 5.25 and there is an unmarked LedgerService debit row.
+        rows_before = list(
+            Ledger.objects.filter(customer_id=customer.pk).order_by('id'))
+        balance_before = Customer.objects.get(pk=customer.pk).balance
+        poa_count_before = Ledger.objects.filter(
+            customer_id=customer.pk,
+            reference__startswith='payonaccount:').count()
+        self.assertEqual(balance_before, Decimal('5.25'))
+
+        # Re-running backfill must fail loudly and leave balance + ledger untouched.
+        schema_editor = connection.schema_editor().__enter__()
+        try:
+            with self.assertRaisesRegex(ValueError, str(customer.pk)):
+                m0003.backfill(new_apps, schema_editor)
+        finally:
+            schema_editor.__exit__(None, None, None)
+
+        # Balance and ledger rows unchanged.
+        self.assertEqual(
+            Customer.objects.get(pk=customer.pk).balance, balance_before)
+        self.assertEqual(
+            list(Ledger.objects.filter(customer_id=customer.pk).order_by('id')),
+            rows_before)
+        # No duplicate payonaccount:* row was produced by the re-run.
+        self.assertEqual(Ledger.objects.filter(
+            customer_id=customer.pk,
+            reference__startswith='payonaccount:').count(), poa_count_before)
+
+    def test_rerun_with_orphan_unmarked_row_raises(self):
+        # A single post-migration ledger entry with no matching PayOnAccount
+        # row (e.g. an invoice sale recorded only through LedgerService) is
+        # enough to make a re-run abort loudly.
+        customer = self._make_customer('orphan', '20.00')
+        self._make_poa(customer, '5.00', timezone.now() - timezone.timedelta(days=1))
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_to)
+        new_apps = executor.loader.project_state(self.migrate_to).apps
+        Ledger = new_apps.get_model('customers', 'LedgerEntry')
+        Customer = new_apps.get_model('customers', 'Customer')
+
+        # Post-migration activity: a ledger debit via LedgerService, but NO
+        # PayOnAccount dual-write — leaving an unmarked ledger row alone.
+        from customers.models import Customer as RealCustomer
+        operator = self._make_operator()
+        LedgerService.record_pay_down_account(
+            RealCustomer.objects.get(pk=customer.pk), '2.00',
+            operator=operator, note='orphan debit')
+
+        rows_before = Ledger.objects.filter(customer_id=customer.pk).count()
+        balance_before = Customer.objects.get(pk=customer.pk).balance
+
+        schema_editor = connection.schema_editor().__enter__()
+        try:
+            with self.assertRaisesRegex(ValueError, str(customer.pk)):
+                m0003.backfill(new_apps, schema_editor)
+        finally:
+            schema_editor.__exit__(None, None, None)
+
+        self.assertEqual(
+            Customer.objects.get(pk=customer.pk).balance, balance_before)
+        self.assertEqual(
+            Ledger.objects.filter(customer_id=customer.pk).count(), rows_before)
