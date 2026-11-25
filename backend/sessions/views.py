@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.http import HttpResponse
 from django.utils import timezone
+from django.db import transaction
 from django.db import IntegrityError
 from django.db.models import Q, Sum
 from decimal import Decimal
@@ -181,43 +182,51 @@ class SessionViewSet(viewsets.ModelViewSet):
             return Response({'detail':'already closed'}, status=400)
         counts = request.data.get('counts', {})
         totals = calculate_totals(counts)
-        counted = totals['grand_total']
-        # cash sales on THIS session only: either the sale is linked to this
-        # session, or (legacy fallback — pre-migration history with no link)
-        # it is an unlinked sale created inside the session's time window.
-        upper = session.closed_at or timezone.now()
-        cash_sales = Payment.objects.filter(
-            method='cash', sale__status='completed',
-        ).filter(
-            Q(sale__session=session)
-            | Q(
-                sale__session__isnull=True,
-                sale__created_at__gte=session.opened_at,
-                sale__created_at__lte=upper,
-            )
-        ).aggregate(s=Sum('amount'))['s'] or Decimal('0')
-        expected = session.starting_cash + cash_sales
-        variance = expected - counted
-        session.cash_counts = counts
-        session.counted_cash = counted
-        session.expected_cash = expected
-        session.variance = variance
-        upper = session.closed_at or timezone.now()
-        session.sales_total = Sale.objects.filter(
-            status='completed',
-        ).filter(
-            Q(session=session)
-            | Q(
-                session__isnull=True,
-                created_at__gte=session.opened_at,
-                created_at__lte=upper,
-            )
-        ).aggregate(s=Sum('total'))['s'] or Decimal('0')
-        session.status = Session.STATUS_CLOSED
-        session.closed_at = timezone.now()
-        if 'cash_removed' in request.data:
-            session.cash_removed = request.data['cash_removed']
-        session.save()
+
+        # Serialize the close: lock the session row and recompute/re-write the
+        # cash counts, variance and sales_total against that locked instance so
+        # two concurrent closes can't each read the pre-close state and write a
+        # stale snapshot (lost-update on counted_cash/expected_cash/variance).
+        # The Z-report PDF + backup below run outside this lock (external I/O).
+        with transaction.atomic():
+            session = Session.objects.select_for_update().get(pk=session.pk)
+            counted = totals['grand_total']
+            # cash sales on THIS session only: either the sale is linked to this
+            # session, or (legacy fallback — pre-migration history with no link)
+            # it is an unlinked sale created inside the session's time window.
+            upper = session.closed_at or timezone.now()
+            cash_sales = Payment.objects.filter(
+                method='cash', sale__status='completed',
+            ).filter(
+                Q(sale__session=session)
+                | Q(
+                    sale__session__isnull=True,
+                    sale__created_at__gte=session.opened_at,
+                    sale__created_at__lte=upper,
+                )
+            ).aggregate(s=Sum('amount'))['s'] or Decimal('0')
+            expected = session.starting_cash + cash_sales
+            variance = expected - counted
+            session.cash_counts = counts
+            session.counted_cash = counted
+            session.expected_cash = expected
+            session.variance = variance
+            upper = session.closed_at or timezone.now()
+            session.sales_total = Sale.objects.filter(
+                status='completed',
+            ).filter(
+                Q(session=session)
+                | Q(
+                    session__isnull=True,
+                    created_at__gte=session.opened_at,
+                    created_at__lte=upper,
+                )
+            ).aggregate(s=Sum('total'))['s'] or Decimal('0')
+            session.status = Session.STATUS_CLOSED
+            session.closed_at = timezone.now()
+            if 'cash_removed' in request.data:
+                session.cash_removed = request.data['cash_removed']
+            session.save()
 
         # Persist the Z-report PDF and back up the session transactions so the
         # shift's data survives the close. A failure here must not block the

@@ -492,94 +492,98 @@ class TransactionService:
         if not self._current_sale:
             raise TransactionError('No sale in progress. Call start_sale() first.')
 
-        sale = self._current_sale
-
-        if not sale.is_open():
-            raise TransactionError(f'Cannot complete sale with status: {sale.status}')
-
-        if not sale.lines.exists():
-            raise TransactionError('Cannot complete sale with no items')
-
-        # Validate payment method
-        try:
-            method = PaymentMethod(payment_method)
-        except ValueError:
-            raise InvalidPaymentMethodError(f'Invalid payment method: {payment_method}')
-
-        # Validate amount
-        if amount <= 0:
-            raise InsufficientPaymentError('Payment amount must be positive')
-
-        # Check if payment covers total (except for invoice which can be partial)
-        if method != PaymentMethod.INVOICE and amount < sale.total:
-            raise InsufficientPaymentError(
-                f'Payment amount {amount} is less than sale total {sale.total}'
-            )
-
-        # Handle manager approval for invoice
-        effective_manager_approved = manager_approved
-        if manager_credentials:
-            username = manager_credentials.get('username')
-            password = manager_credentials.get('password')
-            if username and password:
-                user = authenticate(username=username, password=password)
-                if user and is_manager(user):
-                    effective_manager_approved = True
-
-        # Validate invoice payment
-        if method == PaymentMethod.INVOICE:
-            target_customer = customer or sale.customer
-            if not target_customer:
-                raise TransactionError('Customer required for invoice payment')
-
-            if not effective_manager_approved:
-                raise TransactionError('Manager approval required for invoice payment')
-
-            # Check credit limit
-            new_balance = target_customer.balance + amount
-            if new_balance > target_customer.credit_limit and not effective_manager_approved:
-                raise TransactionError('Credit limit exceeded')
-
-            # Update customer
-            sale.customer = target_customer
-            sale.save(update_fields=['customer'])
-            target_customer.balance = new_balance
-            target_customer.save(update_fields=['balance'])
-
-        # Prepare payment metadata
-        metadata: dict[str, Any] = {"manager_approved": effective_manager_approved}
-        if method == PaymentMethod.CASH and tendered is not None:
-            metadata["tendered"] = tendered
-        elif method == PaymentMethod.INVOICE:
-            target_customer = customer or sale.customer
-            if target_customer:
-                metadata["customer_id"] = target_customer.id
-
-        # Process payment through the new payment processor
-        processor = self.payment_processors.get(method)
-        if not processor:
-            raise InvalidPaymentMethodError(f'No processor for payment method: {method.value}')
-
-        result = processor.process_payment(amount, method, metadata)
-        if not result.success:
-            raise TransactionError(f'Payment failed: {result.error_message}')
-
-        # Create payment record
-        payment_kwargs = {
-            "sale": sale,
-            "method": method.value,
-            "amount": result.amount_processed,
-            "manager_approved": effective_manager_approved,
-        }
-
-        if method == PaymentMethod.CASH:
-            payment_kwargs["tendered"] = Decimal(str(metadata.get("tendered", amount)))
-            payment_kwargs["change_due"] = result.change_due
-
-        Payment.objects.create(**payment_kwargs)
-
-        # Complete the sale - create stock movements
+        # Lock the sale row first, then validate and mutate against the locked
+        # instance. This closes the read-then-write window where a concurrent
+        # void/refund/complete could slip between the state checks and the
+        # final status write.
         with db_transaction.atomic():
+            sale = Sale.objects.select_for_update().get(pk=self._current_sale.pk)
+
+            if not sale.is_open():
+                raise TransactionError(f'Cannot complete sale with status: {sale.status}')
+
+            if not sale.lines.exists():
+                raise TransactionError('Cannot complete sale with no items')
+
+            # Validate payment method
+            try:
+                method = PaymentMethod(payment_method)
+            except ValueError:
+                raise InvalidPaymentMethodError(f'Invalid payment method: {payment_method}')
+
+            # Validate amount
+            if amount <= 0:
+                raise InsufficientPaymentError('Payment amount must be positive')
+
+            # Check if payment covers total (except for invoice which can be partial)
+            if method != PaymentMethod.INVOICE and amount < sale.total:
+                raise InsufficientPaymentError(
+                    f'Payment amount {amount} is less than sale total {sale.total}'
+                )
+
+            # Handle manager approval for invoice
+            effective_manager_approved = manager_approved
+            if manager_credentials:
+                username = manager_credentials.get('username')
+                password = manager_credentials.get('password')
+                if username and password:
+                    user = authenticate(username=username, password=password)
+                    if user and is_manager(user):
+                        effective_manager_approved = True
+
+            # Validate invoice payment
+            if method == PaymentMethod.INVOICE:
+                target_customer = customer or sale.customer
+                if not target_customer:
+                    raise TransactionError('Customer required for invoice payment')
+
+                if not effective_manager_approved:
+                    raise TransactionError('Manager approval required for invoice payment')
+
+                # Check credit limit
+                new_balance = target_customer.balance + amount
+                if new_balance > target_customer.credit_limit and not effective_manager_approved:
+                    raise TransactionError('Credit limit exceeded')
+
+                # Update customer
+                sale.customer = target_customer
+                sale.save(update_fields=['customer'])
+                target_customer.balance = new_balance
+                target_customer.save(update_fields=['balance'])
+
+            # Prepare payment metadata
+            metadata: dict[str, Any] = {"manager_approved": effective_manager_approved}
+            if method == PaymentMethod.CASH and tendered is not None:
+                metadata["tendered"] = tendered
+            elif method == PaymentMethod.INVOICE:
+                target_customer = customer or sale.customer
+                if target_customer:
+                    metadata["customer_id"] = target_customer.id
+
+            # Process payment through the new payment processor
+            processor = self.payment_processors.get(method)
+            if not processor:
+                raise InvalidPaymentMethodError(f'No processor for payment method: {method.value}')
+
+            result = processor.process_payment(amount, method, metadata)
+            if not result.success:
+                raise TransactionError(f'Payment failed: {result.error_message}')
+
+            # Create payment record
+            payment_kwargs = {
+                "sale": sale,
+                "method": method.value,
+                "amount": result.amount_processed,
+                "manager_approved": effective_manager_approved,
+            }
+
+            if method == PaymentMethod.CASH:
+                payment_kwargs["tendered"] = Decimal(str(metadata.get("tendered", amount)))
+                payment_kwargs["change_due"] = result.change_due
+
+            Payment.objects.create(**payment_kwargs)
+
+            # Complete the sale - create stock movements
             sale.status = Sale.STATUS_COMPLETED
             sale.completed_at = timezone.now()
             sale.save(update_fields=['status', 'completed_at'])
@@ -595,7 +599,7 @@ class TransactionService:
                     reference=f'sale:{sale.number}'
                 )
 
-        # Generate receipt if requested
+        # Generate receipt (outside the lock/transaction - external I/O)
         if generate_receipt:
             self.receipt_generator.generate_receipt(sale, format=receipt_format)
 
@@ -623,24 +627,29 @@ class TransactionService:
         Raises:
             TransactionError: If sale is not in a completable state.
         """
-        if not sale.is_open():
-            raise TransactionError(f'Cannot complete sale with status: {sale.status}')
-
-        if not sale.lines.exists():
-            raise TransactionError('Cannot complete sale with no items')
-
-        if not sale.payments.exists():
-            raise TransactionError('Payment required before completion')
-
-        # Verify total paid covers sale total
-        total_paid = sum(p.amount for p in sale.payments.all())
-        if total_paid < sale.total:
-            raise TransactionError(
-                f'Total paid ({total_paid}) is less than sale total ({sale.total})'
-            )
-
-        # Complete the sale - create stock movements
+        # Lock the sale row first, then validate and mutate against the locked
+        # instance so a concurrent complete/void/refund cannot slip between the
+        # state checks and the final status write.
         with db_transaction.atomic():
+            sale = Sale.objects.select_for_update().get(pk=sale.pk)
+
+            if not sale.is_open():
+                raise TransactionError(f'Cannot complete sale with status: {sale.status}')
+
+            if not sale.lines.exists():
+                raise TransactionError('Cannot complete sale with no items')
+
+            if not sale.payments.exists():
+                raise TransactionError('Payment required before completion')
+
+            # Verify total paid covers sale total
+            total_paid = sum(p.amount for p in sale.payments.all())
+            if total_paid < sale.total:
+                raise TransactionError(
+                    f'Total paid ({total_paid}) is less than sale total ({sale.total})'
+                )
+
+            # Complete the sale - create stock movements
             sale.status = Sale.STATUS_COMPLETED
             sale.completed_at = timezone.now()
             sale.save(update_fields=['status', 'completed_at'])
@@ -656,7 +665,7 @@ class TransactionService:
                     reference=f'sale:{sale.number}'
                 )
 
-        # Generate receipt if requested
+        # Generate receipt (outside the lock/transaction - external I/O)
         if generate_receipt:
             self.receipt_generator.generate_receipt(sale, format=receipt_format)
 
@@ -677,16 +686,20 @@ class TransactionService:
         if not self._current_sale:
             raise TransactionError('No sale in progress. Call start_sale() first.')
 
-        sale = self._current_sale
+        # Lock the sale row first, then validate and mutate against the locked
+        # instance so a concurrent complete/refund cannot slip between the
+        # status guard and the void write.
+        with db_transaction.atomic():
+            sale = Sale.objects.select_for_update().get(pk=self._current_sale.pk)
 
-        if sale.status == Sale.STATUS_COMPLETED:
-            raise TransactionError('Cannot void a completed sale')
+            if sale.status == Sale.STATUS_COMPLETED:
+                raise TransactionError('Cannot void a completed sale')
 
-        if sale.status == Sale.STATUS_REFUNDED:
-            raise TransactionError('Cannot void a refunded sale')
+            if sale.status == Sale.STATUS_REFUNDED:
+                raise TransactionError('Cannot void a refunded sale')
 
-        sale.status = Sale.STATUS_VOIDED
-        sale.save(update_fields=['status'])
+            sale.status = Sale.STATUS_VOIDED
+            sale.save(update_fields=['status'])
 
         self._current_sale = None
         self._cart = None
@@ -717,29 +730,32 @@ class TransactionService:
         Raises:
             TransactionError: If sale not found, not completed, or already refunded
         """
-        try:
-            sale = Sale.objects.get(pk=sale_id)
-        except Sale.DoesNotExist:
-            raise TransactionError(f'Sale {sale_id} not found')
-
-        if sale.status != Sale.STATUS_COMPLETED:
-            raise TransactionError(f'Can only refund completed sales, current status: {sale.status}')
-
-        # Verify manager approval for refunds
-        effective_manager_approved = manager_approved
-        if manager_credentials:
-            username = manager_credentials.get('username')
-            password = manager_credentials.get('password')
-            if username and password:
-                user = authenticate(username=username, password=password)
-                if user and is_manager(user):
-                    effective_manager_approved = True
-
-        if not effective_manager_approved:
-            raise TransactionError('Manager approval required for refunds')
-
-        # Process refund - create reverse stock movements
+        # Lock the sale row first, then validate and mutate against the locked
+        # instance so a concurrent complete/refund/void cannot slip between the
+        # state checks and the refund write.
         with db_transaction.atomic():
+            try:
+                sale = Sale.objects.select_for_update().get(pk=sale_id)
+            except Sale.DoesNotExist:
+                raise TransactionError(f'Sale {sale_id} not found')
+
+            if sale.status != Sale.STATUS_COMPLETED:
+                raise TransactionError(f'Can only refund completed sales, current status: {sale.status}')
+
+            # Verify manager approval for refunds
+            effective_manager_approved = manager_approved
+            if manager_credentials:
+                username = manager_credentials.get('username')
+                password = manager_credentials.get('password')
+                if username and password:
+                    user = authenticate(username=username, password=password)
+                    if user and is_manager(user):
+                        effective_manager_approved = True
+
+            if not effective_manager_approved:
+                raise TransactionError('Manager approval required for refunds')
+
+            # Process refund - create reverse stock movements
             sale.status = Sale.STATUS_REFUNDED
             sale.refunded_at = timezone.now()
             sale.save(update_fields=['status', 'refunded_at'])

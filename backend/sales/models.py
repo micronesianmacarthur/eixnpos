@@ -51,9 +51,22 @@ class Sale(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.number:
-            last = Sale.objects.order_by('-number').first()
-            self.number = (last.number + 1) if last else 1
-        super().save(*args, **kwargs)
+            from django.db import transaction as db_transaction
+            # Serialize sale-number allocation. Lock the singleton counter row
+            # (SaleNumberCounter) before reading/incrementing it so two concurrent
+            # allocations can never observe the same current value and issue the
+            # same sale number. This replaces the racy MAX(number)+1 read-then-
+            # write that double-posted numbers under concurrency. The counter
+            # increment and the sale INSERT share one atomic block so a failed
+            # insert also rolls the counter back.
+            with db_transaction.atomic():
+                counter = SaleNumberCounter.objects.select_for_update().get(pk=1)
+                counter.current += 1
+                self.number = counter.current
+                counter.save(update_fields=['current'])
+                super().save(*args, **kwargs)
+        else:
+            super().save(*args, **kwargs)
 
     def recompute(self, tax_rate: Decimal = Decimal('0')):
         """Recalculate sale totals from line items.
@@ -61,22 +74,28 @@ class Sale(models.Model):
         Args:
             tax_rate: Tax rate as a decimal (e.g., Decimal('0.10') for 10%)
         """
-        subtotal = Decimal('0')
-        discount_total = Decimal('0')
-        for line in self.lines.all():
-            line.line_total = (line.unit_price * line.quantity) - line.discount_amount
-            line.save(update_fields=['line_total'])
-            # Update in-memory object to reflect saved value
-            line.refresh_from_db(fields=['line_total'])
-            subtotal += line.unit_price * line.quantity
-            discount_total += line.discount_amount
-        
-        self.subtotal = subtotal
-        self.discount_total = discount_total
-        taxable_amount = subtotal - discount_total
-        self.tax_total = (taxable_amount * tax_rate).quantize(Decimal('0.01'))
-        self.total = taxable_amount + self.tax_total
-        self.save(update_fields=['subtotal', 'discount_total', 'tax_total', 'total'])
+        from django.db import transaction as db_transaction
+        with db_transaction.atomic():
+            # Serialize cart recomputation on this sale: lock the sale row before
+            # reading lines/writing totals so two concurrent cart edits cannot
+            # lose each other's line_total / sale-total updates.
+            locked = Sale.objects.select_for_update().get(pk=self.pk)
+            subtotal = Decimal('0')
+            discount_total = Decimal('0')
+            for line in locked.lines.all():
+                line.line_total = (line.unit_price * line.quantity) - line.discount_amount
+                line.save(update_fields=['line_total'])
+                # Update in-memory object to reflect saved value
+                line.refresh_from_db(fields=['line_total'])
+                subtotal += line.unit_price * line.quantity
+                discount_total += line.discount_amount
+
+            locked.subtotal = subtotal
+            locked.discount_total = discount_total
+            taxable_amount = subtotal - discount_total
+            locked.tax_total = (taxable_amount * tax_rate).quantize(Decimal('0.01'))
+            locked.total = taxable_amount + locked.tax_total
+            locked.save(update_fields=['subtotal', 'discount_total', 'tax_total', 'total'])
 
     def is_open(self) -> bool:
         """Check if sale is in a modifiable state."""
@@ -84,6 +103,28 @@ class Sale(models.Model):
 
     def __str__(self):
         return f'Sale #{self.number}'
+
+
+class SaleNumberCounter(models.Model):
+    """Singleton row holding the next-sale-number source of truth.
+
+    Number allocation (`Sale.save()`) `select_for_update`s this single row
+    (only pk=1 is ever allowed, enforced by ``single_sale_number_counter``) so
+    concurrent allocations are serialized and can never hand out the same
+    number. Seeded from the existing max sale number by a data migration.
+    """
+
+    current = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(pk=1),
+                name='single_sale_number_counter',
+                # Guards the singleton invariant at the DB level even if a
+                # caller bypasses the get(pk=1) fast path.
+            )
+        ]
 
 
 class SaleLine(models.Model):

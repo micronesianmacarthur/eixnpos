@@ -295,9 +295,13 @@ class SaleViewSet(viewsets.ModelViewSet):
                 from django.db import transaction as db_transaction
                 from django.utils import timezone
                 with db_transaction.atomic():
+                    # Lock the sale row before the terminal status write so a
+                    # concurrent complete/void/refund can't also finalize it.
+                    sale = Sale.objects.select_for_update().get(pk=sale.pk)
+                    if note:
+                        sale.note = note
                     sale.status = Sale.STATUS_COMPLETED
                     sale.completed_at = timezone.now()
-                    sale.note = sale.note
                     sale.needs_review = True
                     sale.save(update_fields=['status', 'completed_at', 'note', 'needs_review'])
                     from inventory.models import StockMovement
