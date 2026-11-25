@@ -11,6 +11,7 @@ Run with the Django test runner:
 """
 from datetime import date
 from decimal import Decimal
+import time
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -79,6 +80,10 @@ class ZReportSnapshotRegressionTests(TestCase):
         self.sale.status = Sale.STATUS_REFUNDED
         self.sale.save()
 
+        # Sleep across a wall-clock second boundary: the re-download must be
+        # byte-identical to the first download (both pin /CreationDate to the
+        # close instant).
+        time.sleep(1.2)
         second = self.client.get(f'/api/sessions/{self.session.id}/zreport/')
         self.assertEqual(second.status_code, 200)
         self.assertEqual(second.content, first_bytes)
@@ -97,6 +102,10 @@ class ZReportSnapshotRegressionTests(TestCase):
         self.sale.total = Decimal('99.99')
         self.sale.save()
 
+        # Sleep across a wall-clock second boundary: the re-download must be
+        # byte-identical to the first download (both pin /CreationDate to the
+        # close instant).
+        time.sleep(1.2)
         second = self.client.get(f'/api/sessions/{self.session.id}/zreport/')
         self.assertEqual(second.status_code, 200)
         self.assertEqual(second.content, first_bytes)

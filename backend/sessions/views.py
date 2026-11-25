@@ -223,9 +223,11 @@ class SessionViewSet(viewsets.ModelViewSet):
         pdf_relpath = None
         try:
             from sales.zreport import build_zreport_pdf
-            # Render from the freshly-filed snapshot so the backed-up file is
-            # byte-for-byte what re-downloading the shift now would return.
-            pdf_bytes = build_zreport_pdf(_data)
+            # Render from the freshly-filed snapshot, pinning the document
+            # creation date to the close (filing) instant so the backed-up
+            # file is byte-for-byte what re-downloading the shift now would
+            # return (both share /CreationDate and /ID).
+            pdf_bytes = build_zreport_pdf(_data, creation_date=session.closed_at)
             try:
                 from business.models import BusinessInfo
                 bp = BusinessInfo.get().backup_path
@@ -279,7 +281,12 @@ class SessionViewSet(viewsets.ModelViewSet):
 
         snapshot = ZReportSnapshot.objects.filter(session=session).first()
         if snapshot is not None:
-            pdf_bytes = build_zreport_pdf(snapshot.summary_data)
+            # Pin the document creation date to the close (filing) instant so
+            # this re-download is byte-for-byte the same file that was
+            # archived and backed up at close.
+            pdf_bytes = build_zreport_pdf(
+                snapshot.summary_data, creation_date=session.closed_at
+            )
         elif session.status == Session.STATUS_CLOSED:
             return Response(
                 {

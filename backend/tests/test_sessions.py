@@ -1,5 +1,6 @@
 from datetime import date, timedelta
 from decimal import Decimal
+import time
 
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError
@@ -546,23 +547,37 @@ class ZReportSnapshotTests(TestCase):
             Decimal('0.00'),
         )
 
+        # Give the clock time to tick across a second boundary: the snapshot's
+        # PDF must be byte-identical even though the wall-clock differs, so
+        # the pinned /CreationDate (not now()) drives the bytes.
+        time.sleep(1.2)
         second = self.client.get(f'/api/sessions/{session.id}/zreport/')
         self.assertEqual(second.status_code, 200)
         # The snapshot is unscathed: the re-download is byte-identical to the
-        # report that was filed at close.
+        # report that was filed at close (same snapshot data, same pinned
+        # creation date, so same /CreationDate and /ID).
         self.assertEqual(second.content, first.content)
 
     def test_redownload_matches_a_render_of_the_stored_snapshot(self):
         session = self.make_session()
         self.make_completed_sale(Decimal('10.00'), session)
         self.close(session)
+        # Refresh so ``closed_at`` reflects what the close actually filed.
+        session.refresh_from_db()
         snapshot = ZReportSnapshot.objects.get(session=session)
 
         response = self.client.get(f'/api/sessions/{session.id}/zreport/')
         self.assertEqual(response.status_code, 200)
 
         from sales.zreport import build_zreport_pdf
-        self.assertEqual(response.content, build_zreport_pdf(snapshot.summary_data))
+        # The view pins the document creation date to the close instant; a
+        # direct render of the same snapshot must pin identically to match
+        # byte-for-byte. Sleep so the wall-clock definitely differs.
+        time.sleep(1.2)
+        self.assertEqual(
+            response.content,
+            build_zreport_pdf(snapshot.summary_data, creation_date=session.closed_at),
+        )
 
     def test_legacy_closed_shift_without_snapshot_returns_404(self):
         session = self.make_session()

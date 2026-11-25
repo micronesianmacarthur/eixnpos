@@ -107,12 +107,23 @@ def _pdf_available() -> None:
         )
 
 
-def build_zreport_pdf(data: Dict[str, Any]) -> bytes:
+def build_zreport_pdf(data: Dict[str, Any], creation_date: datetime | None = None) -> bytes:
     """Render a Z-report as a letter-size PDF (bytes) from summary data.
 
     The PDF embeds the same lines as :func:`build_zreport_lines`, so it is
     guaranteed to show revenue (net sales) and profit/loss alongside the
     session identity.
+
+    Args:
+        data: a :func:`compute_session_summary` result (plus ``store_name``).
+        creation_date: an optional aware datetime to pin as the document's
+            ``/CreationDate`` (fpdf2 hashes it into ``/ID`` too). Pass the
+            filing time (the shift's ``closed_at``) so the PDF archived at
+            close and a later re-download of the same snapshot are byte-for-
+            byte identical. When ``None`` (the default), fpdf2 stamps the
+            wall-clock at render time, so two renders of the same data may
+            differ; omit it only for live previews where no identity across
+            downloads is claimed.
     """
     _pdf_available()
     assert FPDF is not None
@@ -120,6 +131,8 @@ def build_zreport_pdf(data: Dict[str, Any]) -> bytes:
     lines = build_zreport_lines(data)
 
     pdf = FPDF(format="letter")
+    if creation_date is not None:
+        pdf.set_creation_date(creation_date)
     pdf.set_auto_page_break(auto=True, margin=20)
     pdf.add_page()
     pdf.set_font("Helvetica", "B", 16)
@@ -138,12 +151,17 @@ def build_zreport_pdf(data: Dict[str, Any]) -> bytes:
     return out
 
 
-def build_session_zreport_pdf(session_id: int, store_name: str = "eixnPOS") -> bytes:
+def build_session_zreport_pdf(
+    session_id: int, store_name: str = "eixnPOS", creation_date: datetime | None = None
+) -> bytes:
     """Convenience: compute a session summary and render it as a PDF.
 
     Args:
         session_id: id of the Session to report on.
         store_name: store display name (defaults to ``eixnPOS``).
+        creation_date: forwarded to :func:`build_zreport_pdf` (pins the
+            document ``/CreationDate``/``/ID``); default ``None`` renders a
+            live, non-immutable preview.
 
     Returns:
         PDF bytes for the session's Z-report.
@@ -155,4 +173,4 @@ def build_session_zreport_pdf(session_id: int, store_name: str = "eixnPOS") -> b
 
     data = compute_session_summary(session_id)
     data["store_name"] = store_name
-    return build_zreport_pdf(data)
+    return build_zreport_pdf(data, creation_date=creation_date)
