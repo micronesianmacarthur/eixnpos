@@ -10,6 +10,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Optional, Dict, Any, List
 
 from django.contrib.auth import authenticate
+from django.db import IntegrityError
 from django.db import transaction as db_transaction
 from django.utils import timezone
 
@@ -318,6 +319,58 @@ def validate_sale_stock(sale) -> None:
             )
 
 
+def complete_sale_stock(sale, reference=None) -> None:
+    """Validate availability and deduct stock for ``sale``.
+
+    Must be called inside the caller's ``atomic()`` block. Locks the involved
+    Product rows in ascending id order (a no-op on SQLite, where the
+    ``Product.quantity >= 0`` CHECK constraint is the real concurrency guard),
+    re-checks on-hand under that lock, then creates the negative ``sale``
+    movements. Each ``StockMovement.save`` applies ``quantity = quantity + delta``
+    atomically via ``F()`` in the same transaction as the ledger insert, so the
+    check + write + insert are one atomic unit. A concurrency loser on a
+    backend without row locks hits the CHECK constraint as an ``IntegrityError``,
+    which is translated to a ``TransactionError`` so callers return a clean 4xx
+    rather than a 500.
+    """
+    lines = list(sale.lines.select_related('product'))
+    wanted: Dict[int, list] = {}  # product_id -> [product, total_needed]
+    for line in lines:
+        if not line.product.non_stock:
+            entry = wanted.setdefault(line.product_id, [line.product, 0])
+            entry[1] += line.quantity
+    if not wanted:
+        return
+
+    locked = {
+        p.id: p
+        for p in Product.objects.filter(id__in=list(wanted)).order_by('id').select_for_update()
+    }
+    for product_id, (product, needed) in wanted.items():
+        locked_product = locked[product_id]
+        if locked_product.quantity < needed:
+            raise TransactionError(
+                f'Insufficient stock for {locked_product.name}: '
+                f'{locked_product.quantity} available, {needed} needed'
+            )
+
+    try:
+        for line in lines:
+            if line.product.non_stock:
+                continue
+            StockMovement.objects.create(
+                product=line.product,
+                quantity=-line.quantity,
+                movement_type='sale',
+                reference=reference or f'sale:{sale.number}',
+            )
+    except IntegrityError:
+        # A concurrent writer (no row locks on the configured backend) already
+        # consumed the last unit after the availability check; surface it as a
+        # clean domain error, not a 500.
+        raise TransactionError('Stock changed concurrently; please retry.')
+
+
 class TransactionService:
     """
     Service for managing the complete transaction lifecycle.
@@ -606,23 +659,13 @@ class TransactionService:
 
         Payment.objects.create(**payment_kwargs)
 
-        # Complete the sale - create stock movements
+        # Complete the sale - validate availability, deduct stock and mark the
+        # sale completed inside one atomic block.
         with db_transaction.atomic():
-            validate_sale_stock(sale)
+            complete_sale_stock(sale, reference=f'sale:{sale.number}')
             sale.status = Sale.STATUS_COMPLETED
             sale.completed_at = timezone.now()
             sale.save(update_fields=['status', 'completed_at'])
-
-            # Create stock movements for each stock product only
-            for line in sale.lines.all():
-                if line.product.non_stock:
-                    continue
-                StockMovement.objects.create(
-                    product=line.product,
-                    quantity=-line.quantity,
-                    movement_type='sale',
-                    reference=f'sale:{sale.number}'
-                )
 
         # Generate receipt if requested
         if generate_receipt:
@@ -668,23 +711,13 @@ class TransactionService:
                 f'Total paid ({total_paid}) is less than sale total ({sale.total})'
             )
 
-        # Complete the sale - create stock movements
+        # Complete the sale - validate availability, deduct stock and mark the
+        # sale completed inside one atomic block.
         with db_transaction.atomic():
-            validate_sale_stock(sale)
+            complete_sale_stock(sale, reference=f'sale:{sale.number}')
             sale.status = Sale.STATUS_COMPLETED
             sale.completed_at = timezone.now()
             sale.save(update_fields=['status', 'completed_at'])
-
-            # Create stock movements for each stock product only
-            for line in sale.lines.all():
-                if line.product.non_stock:
-                    continue
-                StockMovement.objects.create(
-                    product=line.product,
-                    quantity=-line.quantity,
-                    movement_type='sale',
-                    reference=f'sale:{sale.number}'
-                )
 
         # Generate receipt if requested
         if generate_receipt:
@@ -768,8 +801,19 @@ class TransactionService:
         if not effective_manager_approved:
             raise TransactionError('Manager approval required for refunds')
 
-        # Process refund - create reverse stock movements
+        # Process refund - serialize the affected products (ascending id) so the
+        # returned units can't race another writer, then create the reverse
+        # movements inside one atomic block. Refunds only add stock, so they
+        # cannot drive on-hand negative; the lock is for write serialization.
         with db_transaction.atomic():
+            product_ids = [
+                line.product_id for line in sale.lines.all()
+                if not line.product.non_stock
+            ]
+            if product_ids:
+                Product.objects.filter(id__in=product_ids).order_by('id') \
+                    .select_for_update()
+
             sale.status = Sale.STATUS_REFUNDED
             sale.refunded_at = timezone.now()
             sale.save(update_fields=['status', 'refunded_at'])

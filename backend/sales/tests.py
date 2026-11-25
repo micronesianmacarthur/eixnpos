@@ -618,6 +618,7 @@ class SaleApiTests(TestCase):
         movement = StockMovement.objects.get(movement_type='sale')
         self.assertEqual(movement.quantity, -2)
         self.assertEqual(movement.reference, f'sale:{sale.number}')
+        self.product.refresh_from_db()
         self.assertEqual(self.product.quantity, 8)
 
     def test_complete_twice_is_rejected_without_duplicate_movements(self):
@@ -641,6 +642,7 @@ class SaleApiTests(TestCase):
         self.assertIn('Insufficient stock', response.data.get('detail', ''))
         sale.refresh_from_db()
         self.assertEqual(sale.status, Sale.STATUS_OPEN)
+        self.product.refresh_from_db()
         self.assertEqual(self.product.quantity, 2)
         self.assertFalse(StockMovement.objects.filter(movement_type='sale').exists())
 

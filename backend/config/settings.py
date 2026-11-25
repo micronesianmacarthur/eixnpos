@@ -3,8 +3,12 @@ import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-SECRET_KEY = 'dev-secret-key-change-in-prod'
-DEBUG = True
+SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'dev-secret-key-change-in-prod')
+# DEBUG is read from the environment and defaults to False (safe default).
+# In development set DJANGO_DEBUG=1 (e.g. in your shell or a .env loaded by
+# your process manager). Never ship with DEBUG on in production — it renders
+# full tracebacks to any client.
+DEBUG = os.environ.get('DJANGO_DEBUG', '') == '1'
 ALLOWED_HOSTS = ['*']
 
 INSTALLED_APPS = [
@@ -63,8 +67,49 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
+        'TEST': {
+            # Use a physical file test DB, not Django's default shared
+            # in-memory cache. A shared in-memory database propagates table
+            # locks instantly across connections in-process, which makes real
+            # multi-threaded write serialization impossible to test (SQLite
+            # raises "database table is locked" immediately). A file DB uses
+            # normal file locking + the busy timeout, so concurrent writers
+            # serialize and the two-thread concurrency tests can pass.
+            'NAME': str(BASE_DIR / 'test_eixnpos.sqlite3'),
+        },
+        # BEGIN IMMEDIATE acquires the SQLite write lock at transaction start
+        # instead of lazily on the first write. This is what lets concurrent
+        # writers (multiple clients on a shared file DB) serialize cleanly via
+        # the busy timeout rather than deadlocking with "database table is
+        # locked" mid-transaction. The application's real non-negativity
+        # guarantee is the Product.quantity >= 0 CHECK constraint; IMMEDIATE
+        # makes the write path reachable under concurrency in the first place.
+        'OPTIONS': {
+            'transaction_mode': 'IMMEDIATE',
+        },
     }
 }
+
+from django.db.backends.signals import connection_created  # noqa: E402
+
+USE_WAL = os.environ.get('EIXNPOS_SQLITE_WAL', '1') == '1'
+
+if USE_WAL:
+    def _enable_sqlite_concurrency(sender, connection, **kwargs):
+        """Run each SQLite connection in WAL journal mode with a long busy
+        timeout so concurrent writers (multiple POS clients on a shared file
+        DB, or a two-thread race) serialize by waiting rather than failing
+        immediately with ``database table is locked``. App-level correctness
+        is still the ``Product.quantity >= 0`` CHECK constraint; this only
+        makes the write path reachable under concurrency.
+        """
+        if connection.vendor != 'sqlite':
+            return
+        with connection.cursor() as cursor:
+            cursor.execute('PRAGMA journal_mode=WAL')
+            cursor.execute('PRAGMA busy_timeout=10000')
+
+    connection_created.connect(_enable_sqlite_concurrency)
 
 AUTH_PASSWORD_VALIDATORS = [
     {
