@@ -5,6 +5,7 @@ from django.contrib.auth import authenticate
 from django.db import transaction as db_transaction, IntegrityError
 from django.utils import timezone
 from decimal import Decimal, InvalidOperation
+import uuid
 
 from .models import Sale, SaleLine, Payment
 from .serializers import SaleSerializer, SaleLineSerializer, PaymentSerializer
@@ -185,21 +186,30 @@ class SaleViewSet(viewsets.ModelViewSet):
         line.refresh_from_db()
         return Response(SaleLineSerializer(line).data)
 
-    def _idempotency_key(self, request, sale, method, amount, tendered):
+    def _idempotency_key(self, request):
         """Resolve a stable idempotency key for a tender.
 
-        A client-supplied `idempotency_key` (UUID) is preferred; otherwise a
-        deterministic key is derived from the request payload so that a
-        retried/duplicated POST with identical body maps to the same key and
-        reuses the existing Payment row instead of double-recording.
+        Idempotency is client-driven: only a client-supplied `idempotency_key`
+        participates in dedupe (a retried POST with the same key replays the
+        existing row). A keyless tender is deliberately NON-idempotent: it gets
+        a fresh random key per POST, so every POST records a new row and two
+        genuine equal-amount tenders never collapse into one (B1). No
+        server-side key is derived from the payload — derived keys were
+        guessable and enabled cross-sale squatting (B2) and equal-tender
+        collisions.
+
+        Returns ``(effective_key, client_key)``: ``effective_key`` is always a
+        valid 64-char key (client's or a fresh UUID); ``client_key`` is the
+        client-supplied key or ``None`` for a keyless tender (only client
+        keys participate in dedupe and cross-sale rejection).
         """
         supplied = request.data.get('idempotency_key')
-        if supplied:
-            return str(supplied)[:64]
-        parts = [f'sale:{sale.id}', 'pay', str(method), f'amt:{amount}']
-        if tendered is not None:
-            parts.append(f'tendered:{tendered}')
-        return ':'.join(parts)
+        if supplied is None or str(supplied).strip() == '':
+            return str(uuid.uuid4()), None
+        key = str(supplied)
+        if len(key) > 64:
+            raise PaymentProcessingRejected('idempotency_key too long (max 64 characters)')
+        return key, key
 
     def _record_payments(self, sale, method, amount, tendered, manager_approved, customer, splits, idempotency_key):
         """Create Payment row(s) through the payments.py processor framework.
@@ -214,9 +224,10 @@ class SaleViewSet(viewsets.ModelViewSet):
 
         # Split: one top-level Payment row per component method, so the cash
         # component is an independent method='cash' row that cash-up's
-        # method='cash' aggregation can see and total.
+        # method='cash' aggregation can see and total. require_token=False so
+        # a POS cash+card split records without a gateway token (B4).
         if method == Payment.METHOD_SPLIT:
-            processor = get_processor(PaymentMethod.SPLIT)
+            processor = get_processor(PaymentMethod.SPLIT, require_token=False)
             result = processor.process_payment(amount, PaymentMethod.SPLIT, {'splits': splits})
             if not result.success:
                 raise PaymentProcessingRejected(result.error_message)
@@ -269,8 +280,16 @@ class SaleViewSet(viewsets.ModelViewSet):
         if method == Payment.METHOD_INVOICE:
             sale.customer = customer
             sale.save(update_fields=['customer'])
-            customer.balance = customer.balance + amount
-            customer.save(update_fields=['balance'])
+            # Locked balance update (S2): re-read the customer row under
+            # select_for_update inside the caller's atomic block, re-check the
+            # credit limit against the locked value, then commit the increment
+            # so concurrent invoice tenders cannot lose updates.
+            locked = Customer.objects.select_for_update().get(pk=customer.pk)
+            new_balance = locked.balance + amount
+            if new_balance > locked.credit_limit and not manager_approved:
+                raise PaymentProcessingRejected('credit limit exceeded')
+            locked.balance = new_balance
+            locked.save(update_fields=['balance'])
 
         row = Payment.objects.create(
             sale=sale,
@@ -341,19 +360,55 @@ class SaleViewSet(viewsets.ModelViewSet):
             if new_balance > customer.credit_limit and not manager_approved:
                 return Response({'detail': 'credit limit exceeded'}, status=400)
 
-        idempotency_key = self._idempotency_key(request, sale, method, amount, tendered)
+        # Idempotency: a client-supplied key is the only thing that participates
+        # in dedupe. A keyless tender gets a fresh random key (per-tender nonce)
+        # and is therefore never replayed — two genuine equal-amount tenders
+        # always record two rows (B1). We scope every lookup to this sale so a
+        # key can never leak another sale's payment body (B2).
+        effective_key, client_key = self._idempotency_key(request)
+
+        if client_key is not None:
+            # B2 (cross-sale): a client key already owned by another sale must
+            # be rejected, never replayed and never shadowed. Client-supplied
+            # keys must not collide with a key the server would derive (we no
+            # longer derive guessable keys), so only a genuine reuse is caught
+            # here.
+            owned_by_other = (
+                Payment.objects.filter(idempotency_key=client_key).exclude(sale=sale).exists()
+                or Payment.objects.filter(correlation_id=client_key).exclude(sale=sale).exists()
+            )
+            if owned_by_other:
+                return Response(
+                    {'detail': 'idempotency key already used by another sale'},
+                    status=status.HTTP_409_CONFLICT,
+                )
 
         try:
             with db_transaction.atomic():
-                # Double-checked idempotency: serialise concurrent retries on
-                # the same key; a unique-constraint IntegrityError below is the
-                # backstop for the commit race.
-                existing = Payment.objects.filter(idempotency_key=idempotency_key).select_for_update().first()
-                if existing is not None:
-                    return Response(PaymentSerializer(existing).data, status=200)
+                # Dedupe applies only to a client-supplied key (keyless tenders
+                # never replay). Scope to (sale, key) so retries re-read their
+                # own sale's row, never a sibling's. Split replay reads by
+                # correlation_id so it returns the full component set (B3).
+                existing = None
+                if client_key is not None:
+                    if method == Payment.METHOD_SPLIT:
+                        comps = list(
+                            Payment.objects.filter(sale=sale, correlation_id=client_key)
+                            .select_for_update()
+                            .order_by('id')
+                        )
+                        if comps:
+                            return Response(PaymentSerializer(comps, many=True).data, status=200)
+                    else:
+                        existing = Payment.objects.filter(
+                            sale=sale, idempotency_key=client_key,
+                        ).select_for_update().first()
+                        if existing is not None:
+                            return Response(PaymentSerializer(existing).data, status=200)
+
                 created = self._record_payments(
                     sale, method, amount, tendered,
-                    manager_approved, customer, splits, idempotency_key,
+                    manager_approved, customer, splits, effective_key,
                 )
                 if method == Payment.METHOD_SPLIT:
                     payload = PaymentSerializer(created, many=True).data
@@ -365,11 +420,19 @@ class SaleViewSet(viewsets.ModelViewSet):
         except IntegrityError:
             # A concurrent request with the same key committed between our
             # select_for_update lookup and insert; the atomic block rolled
-            # back, so return the committed (winning) row as the idempotent
-            # replay result.
-            match = Payment.objects.filter(idempotency_key=idempotency_key).first()
-            if match is not None:
-                return Response(PaymentSerializer(match).data, status=200)
+            # back, so return the committed (winning) row(s) as the idempotent
+            # replay result — still scoped to this sale.
+            if client_key is not None:
+                if method == Payment.METHOD_SPLIT:
+                    match = list(
+                        Payment.objects.filter(sale=sale, correlation_id=client_key).order_by('id')
+                    )
+                    if match:
+                        return Response(PaymentSerializer(match, many=True).data, status=200)
+                else:
+                    match = Payment.objects.filter(sale=sale, idempotency_key=client_key).first()
+                    if match is not None:
+                        return Response(PaymentSerializer(match).data, status=200)
             raise
 
     def _record_complete_cash_payment(self, sale):
