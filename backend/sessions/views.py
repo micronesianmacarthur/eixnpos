@@ -190,6 +190,12 @@ class SessionViewSet(viewsets.ModelViewSet):
         # The Z-report PDF + backup below run outside this lock (external I/O).
         with transaction.atomic():
             session = Session.objects.select_for_update().get(pk=session.pk)
+            # Re-check the terminal state on the LOCKED instance: without this,
+            # a second concurrent close that passed the pre-lock guard above
+            # would overwrite cash_counts/variance/closed_at and re-run the
+            # Z-report + backup after the first close already finished.
+            if session.status == Session.STATUS_CLOSED:
+                return Response({'detail': 'already closed'}, status=400)
             counted = totals['grand_total']
             # cash sales on THIS session only: either the sale is linked to this
             # session, or (legacy fallback — pre-migration history with no link)

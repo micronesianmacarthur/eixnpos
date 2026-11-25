@@ -492,6 +492,18 @@ class TransactionService:
         if not self._current_sale:
             raise TransactionError('No sale in progress. Call start_sale() first.')
 
+        # Resolve manager approval via PBKDF2 BEFORE taking the row lock:
+        # password hashing is CPU-bound and must not run while holding the
+        # sale row lock (it would serialize unrelated completions).
+        effective_manager_approved = manager_approved
+        if manager_credentials:
+            username = manager_credentials.get('username')
+            password = manager_credentials.get('password')
+            if username and password:
+                user = authenticate(username=username, password=password)
+                if user and is_manager(user):
+                    effective_manager_approved = True
+
         # Lock the sale row first, then validate and mutate against the locked
         # instance. This closes the read-then-write window where a concurrent
         # void/refund/complete could slip between the state checks and the
@@ -520,16 +532,6 @@ class TransactionService:
                 raise InsufficientPaymentError(
                     f'Payment amount {amount} is less than sale total {sale.total}'
                 )
-
-            # Handle manager approval for invoice
-            effective_manager_approved = manager_approved
-            if manager_credentials:
-                username = manager_credentials.get('username')
-                password = manager_credentials.get('password')
-                if username and password:
-                    user = authenticate(username=username, password=password)
-                    if user and is_manager(user):
-                        effective_manager_approved = True
 
             # Validate invoice payment
             if method == PaymentMethod.INVOICE:
@@ -565,6 +567,13 @@ class TransactionService:
             if not processor:
                 raise InvalidPaymentMethodError(f'No processor for payment method: {method.value}')
 
+            # Processors MUST be local-only (CashProcessor/InvoiceProcessor).
+            # `process_payment` runs while we hold the sale row lock and the
+            # open transaction, so a real card gateway (a network round-trip
+            # over the wire) must never be installed here: it would hold the
+            # row lock for the duration of the network call and block every
+            # other operation on this sale. If a remote gateway is ever
+            # required, that processor must run OUTSIDE this transaction.
             result = processor.process_payment(amount, method, metadata)
             if not result.success:
                 raise TransactionError(f'Payment failed: {result.error_message}')
@@ -671,6 +680,102 @@ class TransactionService:
 
         return sale
 
+    def complete_view_sale(
+        self,
+        sale_id: int,
+        *,
+        note: str = '',
+        auto_cash_payment: bool = False,
+        generate_receipt: bool = True,
+        receipt_format: str = 'text',
+    ) -> Sale:
+        """Complete a sale from the API view under a single row lock.
+
+        Handles both paid (an existing payment, e.g. from ``set_payment``, or
+        a backward-compatible auto cash payment) and zero-value completions.
+        The optional auto cash-payment insert, the note/needs_review folds,
+        the terminal status write and the stock movements all commit in ONE
+        transaction begun with ``select_for_update``, so two concurrent
+        completes on the same open sale cannot double-post a payment or
+        double-deduct stock: the loser waits on the row lock, re-checks
+        ``is_open()`` on the now-completed locked instance, raises, and rolls
+        back its insert.
+
+        Args:
+            sale_id: The sale to complete.
+            note: Sales note to fold into the same transaction.
+            auto_cash_payment: Create a single cash payment for a paid sale
+                that has no payments yet (backward-compatible with clients that
+                POST a bare complete and expect the tender to be recorded).
+            generate_receipt: Generate the receipt (outside the lock).
+
+        Returns:
+            The completed Sale.
+
+        Raises:
+            TransactionError: If the sale cannot be completed.
+        """
+        with db_transaction.atomic():
+            # Lock the sale row first, then validate and mutate against the
+            # locked instance so a concurrent complete/void/refund can't slip
+            # between the state checks and the final status write.
+            sale = Sale.objects.select_for_update().get(pk=sale_id)
+
+            if not sale.is_open():
+                raise TransactionError(f'Cannot complete sale with status: {sale.status}')
+
+            if not sale.lines.exists():
+                raise TransactionError('Cannot complete sale with no items')
+
+            if sale.total > 0:
+                if not sale.payments.exists():
+                    if not auto_cash_payment:
+                        raise TransactionError('Payment required before completion')
+                    Payment.objects.create(
+                        sale=sale,
+                        method=Payment.METHOD_CASH,
+                        amount=sale.total,
+                        tendered=sale.total,
+                        change_due=Decimal('0'),
+                        manager_approved=True,
+                    )
+                total_paid = sum(p.amount for p in sale.payments.all())
+                if total_paid < sale.total:
+                    raise TransactionError(
+                        f'Total paid ({total_paid}) is less than '
+                        f'sale total ({sale.total})'
+                    )
+            elif not note and not sale.note:
+                raise TransactionError('a sales note is required for zero-value sales')
+
+            if note:
+                sale.note = note
+            if sale.total == 0:
+                sale.needs_review = True
+
+            # Terminal status write + stock movements, inside the same
+            # transaction as the payment insert above.
+            sale.status = Sale.STATUS_COMPLETED
+            sale.completed_at = timezone.now()
+            sale.save(update_fields=['status', 'completed_at', 'note', 'needs_review'])
+
+            for line in sale.lines.all():
+                if line.product.non_stock:
+                    continue
+                StockMovement.objects.create(
+                    product=line.product,
+                    quantity=-line.quantity,
+                    movement_type='sale',
+                    reference=f'sale:{sale.number}',
+                )
+
+        # Generate receipt (outside the lock/transaction - external I/O).
+        # Zero-value completions historically produced no receipt; preserve that.
+        if generate_receipt and sale.total > 0:
+            self.receipt_generator.generate_receipt(sale, format=receipt_format)
+
+        return sale
+
     def void_sale(self) -> Sale:
         """
         Void the current sale.
@@ -730,6 +835,18 @@ class TransactionService:
         Raises:
             TransactionError: If sale not found, not completed, or already refunded
         """
+        # Resolve manager approval via PBKDF2 BEFORE taking the row lock:
+        # password hashing is CPU-bound and must not run while holding the
+        # sale row lock (it would serialize unrelated refunds).
+        effective_manager_approved = manager_approved
+        if manager_credentials:
+            username = manager_credentials.get('username')
+            password = manager_credentials.get('password')
+            if username and password:
+                user = authenticate(username=username, password=password)
+                if user and is_manager(user):
+                    effective_manager_approved = True
+
         # Lock the sale row first, then validate and mutate against the locked
         # instance so a concurrent complete/refund/void cannot slip between the
         # state checks and the refund write.
@@ -741,16 +858,6 @@ class TransactionService:
 
             if sale.status != Sale.STATUS_COMPLETED:
                 raise TransactionError(f'Can only refund completed sales, current status: {sale.status}')
-
-            # Verify manager approval for refunds
-            effective_manager_approved = manager_approved
-            if manager_credentials:
-                username = manager_credentials.get('username')
-                password = manager_credentials.get('password')
-                if username and password:
-                    user = authenticate(username=username, password=password)
-                    if user and is_manager(user):
-                        effective_manager_approved = True
 
             if not effective_manager_approved:
                 raise TransactionError('Manager approval required for refunds')

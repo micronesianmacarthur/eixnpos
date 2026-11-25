@@ -202,7 +202,7 @@ class SaleViewSet(viewsets.ModelViewSet):
                 return Response({'detail': 'invalid tendered amount'}, status=400)
             if method == Payment.METHOD_CASH and tendered < amount:
                 return Response({'detail': 'tendered amount is less than amount due'}, status=400)
-        
+
         manager_approved = is_manager(request.user)
         # allow manager creds override
         mu = request.data.get('manager_username')
@@ -211,44 +211,74 @@ class SaleViewSet(viewsets.ModelViewSet):
             cand = authenticate(username=mu, password=mp)
             if cand and is_manager(cand):
                 manager_approved = True
-        
-        # invoice gating
-        customer = None
-        if method == Payment.METHOD_INVOICE:
-            customer = sale.customer
-            if customer is None and request.data.get('customer') is not None:
-                try:
-                    customer = Customer.objects.filter(pk=request.data.get('customer')).first()
-                except (TypeError, ValueError):
-                    customer = None
-            if customer is None:
-                return Response({'detail': 'customer required'}, status=400)
-            if not manager_approved:
-                return Response({'detail': 'manager required'}, status=403)
-            sale.customer = customer
-            sale.save(update_fields=['customer'])
-            new_balance = customer.balance + amount
-            if new_balance > customer.credit_limit and not manager_approved:
-                return Response({'detail': 'credit limit exceeded'}, status=400)
-            customer.balance = new_balance
-            customer.save(update_fields=['balance'])
-        
-        # Change due is the tender excess over the outstanding sale balance this
-        # tender settles: an over-tender returns change, exact/under returns none.
-        change_due = Decimal('0')
-        if method == Payment.METHOD_CASH and tendered is not None:
-            settled = sum((p.amount for p in sale.payments.all()), Decimal('0'))
-            remaining = max(Decimal('0'), sale.total - settled)
-            change_due = max(Decimal('0'), tendered - min(tendered, remaining))
-        
-        payment = Payment.objects.create(
-            sale=sale,
-            method=method,
-            amount=amount,
-            tendered=tendered,
-            change_due=change_due,
-            manager_approved=manager_approved
-        )
+
+        # All state writes (customer link, balance, payment insert) happen
+        # inside a locked transaction that re-checks is_open() on the locked
+        # instance. The pre-lock guard at the top is only a fast path: without
+        # this re-check a concurrent complete/void/refund could finalize the
+        # sale between the guard above and the insert, leaving an orphan
+        # payment on a terminal sale. The Customer.balance read-modify-write
+        # is a separate pre-existing lost-update outside this scope.
+        from django.db import transaction as db_transaction
+
+        class _SetPaymentError(Exception):
+            """Domain error that maps to a specific HTTP status on the 400/403
+            paths that must roll back the surrounding atomic write block."""
+
+            def __init__(self, detail, http_status):
+                super().__init__(detail)
+                self.detail = detail
+                self.http_status = http_status
+
+        try:
+            with db_transaction.atomic():
+                sale = Sale.objects.select_for_update().get(pk=sale.pk)
+                if not sale.is_open():
+                    raise _SetPaymentError('sale not open', 400)
+
+                # Resolve the invoice customer and validate every gating rule
+                # BEFORE the first write, so a validation failure rolls the
+                # whole block back (no partial customer/balance write survives
+                # a 400) instead of committing a half-applied payment.
+                if method == Payment.METHOD_INVOICE:
+                    customer = sale.customer
+                    if customer is None and request.data.get('customer') is not None:
+                        try:
+                            customer = Customer.objects.filter(pk=request.data.get('customer')).first()
+                        except (TypeError, ValueError):
+                            customer = None
+                    if customer is None:
+                        raise _SetPaymentError('customer required', 400)
+                    if not manager_approved:
+                        raise _SetPaymentError('manager required', 403)
+                    new_balance = customer.balance + amount
+                    if new_balance > customer.credit_limit and not manager_approved:
+                        raise _SetPaymentError('credit limit exceeded', 400)
+
+                # Change due is the tender excess over the outstanding sale balance this
+                # tender settles: an over-tender returns change, exact/under returns none.
+                change_due = Decimal('0')
+                if method == Payment.METHOD_CASH and tendered is not None:
+                    settled = sum((p.amount for p in sale.payments.all()), Decimal('0'))
+                    remaining = max(Decimal('0'), sale.total - settled)
+                    change_due = max(Decimal('0'), tendered - min(tendered, remaining))
+
+                if method == Payment.METHOD_INVOICE:
+                    sale.customer = customer
+                    sale.save(update_fields=['customer'])
+                    customer.balance = new_balance
+                    customer.save(update_fields=['balance'])
+
+                payment = Payment.objects.create(
+                    sale=sale,
+                    method=method,
+                    amount=amount,
+                    tendered=tendered,
+                    change_due=change_due,
+                    manager_approved=manager_approved
+                )
+        except _SetPaymentError as e:
+            return Response({'detail': e.detail}, status=e.http_status)
         return Response(PaymentSerializer(payment).data, status=201)
 
     @action(detail=True, methods=['post'])
@@ -262,80 +292,28 @@ class SaleViewSet(viewsets.ModelViewSet):
         if sale.total == 0 and not note and not sale.note:
             return Response({'detail': 'a sales note is required for zero-value sales'}, status=400)
 
-        if sale.total > 0 and not sale.payments.exists():
-            # Backward-compatible single cash payment for older clients.
-            payment = Payment.objects.create(
-                sale=sale,
-                method=Payment.METHOD_CASH,
-                amount=sale.total,
-                tendered=sale.total,
-                change_due=Decimal('0'),
-                manager_approved=True,
-            )
-            _ = payment
-
-        if sale.total > 0:
-            total_paid = sum((p.amount for p in sale.payments.all()), Decimal('0'))
-            if total_paid < sale.total:
-                return Response({'detail': 'recorded payments are less than the sale total'}, status=400)
-
-        if note:
-            sale.note = note
-        if sale.total == 0:
-            sale.needs_review = True
-
-        # Calculate change from stored cash tender change values.
-        change_due = sum((p.change_due for p in sale.payments.all() if p.method == Payment.METHOD_CASH), Decimal('0'))
-        if change_due < 0:
-            change_due = Decimal('0')
-
-        # Use TransactionService to complete (stock movements only for stock products).
+        # Everything that writes state — the backward-compatible auto cash
+        # payment, the note/needs_review folds, the terminal status write and
+        # the stock movements — happens inside TransactionService.complete_view_sale
+        # under a single select_for_update row lock. Two concurrent completes
+        # on the same open sale therefore cannot both insert a payment or both
+        # deduct stock: the loser waits on the lock, re-checks is_open() on the
+        # now-completed locked instance, and its whole transaction rolls back.
         try:
-            if sale.total == 0:
-                from django.db import transaction as db_transaction
-                from django.utils import timezone
-                with db_transaction.atomic():
-                    # Lock the sale row before the terminal status write so a
-                    # concurrent complete/void/refund can't also finalize it.
-                    sale = Sale.objects.select_for_update().get(pk=sale.pk)
-                    if note:
-                        sale.note = note
-                    sale.status = Sale.STATUS_COMPLETED
-                    sale.completed_at = timezone.now()
-                    sale.needs_review = True
-                    sale.save(update_fields=['status', 'completed_at', 'note', 'needs_review'])
-                    from inventory.models import StockMovement
-                    for line in sale.lines.all():
-                        if line.product.non_stock:
-                            continue
-                        StockMovement.objects.create(
-                            product=line.product,
-                            quantity=-line.quantity,
-                            movement_type='sale',
-                            reference=f'sale:{sale.number}',
-                        )
-                completed_sale = sale
-            else:
-                if not sale.payments.exists():
-                    Payment.objects.create(
-                        sale=sale,
-                        method=Payment.METHOD_CASH,
-                        amount=sale.total,
-                        tendered=sale.total,
-                        change_due=Decimal('0'),
-                        manager_approved=True,
-                    )
-                ts = TransactionService(require_payment_tokens=False)
-                ts._current_sale = sale
-                ts._cart = CartService(sale)
-                ts._current_sale.note = sale.note
-                ts._current_sale.needs_review = sale.needs_review
-                completed_sale = ts.finalize_sale(sale, generate_receipt=True)
-                completed_sale.note = sale.note
-                completed_sale.needs_review = sale.needs_review
-                completed_sale.save(update_fields=['note', 'needs_review'])
+            ts = TransactionService(require_payment_tokens=False)
+            completed_sale = ts.complete_view_sale(
+                sale.pk,
+                note=note,
+                auto_cash_payment=sale.total > 0,
+                generate_receipt=True,
+            )
         except (TransactionError, InsufficientPaymentError) as e:
             return Response({'detail': str(e)}, status=400)
+
+        # Calculate change from stored cash tender change values.
+        change_due = sum((p.change_due for p in completed_sale.payments.all() if p.method == Payment.METHOD_CASH), Decimal('0'))
+        if change_due < 0:
+            change_due = Decimal('0')
 
         data = SaleSerializer(completed_sale).data
         data['change_due'] = str(change_due)

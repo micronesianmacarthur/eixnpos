@@ -1,4 +1,4 @@
-from django.db import models
+from django.db import models, IntegrityError
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from decimal import Decimal
@@ -52,6 +52,7 @@ class Sale(models.Model):
     def save(self, *args, **kwargs):
         if not self.number:
             from django.db import transaction as db_transaction
+            from django.db.models import Max
             # Serialize sale-number allocation. Lock the singleton counter row
             # (SaleNumberCounter) before reading/incrementing it so two concurrent
             # allocations can never observe the same current value and issue the
@@ -60,7 +61,29 @@ class Sale(models.Model):
             # increment and the sale INSERT share one atomic block so a failed
             # insert also rolls the counter back.
             with db_transaction.atomic():
-                counter = SaleNumberCounter.objects.select_for_update().get(pk=1)
+                # Race-safe fallback for a missing row (e.g. a TransactionTestCase
+                # flush dropping the migration-seeded singleton, or a DB first-run
+                # mid-flight): seed it from the current MAX(number) inside the
+                # locked block instead of failing every Sale.save() with
+                # DoesNotExist. get_or_create is race-safe with select_for_update:
+                # if a concurrent first INSERT wins pk=1, we catch the IntegrityError
+                # it raises and retry the locked get against the surviving row.
+                try:
+                    with db_transaction.atomic():
+                        counter, _created = (
+                            SaleNumberCounter.objects.select_for_update().get_or_create(
+                                pk=1,
+                                defaults={
+                                    'current': Sale.objects.aggregate(
+                                        m=Max('number')
+                                    )['m'] or 0,
+                                },
+                            )
+                        )
+                except IntegrityError:
+                    # A concurrent first INSERT won the row; retry the locked get
+                    # so we serialize on the existing singleton instead of 500ing.
+                    counter = SaleNumberCounter.objects.select_for_update().get(pk=1)
                 counter.current += 1
                 self.number = counter.current
                 counter.save(update_fields=['current'])
@@ -96,6 +119,15 @@ class Sale(models.Model):
             locked.tax_total = (taxable_amount * tax_rate).quantize(Decimal('0.01'))
             locked.total = taxable_amount + locked.tax_total
             locked.save(update_fields=['subtotal', 'discount_total', 'tax_total', 'total'])
+
+        # The recomputation happened on the locked `locked` instance, not on
+        # `self`; refresh `self` so callers reading `self.total` / subtotal /
+        # tax_total after recompute() see the persisted values rather than the
+        # stale pre-lock snapshot.
+        if self.pk:
+            self.refresh_from_db(
+                fields=['subtotal', 'discount_total', 'tax_total', 'total']
+            )
 
     def is_open(self) -> bool:
         """Check if sale is in a modifiable state."""
