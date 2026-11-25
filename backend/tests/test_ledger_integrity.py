@@ -21,6 +21,7 @@ from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser, Permission
+from django.db.models import ProtectedError
 from django.db.utils import OperationalError
 from rest_framework.test import APIClient
 
@@ -578,3 +579,172 @@ class LedgerWriteContentionTests(TransactionTestCase):
         # Ledger-delta consistency: balance = starting balance - total debits.
         total_debited = sum((e.amount for e in entries), D('0.00'))
         self.assertEqual(self.customer.balance, D('100.00') - total_debited)
+
+
+# ---------------------------------------------------------------------------
+# Round-3 ledger review follow-ups (non-gating fidelity fixes). One test per
+# numbered item.
+# ---------------------------------------------------------------------------
+
+
+class CurrencyQuantizationTests(TestCase):
+    """S0: a 3-decimal input must quantize ROUND_HALF_UP exactly once at the
+    request boundary, so the stored Payment/PayOnAccount row and the ledger
+    entry record the identical Decimal (DecimalField storage uses
+    ROUND_HALF_EVEN and would otherwise split 20.005 -> 20.00 row / 20.01
+    ledger)."""
+
+    def setUp(self):
+        self.admin = make_user('adm-q', role='admin', is_superuser=True)
+        self.cashier = make_user('cash-q')
+        self.customer = Customer.objects.create(
+            name='QuantCust', balance=D('50.00'), credit_limit=D('1000.00')
+        )
+
+    def test_set_payment_payment_amount_equals_ledger_entry_amount(self):
+        from sales.models import Sale, Payment
+        sale = Sale.objects.create(cashier=self.admin, total=D('20.01'))
+        client = APIClient()
+        client.force_authenticate(self.admin)
+        resp = client.post(
+            f'/api/sales/{sale.id}/set_payment/',
+            {'method': 'invoice', 'amount': '20.005',
+             'customer': self.customer.id},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 201)
+        payment = Payment.objects.get(sale=sale)
+        entry = self.customer.ledger_entries.get()
+        # Both must agree on ROUND_HALF_UP -> 20.01, not 20.00.
+        self.assertEqual(payment.amount, D('20.01'))
+        self.assertEqual(payment.amount, entry.amount)
+        self.assertEqual(entry.amount, D('20.01'))
+
+    def test_pay_on_account_payonaccount_amount_equals_ledger_entry_amount(self):
+        client = APIClient()
+        client.force_authenticate(self.admin)
+        resp = client.post(
+            f'/api/customers/{self.customer.id}/pay_on_account/',
+            {'amount': '20.005', 'note': 'quantize check'}, format='json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        poa = PayOnAccount.objects.get(customer=self.customer)
+        entry = self.customer.ledger_entries.get()
+        self.assertEqual(poa.amount, D('20.01'))
+        self.assertEqual(poa.amount, entry.amount)
+        self.assertEqual(entry.amount, D('20.01'))
+
+
+class LedgerDeleteGuardTests(TestCase):
+    """B1 residual: LedgerEntry.customer must PROTECT against deletion so the
+    admin delete_selected queryset path and any queryset delete cannot destroy
+    the audit trail."""
+
+    def setUp(self):
+        self.operator = make_user('op-delguard')
+        self.customer = Customer.objects.create(
+            name='DelGuard', balance=D('50.00'), credit_limit=D('200.00')
+        )
+
+    def test_queryset_delete_raises_protected_error_while_ledger_rows_exist(self):
+        LedgerService.record_pay_down_account(
+            self.customer, '10.00', operator=self.operator
+        )
+        self.assertEqual(self.customer.ledger_entries.count(), 1)
+        with self.assertRaises(ProtectedError):
+            Customer.objects.filter(pk=self.customer.pk).delete()
+        # Nothing was removed — customer and its audit trail survive.
+        self.assertTrue(Customer.objects.filter(pk=self.customer.pk).exists())
+        self.assertEqual(LedgerEntry.objects.count(), 1)
+
+
+class OperatorNameLegacyTests(TestCase):
+    """S6: legacy/backfilled rows (operator=None) must keep the operator_name
+    key present (value None) instead of DRF SkipField dropping it."""
+
+    def setUp(self):
+        self.admin = make_user('adm-opname', role='admin', is_superuser=True)
+        self.customer = Customer.objects.create(
+            name='OpNameCust', balance=D('0.00'), credit_limit=D('1000.00')
+        )
+
+    def _legacy_entry(self):
+        return LedgerEntry.objects.create(
+            customer=self.customer, amount=D('10.00'), direction='credit',
+            entry_type='payment', running_balance=D('10.00'),
+            operator=None,  # legacy/backfill
+        )
+
+    def test_legacy_row_keeps_operator_name_key_equal_to_none(self):
+        self._legacy_entry()
+        client = APIClient()
+        client.force_authenticate(self.admin)
+        resp = client.get(
+            f'/api/customers/{self.customer.id}/transactions/'
+        )
+        self.assertEqual(resp.status_code, 200)
+        ledger = resp.data['ledger']
+        self.assertEqual(len(ledger), 1)
+        self.assertIn('operator_name', ledger[0], 'key must not be skipped')
+        self.assertIsNone(ledger[0]['operator_name'])
+
+
+class AuthorizationEntryTests(TestCase):
+    """S7: an account exception (approved) is written as a distinct
+    ``authorization`` entry naming the authorising operator, so audit can
+    separate it from an ordinary payment."""
+
+    def setUp(self):
+        self.admin = make_user('adm-auth', role='admin', is_superuser=True)
+        self.customer = Customer.objects.create(
+            name='AuthCust', balance=D('0.00'), credit_limit=D('50.00')
+        )
+        # Seed a positive balance so the ordinary (unapproved) pay-down below
+        # stays non-negative and the guard does not reject it.
+        LedgerService.record_invoice_payment(
+            self.customer, '25.00', operator=self.admin, sale=None
+        )
+        self.customer.refresh_from_db()
+
+    def test_over_limit_invoice_is_authorization_entry_not_payment(self):
+        entry = LedgerService.record_invoice_payment(
+            self.customer, '60.00', operator=self.admin, sale=None,
+            account_exception=True,
+        )
+        self.assertEqual(entry.entry_type, 'authorization')
+        self.assertTrue(entry.approved)
+        self.assertIn('[authorized by', entry.notes)
+        self.assertIn(self.admin.get_username(), entry.notes)
+
+    def test_ordinary_payment_entry_is_not_authorization(self):
+        entry = LedgerService.record_pay_down_account(
+            self.customer, '10.00', operator=self.admin
+        )
+        self.assertEqual(entry.entry_type, 'payment')
+        self.assertFalse(entry.approved)
+
+
+class PreflightAuthorityTests(TestCase):
+    """S8: preflight(approved=True) must enforce override authority up front,
+    not green-light a request that append() would 403."""
+
+    def setUp(self):
+        self.cashier = make_user('cash-pre')
+        self.admin = make_user('adm-pre', role='admin', is_superuser=True)
+        self.customer = Customer.objects.create(
+            name='PreCust', balance=D('0.00'), credit_limit=D('50.00')
+        )
+
+    def test_preflight_approved_without_authority_raises(self):
+        with self.assertRaises(LedgerAuthorizationError):
+            LedgerService.preflight(
+                self.customer, '60.00', direction='credit',
+                approved=True, operator=self.cashier,
+            )
+
+    def test_preflight_approved_with_authority_permits_override(self):
+        new_balance = LedgerService.preflight(
+            self.customer, '60.00', direction='credit',
+            approved=True, operator=self.admin,
+        )
+        self.assertEqual(new_balance, D('60.00'))

@@ -550,7 +550,7 @@ class TransactionService:
             try:
                 LedgerService.preflight(
                     target_customer, amount, direction='credit',
-                    approved=account_exception,
+                    approved=account_exception, operator=sale.cashier,
                 )
             except LedgerError as e:
                 raise TransactionError(str(e))
@@ -590,10 +590,13 @@ class TransactionService:
             payment_kwargs["tendered"] = Decimal(str(metadata.get("tendered", amount)))
             payment_kwargs["change_due"] = result.change_due
 
-        Payment.objects.create(**payment_kwargs)
-
-        # Complete the sale - create stock movements
+        # Complete the sale - create stock movements. The Payment row is
+        # created *inside* the same atomic block so that the payment, the sale
+        # completion, any ledger write, and the stock movements all commit or
+        # roll back together — the "one atomic block" invariant is preserved.
         with db_transaction.atomic():
+            Payment.objects.create(**payment_kwargs)
+
             sale.status = Sale.STATUS_COMPLETED
             sale.completed_at = timezone.now()
             sale.save(update_fields=['status', 'completed_at'])

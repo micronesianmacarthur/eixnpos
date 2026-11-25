@@ -126,6 +126,21 @@ def can_override_credit(user):
     return user.has_perm('customers.can_override_credit')
 
 
+def _note_authorization(notes, is_approved, operator):
+    """Append an explicit authorising-operator marker to *notes* when approved.
+
+    Account exceptions (a negative-balance advance or an over-limit credit) are
+    separate audit events. Naming the operator who granted the exception makes
+    the audit trail able to trace *who* signed off, not just that the entry was
+    approved.
+    """
+    if not is_approved:
+        return notes
+    who = operator.get_username() if operator else '<legacy/unknown>'
+    marker = f'[authorized by {who}]'
+    return f'{marker} {notes}'.strip()
+
+
 class LedgerService:
     """The only sanctioned entry points for balance changes."""
 
@@ -286,9 +301,16 @@ class LedgerService:
         distinct from the generic ``manager_approved`` flag that merely
         authorizes creating the invoice. The credit ceiling is enforced even
         for manager-approved invoices.
+
+        An ``account_exception`` is an account-authorization event, not an
+        ordinary payment, so the row is written as ``entry_type=authorization``
+        (and approved) with the authorising operator named in ``notes``, so the
+        audit trail can separate an exception from a normal payment.
         """
+        notes = _note_authorization(notes, account_exception, operator)
         return LedgerService.append(
-            customer, amount, direction='credit', entry_type='payment',
+            customer, amount, direction='credit',
+            entry_type='authorization' if account_exception else 'payment',
             method='invoice', operator=operator, sale=sale,
             approved=account_exception,
             reference=str(getattr(sale, 'number', '')),
@@ -305,25 +327,40 @@ class LedgerService:
         ``cash`` when omitted. A debit that would drive the balance negative is
         rejected by :meth:`append` unless ``approved`` is set (overpayment /
         advance).
+
+        An ``approved`` pay-down is an account-authorization event (it grants
+        a negative balance), not an ordinary payment, so it is written as
+        ``entry_type=authorization`` with the authorising operator named in
+        ``notes`` so audit can separate the exception from a normal payment.
         """
         method = method or 'cash'
+        notes = _note_authorization(note, approved, operator)
         return LedgerService.append(
-            customer, amount, direction='debit', entry_type='payment',
-            method=method, operator=operator, approved=approved, notes=note,
+            customer, amount, direction='debit',
+            entry_type='authorization' if approved else 'payment',
+            method=method, operator=operator, approved=approved, notes=notes,
         )
 
     # ------------------------------------------------------------- preflight
 
     @staticmethod
-    def preflight(customer, amount, *, direction, approved=False) -> Decimal:
+    def preflight(customer, amount, *, direction, approved=False,
+                  operator=None) -> Decimal:
         """Validate a prospective entry without writing it.
 
         Intended to reject a doomed invoice before a payment is processed (so a
         failing credit-limit check does not cost a payment round-trip). The
         authoritative guard is re-applied in :meth:`append`, which is the only
         race-safe check.
+
+        ``approved=True`` calls for override authority up front (via
+        :func:`_assert_approval_authority`), so a prospective request that
+        :meth:`append` would later reject with a 403 is *not* green-lit here —
+        preflight either accepts it the same way append would, or refuses it.
         """
         amount = LedgerService.coerce_amount(amount)
+        if approved:
+            LedgerService._assert_approval_authority(operator)
         with transaction.atomic():
             customer = Customer.objects.select_for_update().get(pk=customer.pk)
             new_balance = LedgerService._project(customer, amount, direction)

@@ -58,7 +58,7 @@ class LedgerEntry(models.Model):
     METHODS = ['invoice', 'cash', 'card', 'split', 'other', 'legacy']
 
     customer = models.ForeignKey(
-        Customer, on_delete=models.CASCADE, related_name='ledger_entries'
+        Customer, on_delete=models.PROTECT, related_name='ledger_entries'
     )
     # Stored as a positive magnitude; the semantic sign lives in ``direction``.
     amount = models.DecimalField(

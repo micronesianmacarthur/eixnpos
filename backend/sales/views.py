@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from django.contrib.auth import authenticate
 from django.db import transaction as db_transaction
 from django.utils import timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from .models import Sale, SaleLine, Payment
 from .serializers import SaleSerializer, SaleLineSerializer, PaymentSerializer
@@ -195,6 +195,13 @@ class SaleViewSet(viewsets.ModelViewSet):
             return Response({'detail': 'invalid amount'}, status=400)
         if amount <= 0:
             return Response({'detail': 'amount must be positive'}, status=400)
+        # Quantize once at the request boundary (ROUND_HALF_UP, matching
+        # LedgerService.coerce_amount) so the stored Payment.amount and the
+        # ledger entry record the identical Decimal. DecimalField storage
+        # would otherwise apply ROUND_HALF_EVEN to an unquantized 3-decimal
+        # input, splitting the two records (e.g. 20.005 -> Payment 20.00,
+        # ledger 20.01).
+        amount = amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
         
         tendered = request.data.get('tendered')
         if tendered is not None:
@@ -239,7 +246,7 @@ class SaleViewSet(viewsets.ModelViewSet):
             try:
                 LedgerService.preflight(
                     customer, amount, direction='credit',
-                    approved=account_exception,
+                    approved=account_exception, operator=request.user,
                 )
             except LedgerError as e:
                 return Response({'detail': str(e)}, status=400)

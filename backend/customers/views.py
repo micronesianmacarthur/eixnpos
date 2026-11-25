@@ -1,5 +1,3 @@
-from decimal import Decimal
-
 from django.db import transaction as db_transaction
 from rest_framework import serializers, viewsets, status
 from rest_framework.decorators import action
@@ -27,7 +25,7 @@ class PayOnAccountSerializer(serializers.ModelSerializer):
 
 
 class LedgerEntrySerializer(serializers.ModelSerializer):
-    operator_name = serializers.CharField(source='operator.get_full_name', read_only=True)
+    operator_name = serializers.SerializerMethodField()
 
     class Meta:
         model = LedgerEntry
@@ -37,6 +35,19 @@ class LedgerEntrySerializer(serializers.ModelSerializer):
             'reference', 'notes', 'created_at',
         ]
         read_only_fields = fields
+
+    def get_operator_name(self, obj):
+        """Return the operator's full name, or ``None`` for legacy rows.
+
+        Legacy/backfilled entries have ``operator=None`` (there is no real
+        owner to attribute); using ``CharField(source='operator.get_full_name')``
+        would make DRF *skip* the key entirely for those rows, which hides the
+        field from clients. A ``SerializerMethodField`` keeps the key present
+        (value ``None``) so the response shape is stable.
+        """
+        if obj.operator is None:
+            return None
+        return obj.operator.get_full_name() or obj.operator.get_username()
 
 
 class CustomerSerializer(serializers.ModelSerializer):
@@ -104,6 +115,16 @@ class CustomerViewSet(viewsets.ModelViewSet):
         # Honour the payment method the client actually used, defaulting to cash.
         method = request.data.get('method') or 'cash'
 
+        # Quantize the payment amount once at the request boundary (ROUND_HALF_UP,
+        # matching LedgerService.coerce_amount) so the legacy PayOnAccount row and
+        # the ledger entry record the identical Decimal — DecimalField storage
+        # would otherwise apply ROUND_HALF_EVEN to an unquantized 3-decimal input
+        # and the two records would diverge.
+        try:
+            amount = LedgerService.coerce_amount(amount)
+        except LedgerError as e:
+            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
         try:
             # ``approved`` is precomputed from real override authority so a
             # non-privileged caller can never self-grant a negative balance.
@@ -119,7 +140,7 @@ class CustomerViewSet(viewsets.ModelViewSet):
                     # channel and UI keep working during the deprecation window (the
                     # ledger entry above is the authoritative record of the payment).
                     PayOnAccount.objects.create(
-                        customer=customer, amount=Decimal(str(amount)), note=note,
+                        customer=customer, amount=amount, note=note,
                     )
 
             # Serialise the pay-down: this atomic block is the write boundary on
