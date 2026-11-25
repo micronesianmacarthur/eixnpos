@@ -25,6 +25,8 @@ from rest_framework.test import APIClient
 
 from products.models import Product
 from sales.models import Payment, Sale, SaleLine
+from inventory.models import StockMovement
+from customers.models import Customer
 
 from sessions.models import Register, Session
 
@@ -57,7 +59,15 @@ class PaymentRegressionTestCase(TestCase):
 
     def test_retried_post_creates_single_row_and_records_sale_total(self):
         sale = self.make_sale_with_line(quantity=2)
-        payload = {"method": "cash", "amount": "20.00", "tendered": "20.00"}
+        # A retried POST carries the same client-supplied nonce; under the
+        # chosen semantics keyless POSTs are non-idempotent, so idempotency is
+        # expressed through the client key (B1 option b).
+        payload = {
+            "method": "cash",
+            "amount": "20.00",
+            "tendered": "20.00",
+            "idempotency_key": "retry-nonce-1",
+        }
 
         first = self.post_payment(sale, payload)
         second = self.post_payment(sale, payload)  # network-retry replay of the same POST
@@ -285,3 +295,185 @@ class ConcurrentRetryTests(TransactionTestCase):
         # Note: a settled 200 (idempotent replay of the winning request) is as
         # acceptable as the 201 that created the row — either way the state
         # asserted above holds exactly one charge.
+
+
+class PaymentBlockerAcceptanceTests(TestCase):
+    """Acceptance tests for review blockers B1-B5 / should-fixes S1-S3.
+
+    Each test captures a specific blocker from the review of df62c63 and must
+    FAIL on the un-fixed tree (d781627) and pass after the fix on this branch.
+    """
+
+    def setUp(self):
+        self.cashier = User.objects.create_user(username="accept1", password="pw", role="cashier")
+        self.client = APIClient()
+        self.client.force_authenticate(self.cashier)
+        self.product = Product.objects.create(name="Widget", price=Decimal("10.00"))
+
+    def make_sale_with_line(self, quantity=2):
+        sale = Sale.objects.create(cashier=self.cashier)
+        SaleLine.objects.create(
+            sale=sale,
+            product=self.product,
+            quantity=quantity,
+            unit_price=self.product.price,
+        )
+        sale.recompute()
+        sale.refresh_from_db()
+        return sale
+
+    def post_payment(self, sale, payload):
+        return self.client.post(f"/api/sales/{sale.id}/set_payment/", payload, format="json")
+
+    # B1 — two genuine equal-amount cash partials record two rows, complete succeeds
+    def test_accept_01_two_equal_cash_tenders_record_two_rows(self):
+        sale = self.make_sale_with_line(quantity=2)  # 20.00
+        first = self.post_payment(sale, {"method": "cash", "amount": "10.00", "tendered": "10.00"})
+        second = self.post_payment(sale, {"method": "cash", "amount": "10.00", "tendered": "10.00"})
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        rows = Payment.objects.filter(sale=sale)
+        self.assertEqual(rows.count(), 2, "two equal cash tenders must be two independent rows")
+        total = rows.aggregate(s=Sum("amount"))["s"]
+        self.assertEqual(total, Decimal("20.00"))
+        complete = self.client.post(f"/api/sales/{sale.id}/complete/")
+        self.assertEqual(complete.status_code, 200)
+
+    # B1 — two equal-amount card partials record two rows
+    def test_accept_02_two_equal_card_tenders_record_two_rows(self):
+        sale = self.make_sale_with_line(quantity=2)
+        payload = {"method": "card", "amount": "10.00"}
+        self.assertEqual(self.post_payment(sale, payload).status_code, 201)
+        self.assertEqual(self.post_payment(sale, payload).status_code, 201)
+        rows = Payment.objects.filter(sale=sale)
+        self.assertEqual(rows.count(), 2)
+        self.assertEqual(rows.aggregate(s=Sum("amount"))["s"], Decimal("20.00"))
+
+    # B3 — split retry with the same client nonce: 200, no new rows, full component set
+    def test_accept_03_split_retry_same_nonce_is_idempotent(self):
+        sale = self.make_sale_with_line(quantity=2)
+        payload = {
+            "method": "split",
+            "amount": "20.00",
+            "idempotency_key": "split-nonce-01",
+            "splits": [
+                {"method": "cash", "amount": "10.00", "metadata": {"tendered": "10.00"}},
+                {"method": "card", "amount": "10.00", "metadata": {}},
+            ],
+        }
+        first = self.post_payment(sale, payload)
+        self.assertEqual(first.status_code, 201)
+        second = self.post_payment(sale, payload)  # same client nonce -> 200, no 500, no new rows
+        self.assertEqual(second.status_code, 200)
+        rows = Payment.objects.filter(sale=sale)
+        self.assertEqual(rows.count(), 2, "split retry must not add rows")
+        dumped = {p.method: p.amount for p in rows}
+        self.assertEqual(dumped, {"cash": Decimal("10.00"), "card": Decimal("10.00")})
+        # body carries the same component set
+        self.assertEqual(second.data[0]["method"], "cash")
+        self.assertEqual(len(second.data), 2)
+
+    # B4 — cash+card split without a card_token records cash + card rows
+    def test_accept_04_cash_card_split_without_token(self):
+        # Open the session BEFORE the sale so the legacy time-window fallback
+        # in session close attributes the cash leg to it.
+        register = Register.objects.order_by("id").first() or Register.objects.create(name="R")
+        session = Session.objects.create(
+            cashier=self.cashier, register=register,
+            business_day=timezone.localdate(), starting_cash=Decimal("0.00"),
+        )
+        sale = self.make_sale_with_line(quantity=2)
+        response = self.post_payment(sale, {
+            "method": "split",
+            "amount": "20.00",
+            "splits": [
+                {"method": "cash", "amount": "10.00", "metadata": {"tendered": "10.00"}},
+                {"method": "card", "amount": "10.00", "metadata": {}},  # no card_token
+            ],
+        })
+        self.assertEqual(response.status_code, 201)
+        rows = {p.method: p for p in Payment.objects.filter(sale=sale)}
+        self.assertEqual(set(rows), {"cash", "card"})
+        self.assertEqual(rows["cash"].amount, Decimal("10.00"))
+        self.assertEqual(rows["card"].amount, Decimal("10.00"))
+        # cash-up's cash total includes the cash leg
+        complete = self.client.post(f"/api/sales/{sale.id}/complete/")
+        self.assertEqual(complete.status_code, 200)
+        close = self.client.post(f"/api/sessions/{session.id}/close/", {"counts": {"tens": 1}}, format="json")
+        self.assertEqual(close.status_code, 200)
+        session.refresh_from_db()
+        self.assertEqual(session.expected_cash, Decimal("10.00"), "cash leg reports to cash-up")
+
+    # B5 — split with a 0.00 and a -100.00 component is rejected before any write
+    def test_accept_05_split_zero_negative_components_rejected(self):
+        sale = self.make_sale_with_line(quantity=2)
+        # Accounts: cash 120.00 + card -100.00 sums to 20.00 (== sale total).
+        # Both legs carry the data (tendered/token) that makes them pass their
+        # processors on the un-fixed tree, so the ONLY reason to reject is the
+        # negative component — on d781627 this reaches a 201 with a -100.00
+        # Payment row; the fix must return 400 before any write.
+        resp = self.post_payment(sale, {
+            "method": "split", "amount": "20.00",
+            "splits": [{"method": "cash", "amount": "120.00", "metadata": {"tendered": "120.00"}},
+                       {"method": "card", "amount": "-100.00", "metadata": {"card_token": "tok_test"}}],
+        })
+        self.assertEqual(resp.status_code, 400, "negative component must be rejected before any write")
+        self.assertEqual(Payment.objects.filter(sale=sale).count(), 0, "no row for an invalid split")
+        # 0.00 component also rejected, no rows
+        resp_zero = self.post_payment(sale, {
+            "method": "split", "amount": "20.00",
+            "splits": [{"method": "cash", "amount": "10.00", "metadata": {"tendered": "10.00"}},
+                       {"method": "card", "amount": "0.00", "metadata": {"card_token": "tok_test"}}],
+        })
+        self.assertEqual(resp_zero.status_code, 400, "zero component must be rejected before any write")
+        self.assertEqual(Payment.objects.filter(sale=sale).count(), 0)
+
+    # B2 — same client key reused on a second sale is rejected, no row, no leak
+    def test_accept_06_key_reused_second_sale_rejected(self):
+        sale_a = self.make_sale_with_line(quantity=2)
+        sale_b = self.make_sale_with_line(quantity=2)
+        payload = {"method": "cash", "amount": "20.00", "tendered": "20.00", "idempotency_key": "shared-key"}
+        first = self.post_payment(sale_a, payload)
+        self.assertEqual(first.status_code, 201)
+        second = self.post_payment(sale_b, payload)
+        self.assertEqual(second.status_code, 409, "a key owned by another sale must be rejected")
+        self.assertFalse(Payment.objects.filter(sale=sale_b).exists(), "no row on sale B")
+        self.assertNotIn("id", second.data, "sale A's payment body must not leak")
+        self.assertEqual(Payment.objects.filter(sale=sale_a).count(), 1)
+
+    # B1 (choice b) — keyless duplicate POSTs are non-idempotent (two rows)
+    def test_accept_07_keyless_duplicate_post_records_two_rows(self):
+        sale = self.make_sale_with_line(quantity=2)
+        payload = {"method": "cash", "amount": "10.00", "tendered": "10.00"}
+        self.assertEqual(self.post_payment(sale, payload).status_code, 201)
+        self.assertEqual(self.post_payment(sale, payload).status_code, 201)
+        self.assertEqual(Payment.objects.filter(sale=sale).count(), 2)
+
+    # S1 — forced failure inside completion leaves customer balance unchanged, sale open, no payment
+    def test_accept_08_forced_completion_failure_keeps_balance_and_sale(self):
+        from customers.models import Customer
+        from sales.services import TransactionService
+
+        customer = Customer.objects.create(name="Acme", balance=Decimal("0.00"), credit_limit=Decimal("1000.00"))
+        service = TransactionService()
+        sale = service.start_sale(self.cashier, customer=customer)
+        service.add_item(self.product, quantity=1)  # 10.00
+        StockMovementCreate = mock.patch.object(StockMovement.objects, "create", side_effect=RuntimeError("boom"))
+        with StockMovementCreate:
+            with self.assertRaises(RuntimeError):
+                service.complete_sale("invoice", Decimal("10.00"), manager_approved=True)
+        customer.refresh_from_db()
+        self.assertEqual(customer.balance, Decimal("0.00"), "customer must not be charged on failure")
+        sale.refresh_from_db()
+        self.assertTrue(sale.is_open(), "sale must stay open on failure")
+        self.assertEqual(Payment.objects.filter(sale=sale).count(), 0, "no payment row on failure")
+
+    # S3 — Payment.objects.create without a key gets a generated non-null key
+    def test_accept_09_create_without_key_gets_nonce(self):
+        sale = self.make_sale_with_line(quantity=2)
+        row = Payment.objects.create(sale=sale, method="cash", amount=Decimal("20.00"))
+        self.assertIsNotNone(row.idempotency_key)
+        self.assertTrue(row.idempotency_key)
+        row2 = Payment.objects.create(sale=sale, method="cash", amount=Decimal("1.00"))
+        self.assertIsNotNone(row2.idempotency_key)
+        self.assertNotEqual(row.idempotency_key, row2.idempotency_key, "each keyless row gets a unique key")

@@ -575,14 +575,18 @@ class SaleApiTests(TestCase):
     def test_set_payment_duplicate_post_is_idempotent(self):
         sale = self.make_sale_with_line(quantity=2)
 
+        # Duplicate POSTs share a client-supplied nonce; idempotency is
+        # expressed through the key (B1 option b — keyless POSTs are
+        # non-idempotent).
+        key = "dup-nonce"
         first = self.client.post(
             f'/api/sales/{sale.id}/set_payment/',
-            {'method': 'cash', 'amount': '20.00', 'tendered': '20.00'},
+            {'method': 'cash', 'amount': '20.00', 'tendered': '20.00', 'idempotency_key': key},
             format='json',
         )
         second = self.client.post(
             f'/api/sales/{sale.id}/set_payment/',
-            {'method': 'cash', 'amount': '20.00', 'tendered': '20.00'},
+            {'method': 'cash', 'amount': '20.00', 'tendered': '20.00', 'idempotency_key': key},
             format='json',
         )
 
