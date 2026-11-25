@@ -6,7 +6,7 @@ for cash and card payments.
 """
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from enum import Enum
 from typing import Any, Optional
 
@@ -305,10 +305,14 @@ class SplitProcessor(PaymentProcessor):
         cash_processor: Optional[CashProcessor] = None,
         card_processor: Optional[CardProcessor] = None,
         mobile_processor: Optional[MobileProcessor] = None,
+        require_token: bool = False,
     ):
+        # require_token threads through to the nested card/mobile processors so
+        # a recording-path split (POS has no gateway token) can be recorded
+        # without a token, while a gateway-driven path can still demand one.
         self.cash_processor = cash_processor or CashProcessor()
-        self.card_processor = card_processor or CardProcessor()
-        self.mobile_processor = mobile_processor or MobileProcessor()
+        self.card_processor = card_processor or CardProcessor(require_token=require_token)
+        self.mobile_processor = mobile_processor or MobileProcessor(require_token=require_token)
 
     def process_payment(
         self,
@@ -326,6 +330,20 @@ class SplitProcessor(PaymentProcessor):
 
         if not splits or not isinstance(splits, list):
             return PaymentResult.failure("Split payment requires a list of splits")
+
+        # Reject zero/negative components up front: a split of $20 with a
+        # $120 cash and a -$100 card leg sums to $20 but would persist a
+        # negative Payment row that pollutes ledger/cash-up/Z-report totals.
+        # Every component must be a positive amount before any write.
+        for split in splits:
+            try:
+                split_amount_check = Decimal(str(split.get("amount", 0)))
+            except (TypeError, ValueError, InvalidOperation):
+                split_amount_check = Decimal("0")
+            if split_amount_check <= 0:
+                return PaymentResult.failure(
+                    f"Split component amounts must be positive, got {split_amount_check}"
+                )
 
         # Validate splits sum to amount
         split_total = sum(Decimal(str(s.get("amount", 0))) for s in splits)
