@@ -157,6 +157,7 @@ def sale_with_payment(completed_sale):
 @pytest.fixture
 def open_sale_with_payment(open_sale, product):
     """Create an open sale with a payment for finalize_sale testing."""
+    StockMovement.objects.create(product=product, quantity=10, movement_type='receive')
     SaleLine.objects.create(
         sale=open_sale,
         product=product,

@@ -28,11 +28,25 @@ class Product(models.Model):
     non_stock = models.BooleanField(default=False)
     supplier = models.ForeignKey(Supplier, null=True, blank=True, on_delete=models.SET_NULL, related_name='products')
     active = models.BooleanField(default=True)
+    # Materialized on-hand column. This is the single source of truth that the
+    # stock writers lock and update with ``F('quantity') + delta`` inside the
+    # same transaction as the ledger insert. The ``quantity >= 0`` CHECK makes
+    # a negative balance a database error even if an application guard is
+    # bypassed or races a concurrent writer. Backfilled from the ledger in a
+    # data migration; ``StockMovement`` keeps it in sync (see
+    # ``inventory.models.StockMovement.save/delete``).
+    quantity = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ['sku']
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(quantity__gte=0),
+                name='product_quantity_non_negative',
+            ),
+        ]
 
     def _generate_sku(self):
         name = self.category.name if self.category is not None else ''
@@ -62,16 +76,6 @@ class Product(models.Model):
 
     def __str__(self):
         return self.name
-
-    @property
-    def quantity(self):
-        if self.non_stock:
-            return 0
-        from inventory.models import StockMovement
-        total = 0
-        for m in StockMovement.objects.filter(product=self):
-            total += m.quantity
-        return total
 
     def is_low_stock(self):
         if self.non_stock:
