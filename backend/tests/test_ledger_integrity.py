@@ -16,24 +16,28 @@ Locks down the fixed behaviour that the original defect broke:
   manager-approved invoices (manager approval != account exception).
 """
 import random
+import threading
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser, Permission
+from django.db.utils import OperationalError
 from rest_framework.test import APIClient
 
 from customers.models import Customer, LedgerEntry, PayOnAccount
 from customers.services import (
     LedgerAuthorizationError,
+    LedgerContentionError,
     LedgerError,
     LedgerService,
     NegativeBalanceError,
     OverLimitError,
     can_override_credit,
+    run_serialized,
 )
 from sales.models import Sale, SaleLine
 
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 
 User = get_user_model()
 
@@ -436,3 +440,141 @@ class DirectionalGuardTests(TestCase):
         self.assertTrue(entry.approved)
         customer.refresh_from_db()
         self.assertEqual(customer.balance, D('60.00'))
+
+
+class PayDownMethodTests(TestCase):
+    """S2: a pay-down records the payment method the client actually used,
+    defaults to ``cash`` when omitted, and rejects an invalid method with a
+    clean 400 and no rows."""
+
+    def setUp(self):
+        self.cashier = make_user('cash-method')
+        self.customer = Customer.objects.create(
+            name='MethodCust', balance=D('50.00'), credit_limit=D('200.00')
+        )
+
+    def _pay(self, **payload):
+        client = APIClient()
+        client.force_authenticate(self.cashier)
+        return client.post(
+            f'/api/customers/{self.customer.id}/pay_on_account/',
+            payload, format='json',
+        )
+
+    def test_api_persists_method_card(self):
+        resp = self._pay(amount='20.00', method='card')
+        self.assertEqual(resp.status_code, 200)
+        entry = self.customer.ledger_entries.get()
+        self.assertEqual(entry.method, 'card')
+        self.assertEqual(entry.direction, 'debit')
+        self.assertEqual(entry.running_balance, D('30.00'))
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.balance, D('30.00'))
+
+    def test_api_defaults_to_cash_when_method_absent(self):
+        resp = self._pay(amount='20.00')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self.customer.ledger_entries.get().method, 'cash')
+
+    def test_api_rejects_invalid_method_with_400_and_no_rows(self):
+        resp = self._pay(amount='20.00', method='bogus')
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(self.customer.ledger_entries.count(), 0)
+        self.assertEqual(PayOnAccount.objects.filter(customer=self.customer).count(), 0)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.balance, D('50.00'))
+
+    def test_service_persists_method_and_validates(self):
+        entry = LedgerService.record_pay_down_account(
+            self.customer, '5.00', operator=self.cashier, method='split'
+        )
+        self.assertEqual(entry.method, 'split')
+        with self.assertRaises(LedgerError):
+            LedgerService.record_pay_down_account(
+                self.customer, '5.00', operator=self.cashier, method='bogus'
+            )
+        self.assertEqual(self.customer.ledger_entries.count(), 1)
+
+
+class LedgerWriteSerialisationUnitTests(TestCase):
+    """S3a: the bounded sqlite retry serialises transient write-lock contention
+    and maps persistent contention to a clean :class:`LedgerContentionError`."""
+
+    def test_run_serialized_retries_transient_lock_and_succeeds(self):
+        calls = []
+
+        def body():
+            calls.append(1)
+            if len(calls) == 1:
+                raise OperationalError('database is locked')
+            return 'ok'
+
+        self.assertEqual(run_serialized(body, attempts=3, delay=0), 'ok')
+        self.assertEqual(len(calls), 2)
+
+    def test_run_serialized_gives_up_with_contention_error(self):
+        def body():
+            raise OperationalError('database is locked')
+
+        with self.assertRaises(LedgerContentionError):
+            run_serialized(body, attempts=2, delay=0)
+
+    def test_run_serialized_propagates_non_lock_errors_unchanged(self):
+        def body():
+            raise ValueError('boom')
+
+        with self.assertRaisesRegex(ValueError, 'boom'):
+            run_serialized(body, attempts=3, delay=0)
+
+
+class LedgerWriteContentionTests(TransactionTestCase):
+    """S3a: two simultaneous pay-downs must not produce a stale running
+    balance and must never leak an unhandled 500 (``database is locked``).
+
+    ``append`` is called outside any caller transaction here, so it owns and
+    serialises its write via the bounded retry: both writers apply, the
+    running-balance chain stays contiguous, and the final balance matches the
+    ledger. ``TransactionTestCase`` is used (not ``TestCase``) so each thread
+    hits the real, file-backed test database with its own commit boundary.
+    """
+
+    def setUp(self):
+        self.operator = make_user('op-concur')
+        self.customer = Customer.objects.create(
+            name='Concur', balance=D('100.00'), credit_limit=D('1000.00')
+        )
+
+    def test_two_simultaneous_pay_downs_apply_serially_with_contiguous_chain(self):
+        errors = []
+        barrier = threading.Barrier(2)
+
+        def writer():
+            try:
+                barrier.wait(timeout=10)
+                LedgerService.record_pay_down_account(
+                    self.customer, '20.00', operator=self.operator
+                )
+            except BaseException as exc:  # pragma: no cover - surfaced below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=writer) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        self.assertEqual(errors, [], f'no writer may leak an unhandled error: {errors}')
+
+        entries = list(self.customer.ledger_entries.all().order_by('created_at', 'id'))
+        self.assertEqual(len(entries), 2, 'both pay-downs must apply')
+        # Contiguous chain: each running_balance continues from the previous.
+        self.assertEqual(
+            [e.running_balance for e in entries],
+            [D('80.00'), D('60.00')],
+            'running balances must be contiguous (no stale read)',
+        )
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.balance, D('60.00'))
+        # Ledger-delta consistency: balance = starting balance - total debits.
+        total_debited = sum((e.amount for e in entries), D('0.00'))
+        self.assertEqual(self.customer.balance, D('100.00') - total_debited)

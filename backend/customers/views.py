@@ -13,7 +13,9 @@ from .services import (
     LedgerService,
     LedgerError,
     LedgerAuthorizationError,
+    LedgerContentionError,
     can_override_credit,
+    run_serialized,
 )
 
 
@@ -99,22 +101,42 @@ class CustomerViewSet(viewsets.ModelViewSet):
         customer = self.get_object()
         amount = request.data.get('amount')
         note = request.data.get('note', '')
+        # Honour the payment method the client actually used, defaulting to cash.
+        method = request.data.get('method') or 'cash'
 
         try:
             # ``approved`` is precomputed from real override authority so a
             # non-privileged caller can never self-grant a negative balance.
             approved = can_override_credit(request.user)
-            with db_transaction.atomic():
-                LedgerService.record_pay_down_account(
-                    customer, amount, operator=request.user,
-                    approved=approved, note=note,
-                )
-                # Transitional vestige retained so the legacy ``pay_on_account``
-                # channel and UI keep working during the deprecation window (the
-                # ledger entry above is the authoritative record of the payment).
-                PayOnAccount.objects.create(
-                    customer=customer, amount=Decimal(str(amount)), note=note,
-                )
+
+            def _record_payment():
+                with db_transaction.atomic():
+                    LedgerService.record_pay_down_account(
+                        customer, amount, operator=request.user,
+                        method=method, approved=approved, note=note,
+                    )
+                    # Transitional vestige retained so the legacy ``pay_on_account``
+                    # channel and UI keep working during the deprecation window (the
+                    # ledger entry above is the authoritative record of the payment).
+                    PayOnAccount.objects.create(
+                        customer=customer, amount=Decimal(str(amount)), note=note,
+                    )
+
+            # Serialise the pay-down: this atomic block is the write boundary on
+            # sqlite, so a concurrent pay-down retries serially instead of
+            # surfacing ``database is locked`` as a 500.
+            run_serialized(_record_payment)
+        except LedgerContentionError:
+            # A concurrent writer holds the balance lock and did not release it
+            # within the retry window — answer a clean, retryable 503 rather
+            # than an unhandled 500.
+            return Response(
+                {'detail': 'The account balance is being updated by another '
+                           'request right now; please retry the payment.',
+                 'retryable': True},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                headers={'Retry-After': '1'},
+            )
         except LedgerAuthorizationError:
             return Response({'detail': 'not authorized to approve a negative balance'},
                             status=status.HTTP_403_FORBIDDEN)

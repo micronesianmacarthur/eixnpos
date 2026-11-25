@@ -11,15 +11,73 @@ Money is ``Decimal`` only, at two-decimal currency precision. Arbitrary
 ``float`` input is rejected at the boundary because floats cannot represent
 currency amounts exactly.
 """
+import time
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
-from django.db import transaction
+from django.db import connection, transaction
+from django.db.utils import OperationalError
 
 from accounts.roles import has_admin_role
 from .models import Customer, LedgerEntry
 
 #: Fixed two-decimal currency precision used by every ledger amount.
 CENTS = Decimal('0.01')
+
+# ---------------------------------------------------------------------------
+# Bounded write-serialisation for sqlite.
+#
+# ``select_for_update()`` is a documented no-op on sqlite (the engine cannot
+# emit ``FOR UPDATE`` and any naive reader/writer of the balance field is
+# unprotected). With the configured backend the *transaction* is still the
+# serialisation boundary: sqlite allows exactly one writer at a time, so a
+# second concurrent writer only fails transiently with a ``database is
+# locked`` ``OperationalError``. Rather than letting that surface as an
+# unhandled 500 we bound-retry the losing write (by the time the winner's
+# transaction commits the lock is released, so the loser re-reads the fresh
+# balance and appends contiguously) and, if contention persists, raise a
+# clean :class:`LedgerContentionError` the API layer answers with a retryable
+# 503. Postgres/MySQL callers get real row locking and never hit this path.
+# ---------------------------------------------------------------------------
+
+#: How many times a losing sqlite writer re-runs its transaction.
+LEDGER_WRITE_ATTEMPTS = 5
+#: Base backoff (seconds, linear) between retry attempts.
+LEDGER_WRITE_RETRY_DELAY = 0.05
+
+
+def _is_db_lock_contention(exc):
+    """True when *exc* is the transient sqlite write-lock ``OperationalError``.
+
+    Anything else (a genuine SQL error) is not contention and must propagate
+    unchanged rather than being silently retried.
+    """
+    return isinstance(exc, OperationalError) and 'locked' in str(exc).lower()
+
+
+def run_serialized(body, *, attempts=LEDGER_WRITE_ATTEMPTS,
+                   delay=LEDGER_WRITE_RETRY_DELAY):
+    """Run *body* under bounded retry on sqlite write-lock contention.
+
+    *body* is a zero-arg callable owning its own transaction. When it fails
+    with the transient ``database is locked`` error it is re-run (a fresh
+    transaction re-reads the committed balance, so concurrent writers apply
+    serially). After *attempts* exhausted failures raise
+    :class:`LedgerContentionError` so the API layer can answer a clean,
+    retryable 503 instead of an unhandled 500.
+    """
+    for attempt in range(attempts):
+        try:
+            return body()
+        except OperationalError as exc:
+            if not _is_db_lock_contention(exc):
+                raise
+            if attempt + 1 >= attempts:
+                raise LedgerContentionError(
+                    'The account balance is being updated by another request '
+                    'right now; please retry.'
+                ) from exc
+            time.sleep(delay * (attempt + 1))
+    raise AssertionError('unreachable')  # pragma: no cover
 
 
 class LedgerError(Exception):
@@ -36,6 +94,15 @@ class OverLimitError(LedgerError):
 
 class LedgerAuthorizationError(LedgerError):
     """A caller requested approval the operator is not authorized to grant."""
+
+
+class LedgerContentionError(LedgerError):
+    """A concurrent balance write held the lock; the operation should be retried.
+
+    Raised by :func:`run_serialized` when a sqlite writer could not acquire the
+    write lock across the bounded retry window. The API layer maps it to a
+    clean, retryable 503 (never an unhandled 500).
+    """
 
 
 def can_override_credit(user):
@@ -153,7 +220,11 @@ class LedgerService:
         """Append one ledger entry and re-derive ``Customer.balance`` atomically.
 
         The customer row is locked (``select_for_update``) so concurrent
-        payments cannot produce a stale running balance. Guards:
+        payments cannot produce a stale running balance. On sqlite — where
+        ``select_for_update`` is a no-op — the write is additionally wrapped in
+        a bounded retry (:func:`run_serialized`) so a losing writer serialises
+        instead of surfacing an unhandled 500; a caller that already owns an
+        outer transaction performs that serialisation itself. Guards:
 
         * a debit that would make the balance negative requires ``approved``
         * a credit whose running balance would exceed ``credit_limit`` requires
@@ -161,36 +232,46 @@ class LedgerService:
         * ``approved`` itself requires override authority (see
           :func:`can_override_credit`)
         """
-        with transaction.atomic():
-            LedgerService._validate_entry_args(direction, entry_type, method, operator)
-            amount = LedgerService.coerce_amount(amount)
-            approved = bool(approved)
-            if approved:
-                LedgerService._assert_approval_authority(operator)
+        def _append_once():
+            with transaction.atomic():
+                LedgerService._validate_entry_args(direction, entry_type, method, operator)
+                entry_amount = LedgerService.coerce_amount(amount)
+                is_approved = bool(approved)
+                if is_approved:
+                    LedgerService._assert_approval_authority(operator)
 
-            # Lock the customer row for the remainder of the transaction.
-            customer = Customer.objects.select_for_update().get(pk=customer.pk)
-            new_balance = LedgerService._project(customer, amount, direction)
-            LedgerService._assert_guards(customer, new_balance, approved, direction)
+                # Lock the customer row for the remainder of the transaction.
+                locked = Customer.objects.select_for_update().get(pk=customer.pk)
+                new_balance = LedgerService._project(locked, entry_amount, direction)
+                LedgerService._assert_guards(
+                    locked, new_balance, is_approved, direction)
 
-            entry = LedgerEntry.objects.create(
-                customer=customer,
-                amount=amount,
-                direction=direction,
-                entry_type=entry_type,
-                method=method or None,
-                operator=operator,
-                sale=sale,
-                approved=approved,
-                reference=reference,
-                notes=notes,
-                running_balance=new_balance,
-            )
-            # Cache the derived balance last so the ledger row always exists
-            # before the balance column is committed.
-            customer.balance = new_balance
-            customer.save(update_fields=['balance', 'updated_at'])
-            return entry
+                entry = LedgerEntry.objects.create(
+                    customer=locked,
+                    amount=entry_amount,
+                    direction=direction,
+                    entry_type=entry_type,
+                    method=method or None,
+                    operator=operator,
+                    sale=sale,
+                    approved=is_approved,
+                    reference=reference,
+                    notes=notes,
+                    running_balance=new_balance,
+                )
+                # Cache the derived balance last so the ledger row always exists
+                # before the balance column is committed.
+                locked.balance = new_balance
+                locked.save(update_fields=['balance', 'updated_at'])
+                return entry
+
+        # Inside a caller-managed ``atomic()`` the write lock is held by the
+        # outer transaction, so retrying a nested savepoint cannot help (the
+        # caller serialises). Otherwise we own the transaction and retry so a
+        # losing sqlite writer applies serially rather than 500ing.
+        if connection.in_atomic_block:
+            return _append_once()
+        return run_serialized(_append_once)
 
     # ------------------------------------------------------------ domain steps
 
@@ -215,16 +296,20 @@ class LedgerService:
         )
 
     @staticmethod
-    def record_pay_down_account(customer, amount, *, operator,
+    def record_pay_down_account(customer, amount, *, operator, method=None,
                                 approved=False, note='') -> LedgerEntry:
         """Debit the customer's account (customer settles debt).
 
-        A debit that would drive the balance negative is rejected by
-        :meth:`append` unless ``approved`` is set (overpayment / advance).
+        ``method`` records how the customer paid (``cash|card|split|other|
+        legacy``); it must be one of ``LedgerEntry.METHODS`` and defaults to
+        ``cash`` when omitted. A debit that would drive the balance negative is
+        rejected by :meth:`append` unless ``approved`` is set (overpayment /
+        advance).
         """
+        method = method or 'cash'
         return LedgerService.append(
             customer, amount, direction='debit', entry_type='payment',
-            method='cash', operator=operator, approved=approved, notes=note,
+            method=method, operator=operator, approved=approved, notes=note,
         )
 
     # ------------------------------------------------------------- preflight
