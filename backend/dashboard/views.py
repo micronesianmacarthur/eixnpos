@@ -1,15 +1,19 @@
 """HTTP layer for the dashboard API (contract §5).
 
 Thin DRF function-based views that parse requests and return the payloads
-computed by :mod:`dashboard.services`. Every endpoint requires manager-tier
-authority via the shared :class:`IsDashboardReader` permission, so anonymous
-users get 401 and non-managers get 403.
+computed by :mod:`dashboard.services`. The seven read endpoints require any
+authenticated user via :class:`IsDashboardReader`, so anonymous users get 401
+and any logged-in role (cashier, manager, admin) can read. The backup-status
+endpoint requires manager/admin authority (:class:`IsManagerOrAdmin`) because
+its payload carries an absolute server path and the companion trigger action is
+manager-only.
 """
 from datetime import date
 
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 
+from accounts.permissions import IsManagerOrAdmin
 from .permissions import IsDashboardReader
 from .services import (
     backup_payload,
@@ -116,9 +120,14 @@ def low_stock_view(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsDashboardReader])
+@permission_classes([IsManagerOrAdmin])
 def backup_view(request):
-    """GET /api/dashboard/backup/ — last-backup status + quick-action readiness."""
+    """GET /api/dashboard/backup/ — last-backup status + quick-action readiness.
+
+    Manager/admin only: ``backup_payload`` carries the absolute server path of
+    the newest dump, and the companion ``POST /api/backups/trigger/`` action is
+    manager-gated too, so read and action stay at the same tier.
+    """
     return Response(backup_payload())
 
 

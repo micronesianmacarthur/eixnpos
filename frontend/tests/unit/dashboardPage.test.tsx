@@ -374,11 +374,20 @@ describe('DashboardPage — low-stock KPI tile drill-down (S9)', () => {
   })
 })
 
-describe('DashboardPage — role gating', () => {
-  it('does not fetch the manager API for cashiers and shows a notice', () => {
+describe('DashboardPage — role agnostic access', () => {
+  it('loads the dashboard for cashiers (KPIs render, no backup call)', async () => {
     currentRole.value = 'cashier'
+    mockedFetch.mockResolvedValue(overview())
     render(<DashboardPage />)
-    expect(mockedFetch).not.toHaveBeenCalled()
-    expect(screen.getByText('Manager dashboard')).toBeInTheDocument()
+
+    // A cashier fetches the composite and renders the headline KPIs.
+    expect(mockedFetch).toHaveBeenCalledWith('/api/dashboard/')
+    expect(await screen.findByTestId('kpi-sales-today')).toHaveTextContent('12')
+    expect(screen.getByTestId('kpi-revenue-today')).toHaveTextContent('$1,234.56')
+
+    // The backup panel is a manager/admin affordance: not rendered and its
+    // GET /api/dashboard/backup/ endpoint is never called for a cashier.
+    expect(screen.queryByRole('heading', { name: 'Backups' })).not.toBeInTheDocument()
+    expect(mockedFetch).not.toHaveBeenCalledWith('/api/dashboard/backup/')
   })
 })

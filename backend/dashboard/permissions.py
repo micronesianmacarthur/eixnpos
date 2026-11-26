@@ -1,23 +1,27 @@
-"""Manager-tier access control for the dashboard API.
+"""Access control for the dashboard API.
 
 The dashboard exposes sales/inventory aggregates, so every ``/api/dashboard/*``
-endpoint requires manager-tier authority. A single DRF permission class gates
-all of them (per the dashboard metrics & data contract §7.2: ``IsDashboardReader``).
+read endpoint requires an authenticated user (contract §7.2:
+``IsDashboardReader``). Any authenticated role — cashier, manager, admin — may
+read dashboard aggregates; write/destructive actions remain gated by their own
+viewsets, and the backup-status endpoint stays manager-tier (it leaks an
+absolute ``last_backup_path`` and its companion trigger is manager-only).
 
-Manager tier == ``role in (manager, admin)``; superusers bypass. Delegates to the
-shared ``has_manager_role`` predicate so there is one source of truth for the tier.
 Anonymous users are rejected with 401 (DRF's default for an unauthenticated
-request that fails permission); cashiers are rejected with 403.
+request that fails permission).
 """
 from rest_framework.permissions import BasePermission
 
-from accounts.roles import has_manager_role
-
 
 class IsDashboardReader(BasePermission):
-    """Allow manager-tier (manager/admin) authority; superusers bypass."""
+    """Allow any authenticated user to read dashboard aggregates.
 
-    message = 'Only managers and admins can access the dashboard.'
+    Anonymous callers are rejected (401/403 per DRF's SessionAuthentication).
+    Write/destructive actions remain gated by their own viewsets.
+    """
+
+    message = 'Authentication is required to access the dashboard.'
 
     def has_permission(self, request, view):
-        return has_manager_role(request.user)
+        user = request.user
+        return bool(user) and user.is_authenticated
