@@ -1,14 +1,18 @@
 from datetime import date, timedelta
 from decimal import Decimal
+import time
 
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
+from products.models import Product
 from sales.models import Payment, Sale, SaleLine
 from sales.summary import compute_session_summary
-from sessions.models import Register, Session
+from sessions.models import Register, Session, ZReportSnapshot
+from suppliers.models import Supplier
 
 User = get_user_model()
 
@@ -466,4 +470,136 @@ class SessionSaleAttributionTests(TestCase):
             Decimal(compute_session_summary(today_session.id)['summary']['revenue']),
             Decimal('10.00'),
         )
+
+
+class ZReportSnapshotTests(TestCase):
+    """The Z-report snapshot filed at close is immutable and a re-download.
+
+    Regression for: re-downloading a closed shift's Z-report must return the
+    exact figures filed at close — even after later refunds or product edits
+    change the live data — and a legacy closed shift with no snapshot must be
+    handled explicitly (404) rather than silently recomputed from live data.
+    """
+
+    def setUp(self):
+        self.manager = User.objects.create_user(username='manager', password='pw', role='manager')
+        self.client = APIClient()
+        self.client.force_authenticate(self.manager)
+        self.register = Register.objects.order_by('id').first() or Register.objects.create(name='Test Register')
+        self.today = date.today()
+        supplier = Supplier.objects.create(name='Acme')
+        self.product = Product.objects.create(
+            name='Widget', price=Decimal('10.00'), cost=Decimal('4.00'),
+            supplier=supplier,
+        )
+
+    def make_session(self, starting_cash=Decimal('0.00')):
+        return Session.objects.create(
+            cashier=self.manager, starting_cash=starting_cash,
+            register=self.register, business_day=self.today,
+        )
+
+    def make_completed_sale(self, total, session):
+        sale = Sale.objects.create(
+            cashier=self.manager, status=Sale.STATUS_COMPLETED,
+            subtotal=total, total=total, session=session,
+        )
+        Payment.objects.create(sale=sale, method='cash', amount=total)
+        SaleLine.objects.create(
+            sale=sale, product=self.product, quantity=1, unit_price=self.product.price,
+        )
+        return sale
+
+    def close(self, session, counts=None):
+        return self.client.post(
+            f'/api/sessions/{session.id}/close/', {'counts': counts or {}}, format='json',
+        )
+
+    def test_close_files_a_snapshot_recording_the_filed_figures(self):
+        session = self.make_session()
+        self.make_completed_sale(Decimal('10.00'), session)  # revenue 10, cogs 4, profit 6
+
+        response = self.close(session)
+        self.assertEqual(response.status_code, 200)
+
+        snapshot = ZReportSnapshot.objects.get(session=session)
+        self.assertEqual(
+            Decimal(snapshot.summary_data['summary']['revenue']), Decimal('10.00'),
+        )
+        self.assertEqual(
+            Decimal(snapshot.summary_data['summary']['profit_loss']), Decimal('6.00'),
+        )
+        self.assertIn('store_name', snapshot.summary_data)
+
+    def test_redownload_returns_identical_pdf_even_after_data_changes(self):
+        session = self.make_session()
+        self.make_completed_sale(Decimal('10.00'), session)
+        self.close(session)
+
+        first = self.client.get(f'/api/sessions/{session.id}/zreport/')
+        self.assertEqual(first.status_code, 200)
+
+        # The live data changes after close: the sole sale is entirely removed,
+        # so any live recomputation would now report zero revenue.
+        Sale.objects.filter(session=session).delete()
+        self.assertEqual(
+            Decimal(compute_session_summary(session.id)['summary']['revenue']),
+            Decimal('0.00'),
+        )
+
+        # Give the clock time to tick across a second boundary: the snapshot's
+        # PDF must be byte-identical even though the wall-clock differs, so
+        # the pinned /CreationDate (not now()) drives the bytes.
+        time.sleep(1.2)
+        second = self.client.get(f'/api/sessions/{session.id}/zreport/')
+        self.assertEqual(second.status_code, 200)
+        # The snapshot is unscathed: the re-download is byte-identical to the
+        # report that was filed at close (same snapshot data, same pinned
+        # creation date, so same /CreationDate and /ID).
+        self.assertEqual(second.content, first.content)
+
+    def test_redownload_matches_a_render_of_the_stored_snapshot(self):
+        session = self.make_session()
+        self.make_completed_sale(Decimal('10.00'), session)
+        self.close(session)
+        # Refresh so ``closed_at`` reflects what the close actually filed.
+        session.refresh_from_db()
+        snapshot = ZReportSnapshot.objects.get(session=session)
+
+        response = self.client.get(f'/api/sessions/{session.id}/zreport/')
+        self.assertEqual(response.status_code, 200)
+
+        from sales.zreport import build_zreport_pdf
+        # The view pins the document creation date to the close instant; a
+        # direct render of the same snapshot must pin identically to match
+        # byte-for-byte. Sleep so the wall-clock definitely differs.
+        time.sleep(1.2)
+        self.assertEqual(
+            response.content,
+            build_zreport_pdf(snapshot.summary_data, creation_date=session.closed_at),
+        )
+
+    def test_legacy_closed_shift_without_snapshot_returns_404(self):
+        session = self.make_session()
+        # A shift closed before Z-report snapshots existed: closed status but
+        # no ZReportSnapshot row (the row is only written by the API close).
+        session.status = Session.STATUS_CLOSED
+        session.closed_at = timezone.now()
+        session.save()
+
+        response = self.client.get(f'/api/sessions/{session.id}/zreport/')
+
+        self.assertEqual(response.status_code, 404)
+        self.assertIn('snapshot', response.data['detail'].lower())
+        self.assertFalse(ZReportSnapshot.objects.filter(session=session).exists())
+
+    def test_open_shift_still_serves_a_live_preview_pdf(self):
+        session = self.make_session()
+        self.make_completed_sale(Decimal('10.00'), session)
+
+        response = self.client.get(f'/api/sessions/{session.id}/zreport/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertTrue(response.content.startswith(b'%PDF'))
 

@@ -28,6 +28,7 @@ from business.models import BusinessInfo
 from inventory.models import StockMovement
 from products.models import Product
 from sales.models import Payment, Sale, SaleLine
+from sales.cash import compute_cash_sales
 from sessions.models import Session, business_tzinfo, local_date_of
 
 CENTS = Decimal('0.01')
@@ -36,11 +37,12 @@ MONTHS_DEFAULT = 12
 MONTHS_MIN = 1
 MONTHS_MAX = 24
 
-# Sale statuses whose payments count toward cash/invoice totals. v1 never
-# reverses a refunded sale's tenders (no refund-payment rows exist), so a
-# refunded sale's cash/invoice payments stay counted — the documented "cash
-# refund non-adjustment" limitation (contract §6.2). sales_count/revenue still
-# count completed sales only; voided and open sales never reach the drawer.
+# Sale statuses whose payments count toward invoice totals. The cash figure is
+# computed by the shared ``compute_cash_sales`` (sales/cash.py), which resolves
+# a refunded sale to zero retained cash so the dashboard agrees with shift close
+# and the Z-summary; the only counter-account (money on account) still counts a
+# refunded sale's invoice tender. sales_count/revenue count completed sales
+# only; voided and open sales never reach the drawer.
 SETTLED_STATUSES = (Sale.STATUS_COMPLETED, Sale.STATUS_REFUNDED)
 
 
@@ -119,10 +121,13 @@ def _range_aggregates(start_utc, end_utc) -> Dict[str, Any]:
         sale__created_at__gte=start_utc,
         sale__created_at__lt=end_utc,
     ).aggregate(
-        cash_sales=Sum('amount', filter=Q(method=Payment.METHOD_CASH)),
         invoice_count=Count('id', filter=Q(method=Payment.METHOD_INVOICE)),
         invoice_total=Sum('amount', filter=Q(method=Payment.METHOD_INVOICE)),
     )
+    # Cash figure from the shared canonical calculation (sales/cash.py), so the
+    # dashboard, shift close, and Z-summary cannot disagree on the same shift.
+    # A refunded sale nets to zero retained cash here.
+    cash_sales = compute_cash_sales((start_utc, end_utc))['by_tender'].get('cash', Decimal('0'))
 
     sales_count = agg['sales_count'] or 0
     revenue = _pq(agg['revenue'])
@@ -131,7 +136,7 @@ def _range_aggregates(start_utc, end_utc) -> Dict[str, Any]:
     return {
         'sales_count': sales_count,
         'revenue': _money(revenue),
-        'cash_sales': _money(_pq(payments['cash_sales'])),
+        'cash_sales': _money(cash_sales),
         'invoice_count': payments['invoice_count'] or 0,
         'invoice_total': _money(_pq(payments['invoice_total'])),
         'void_count': agg['void_count'] or 0,
@@ -290,20 +295,13 @@ def monthly_payload(months: int) -> Dict[str, Any]:
             .annotate(sale_count=Count('id'), revenue=Sum('total'))
         )
     }
-    cash_by_month = {
-        row['month'].date(): _pq(row['cash_sales'])
-        for row in (
-            Payment.objects
-            .filter(
-                method=Payment.METHOD_CASH,
-                sale__status__in=SETTLED_STATUSES,
-                sale__created_at__gte=window_start_utc,
-            )
-            .annotate(month=TruncMonth('sale__created_at', tzinfo=tz))
-            .values('month')
-            .annotate(cash_sales=Sum('amount'))
-        )
-    }
+    cash_by_month: Dict[date, Decimal] = {}
+    for start in period_starts:
+        month_start_utc = _local_midnight_utc(start)
+        month_end_utc = _local_midnight_utc(_next_month_first(start))
+        cash_by_month[start] = compute_cash_sales(
+            (month_start_utc, month_end_utc)
+        )['by_tender'].get('cash', Decimal('0'))
 
     periods: List[Dict[str, Any]] = []
     for start in period_starts:

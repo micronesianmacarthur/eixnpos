@@ -4,12 +4,11 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.http import HttpResponse
 from django.utils import timezone
-from django.db import IntegrityError
-from django.db.models import Q, Sum
+from django.db import IntegrityError, transaction
 from decimal import Decimal
 from .models import Session, Register, local_date_of
 from .serializers import SessionSerializer
-from sales.models import Sale, Payment
+from sales.cash import compute_cash_sales
 from sales.cash_count import calculate_totals, calculate_removal
 from sales.summary import compute_session_summary
 
@@ -182,51 +181,53 @@ class SessionViewSet(viewsets.ModelViewSet):
         counts = request.data.get('counts', {})
         totals = calculate_totals(counts)
         counted = totals['grand_total']
-        # cash sales on THIS session only: either the sale is linked to this
-        # session, or (legacy fallback — pre-migration history with no link)
-        # it is an unlinked sale created inside the session's time window.
-        upper = session.closed_at or timezone.now()
-        cash_sales = Payment.objects.filter(
-            method='cash', sale__status='completed',
-        ).filter(
-            Q(sale__session=session)
-            | Q(
-                sale__session__isnull=True,
-                sale__created_at__gte=session.opened_at,
-                sale__created_at__lte=upper,
-            )
-        ).aggregate(s=Sum('amount'))['s'] or Decimal('0')
+        # Net cash retained on THIS session, via the shared canonical
+        # calculation (used identically by close, Z-summary, and dashboard so
+        # the three surfaces cannot disagree). Session scope: sales linked to
+        # the session, or (legacy fallback — pre-migration history with no
+        # link) unlinked sales created inside the session's time window.
+        figures = compute_cash_sales(session)
+        cash_sales = figures['by_tender'].get('cash', Decimal('0'))
         expected = session.starting_cash + cash_sales
         variance = expected - counted
         session.cash_counts = counts
         session.counted_cash = counted
         session.expected_cash = expected
         session.variance = variance
-        upper = session.closed_at or timezone.now()
-        session.sales_total = Sale.objects.filter(
-            status='completed',
-        ).filter(
-            Q(session=session)
-            | Q(
-                session__isnull=True,
-                created_at__gte=session.opened_at,
-                created_at__lte=upper,
-            )
-        ).aggregate(s=Sum('total'))['s'] or Decimal('0')
+        # Completed-revenue total for the Z-report (gross == Σ completed totals).
+        session.sales_total = figures['gross']
         session.status = Session.STATUS_CLOSED
         session.closed_at = timezone.now()
         if 'cash_removed' in request.data:
             session.cash_removed = request.data['cash_removed']
-        session.save()
+
+        # Persist the closed session and its immutable Z-report snapshot in one
+        # database transaction. The snapshot records the exact summary inputs
+        # needed to re-render the filed PDF, so a re-download can never diverge
+        # from what was filed — even if sales are later refunded or edited. If
+        # the summary cannot be captured, the close fails and rolls back: better
+        # to leave the shift open than to file it with no immutable report.
+        from sales.summary import compute_session_summary
+        from .models import ZReportSnapshot
+
+        with transaction.atomic():
+            session.save()
+            _data = compute_session_summary(session.id)
+            _data['store_name'] = _store_name()
+            ZReportSnapshot.objects.create(session=session, summary_data=_data)
 
         # Persist the Z-report PDF and back up the session transactions so the
         # shift's data survives the close. A failure here must not block the
         # close itself — log it and continue, mirroring the previous behaviour.
+        pdf_bytes = None
+        pdf_relpath = None
         try:
-            pdf_bytes = None
-            pdf_relpath = None
-            from sales.zreport import build_session_zreport_pdf
-            pdf_bytes = build_session_zreport_pdf(session.id, store_name=_store_name())
+            from sales.zreport import build_zreport_pdf
+            # Render from the freshly-filed snapshot, pinning the document
+            # creation date to the close (filing) instant so the backed-up
+            # file is byte-for-byte what re-downloading the shift now would
+            # return (both share /CreationDate and /ID).
+            pdf_bytes = build_zreport_pdf(_data, creation_date=session.closed_at)
             try:
                 from business.models import BusinessInfo
                 bp = BusinessInfo.get().backup_path
@@ -264,10 +265,41 @@ class SessionViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'])
     def zreport(self, request, pk=None):
-        """Return the session's Z-report PDF (revenue and profit/loss)."""
+        """Return the session's Z-report PDF.
+
+        A shift closed after Z-report snapshots were introduced serves the
+        snapshot that was filed at close, re-rendered from the stored inputs —
+        so the figures are identical to those filed, immune to later refunds
+        or edits. A *legacy* closed shift with no snapshot returns an explicit
+        404 instead of silently recomputing live data and presenting it as
+        filed. An *open* shift serves a live preview (nothing has been filed
+        yet, so live recomputation is the intended behaviour).
+        """
         session = self.get_object()
-        from sales.zreport import build_session_zreport_pdf
-        pdf_bytes = build_session_zreport_pdf(session.id, store_name=_store_name())
+        from sales.zreport import build_session_zreport_pdf, build_zreport_pdf
+        from .models import ZReportSnapshot
+
+        snapshot = ZReportSnapshot.objects.filter(session=session).first()
+        if snapshot is not None:
+            # Pin the document creation date to the close (filing) instant so
+            # this re-download is byte-for-byte the same file that was
+            # archived and backed up at close.
+            pdf_bytes = build_zreport_pdf(
+                snapshot.summary_data, creation_date=session.closed_at
+            )
+        elif session.status == Session.STATUS_CLOSED:
+            return Response(
+                {
+                    'detail': 'This shift was closed before Z-report snapshots '
+                              'were introduced, so no immutable filed report '
+                              'exists to re-download. It is not recomputed from '
+                              'live data, which may have changed since close.',
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        else:
+            pdf_bytes = build_session_zreport_pdf(session.id, store_name=_store_name())
+
         response = HttpResponse(pdf_bytes, content_type='application/pdf')
         response['Content-Disposition'] = (
             f'attachment; filename="zreport_session_{session.id}.pdf"'
