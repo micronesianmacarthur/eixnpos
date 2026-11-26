@@ -103,7 +103,7 @@ Returns **all open shifts for the business day**, scoped by caller tier:
 
 - **Manager/admin callers** (per `has_manager_role`) see every open session for the business day across all registers, **regardless of each register's `cashiers` assignment**. A manager is never told "No open shift" because the open shift sits on a register that does not list them as a cashier.
 - **Cashier callers** see only sessions on registers they may operate (a register with an empty `cashiers` M2M is accessible by everyone, or the register lists the caller) — the same register-resolution rule the sessions API uses. The cashier tier resolves the accessible registers with a **single query** — `Q(register__cashiers__isnull=True) | Q(register__cashiers=user)` + `distinct()` (S4), so the query count is constant regardless of register count.
-- The dashboard HTTP endpoint is manager-gated (`IsDashboardReader`), so cashiers receive 403 at the HTTP layer; the cashier-side scoping is enforced in the service.
+- All seven dashboard read endpoints, including this one, require only authentication (`IsDashboardReader`): cashiers receive 200 and see the register-scoped sessions above. The backup-status endpoint is the sole manager-tier exception (§5.8).
 
 If there is none open, `open` is false and `sessions` is empty. When open, the envelope is:
 
@@ -267,11 +267,11 @@ All paths are under `/api/dashboard/`. All return `Content-Type: application/jso
 
 `GET /api/dashboard/` returns the same fields as 5.1 + 5.5 + 5.6 in one call, so the dashboard's first paint needs no per-kpi round trips. Implementation MUST call 5.1/5.5/5.6 and merge the results; the merged fields are verbatim copies (mapping 5.5 into the `session` key, 5.6 into `inventory`). `business_timezone` rides on the 5.1 block, so the first-paint payload carries the IANA zone the whole page needs for local formatting.
 
-> **Route decision (S5, Option B).** This contract previously directed (under §8.1) that the dashboard live at `/sales-manager`. As implemented, the dashboard is the authenticated app landing at `/` (`DashboardPage`) for manager/admin roles, with cashiers shown a concise non-manager notice instead of firing 4xx dashboard calls. `/sales-manager` remains a separate sales-ops oversight page. **The contract now documents `/` as the dashboard surface** — the workflow/edit pages under `/sales-manager` are unchanged (they are a sales list + quick actions, not the aggregate dashboard). The server-authoritative "today" rule (§3.4) still applies to `/sales-manager`'s own derived token metrics; the client no longer infers "today" from the browser clock there either.
+> **Route decision (S5, Option B).** This contract previously directed (under §8.1) that the dashboard live at `/sales-manager`. As implemented, the dashboard is the authenticated app landing at `/` (`DashboardPage`) for **every authenticated role** — cashier, manager, and admin all load `/api/dashboard/` and see the same KPI, session, and analytics panels. The backup panel and business-info form are manager/admin-only affordances. `/sales-manager` remains a separate sales-ops oversight page. **The contract now documents `/` as the dashboard surface** — the workflow/edit pages under `/sales-manager` are unchanged (they are a sales list + quick actions, not the aggregate dashboard). The server-authoritative "today" rule (§3.4) still applies to `/sales-manager`'s own derived token metrics; the client no longer infers "today" from the browser clock there either.
 
 ### 5.8 `GET /api/dashboard/backup/`
 
-**Request:** none. **Auth:** same manager-tier gate as every dashboard endpoint (§7.2) — anonymous 401, cashier 403, manager/admin 200.
+**Request:** none. **Auth:** manager/admin only (`IsManagerOrAdmin`) — anonymous 401/403, cashier 403, manager/admin 200. This is the only `/api/dashboard/*` endpoint that stays manager-tier; the other seven require only authentication (§7).
 
 **Success (200):**
 ```json
@@ -288,7 +288,7 @@ All paths are under `/api/dashboard/`. All return `Content-Type: application/jso
 - Path configured but no dump yet: `backup_path_configured:true`, datetime/path fields all `null`.
 - Path configured with dumps: as above, `last_backup_at`/`last_backup_at_local`/`last_backup_path` populated from the newest `backup_*.json`.
 
-**Quick action:** the dashboard's "Backup now" button calls the existing `POST /api/backups/trigger/` (contract elsewhere), which uses `BusinessInfo.backup_path` when the request supplies none. It is manager/admin-gated too, so the same caller that can read this status can trigger a dump. When `backup_path_configured` is false the client disables the button rather than sending a request that would 400.
+**Quick action:** the dashboard's "Backup now" button calls the existing `POST /api/backups/trigger/` (contract elsewhere), which uses `BusinessInfo.backup_path` when the request supplies none. Both the status read and the trigger action are manager/admin-gated, so the same caller that can read this status can trigger a dump. Cashiers see neither the backup panel nor the button. When `backup_path_configured` is false the client disables the button rather than sending a request that would 400.
 
 ## 6. Edge cases and inclusion rules
 
@@ -305,15 +305,17 @@ All paths are under `/api/dashboard/`. All return `Content-Type: application/jso
 8. **Client clock independence.** A sale's bucket is decided by the server at request time against the business-local clock. The client must not apply its own timezone or sliding "today" logic.
 9. **Staleness.** `generated_at` lets the UI show a "data may be stale" indicator after 30s of inactivity, exactly as the existing Sales Manager page does.
 
-## 7. Manager-only access
+## 7. Access control and data exposure
 
-1. **Route.** The dashboard surface at `/` is protected manager-side (non-managers see a notice, not dashboard data); the dashboard API requires `RequireRole(['manager','admin'])`. The `/sales-manager` page is protected by `RequireRole(['manager','admin'])` (the app's `MANAGER_ROLES`). Cooks/cashiers are redirected to `/` and shown an access-denied banner, matching the existing Sales Manager page behaviour.
-2. **API.** Every `/api/dashboard/*` endpoint requires the requestor to hold manager-tier authority (`role in (manager, admin)`, superusers bypass). Cashiers receive `403`; anonymous receive `401`. The permission is enforced once, centrally, in a single DRF permission class (`IsDashboardReader`).
-3. **Data minimization.** The dashboard exposes no customer address/email, supplier contact detail, or user password/PII beyond `username`, `first_name`, `last_name` of the *session opener* (and only `username` by default). Supplier/category names are shown only through the inclusive low-stock payload columns, never full records.
+1. **Dashboard — any signed-in user.** The dashboard surface at `/` is the app's authenticated landing page, available to all three roles (cashier, manager, admin). It requires login but no open shift. An unauthenticated visitor is sent to `/login`; a user with `must_change_password` is sent to `/change-password` until that step is complete. There is no non-manager notice and no reduced cashier dashboard — the same KPI, session, and analytics panels render for every role. For user-facing guidance, including what to do when you cannot sign in, see the root `README.md` → *Dashboard access*.
+2. **API — authentication is the read gate.** `IsDashboardReader` allows any authenticated user on the seven read endpoints (`/`, `/sales/today/`, `/sales/period/`, `/sales/top/`, `/sales/monthly/`, `/sessions/current/`, `/inventory/low-stock/`): cashiers and managers/admins receive `200`; anonymous receive `401/403`. The one exception is `GET /api/dashboard/backup/`, which stays manager/admin-only (`IsManagerOrAdmin`) and returns `403` to cashiers because its payload carries an absolute `last_backup_path` and its companion trigger is manager-gated.
+3. **Manager/admin-only affordances.** Loading the dashboard grants no administrative capability. The backup panel/status, the business-info form, the "Backup now" trigger, user management, Settings, Sales Manager, product create/edit, inventory receive, sale void/refund/delete, customer writes, and the Django admin site remain manager/admin-restricted and sit outside these seven read endpoints.
+4. **Session scoping is not a role gate.** Managers/admins see every open shift for the business day across all registers; cashiers see only sessions on registers they may operate (§4.5). This is data scoping within a role-neutral endpoint.
+5. **Data minimization.** The dashboard exposes no customer address/email, supplier contact detail, or user password/PII beyond `username`, `first_name`, `last_name` of the *session opener* (and only `username` by default). Supplier/category names are shown only through the inclusive low-stock payload columns, never full records.
 
 ## 8. UI contract (components, behaviour, empty states)
 
-The dashboard page lives at `/` (the authenticated app landing; **see the S5 route decision under §5.7**) for manager/admin roles. The KPI/chart/low-stock panels below are the aggregate dashboard; the legacy client-side token metrics on `/sales-manager` (`KpiBar` in `SalesManagerPage.tsx`) are **not** the aggregate surface — that page keeps its sales-list workflow. All dates, "today" buckets and money come from the server contract; the client formats, it does not compute.
+The dashboard page lives at `/` (the authenticated app landing; **see the S5 route decision under §5.7**) for every authenticated role — cashier, manager, and admin see the same KPI, session, and analytics content; the backup panel and business-info form are manager/admin-only. The KPI/chart/low-stock panels below are the aggregate dashboard; the legacy client-side token metrics on `/sales-manager` (`KpiBar` in `SalesManagerPage.tsx`) are **not** the aggregate surface — that page keeps its sales-list workflow. All dates, "today" buckets and money come from the server contract; the client formats, it does not compute.
 
 1. **Header.** Title "Dashboard". Subtitle = business_day + current open shift summary (unless closed).
 2. **KPI row (5 tiles).** 
@@ -347,12 +349,12 @@ A fresh implementer, followed by these checks, proves the spec is unambiguous.
 4. **Top-items tie-break.** Ten products each sold 3 times (including same-name collisions) → exactly 5 rows, deterministic order by units desc + product_name asc.
 5. **Low-stock.** Product A `min_stock=5`, ledger quantity 2 → appears; Product B `non_stock=True` with quantity 0 → absent; threshold row equals `min_stock`.
 6. **Refund non-adjustment.** A refunded sale's cash payment stays in `cash_sales` (documented limitation), while `sales_count`/`revenue` exclude it.
-7. **Access.** Anonymous `/api/dashboard/sales/today/` → 401; cashier → 403; manager → 200. The dashboard surface at `/` shows a non-manager notice to cashiers (no data leak); the `/sales-manager` route keeps its own `RequireRole(['manager','admin'])` guard (per the S5 route decision in §5.7).
+7. **Access.** Anonymous `/api/dashboard/sales/today/` → 401/403; cashier → 200; manager → 200; admin → 200. All three roles load the same dashboard at `/` — no cashier notice and no reduced dashboard. The `/sales-manager` route keeps its own `RequireRole(['manager','admin'])` guard (per the S5 route decision in §5.7).
 8. **Money format.** A monetary response value is a JSON string `"1234.56"` with 2dp; a client that re-serialises it as a JS number would fail a schema assertion; the client must format (not compute) on display.
 9. **Half-open ranges (S1).** Seed a completed sale at exactly business-local midnight of an `end` date; `GET /api/dashboard/sales/period/?start=…&end=…` and `/top/` with the same window must both exclude it.
 10. **Business timezone in payload (S2).** Set `BusinessInfo.timezone='Asia/Kolkata'` (+05:30); assert the composite `/api/dashboard/` and `/today/` payloads carry `business_timezone='Asia/Kolkata'`. A client formatting a datetime with that IANA zone shows the correct +05:30 wall clock.
 11. **Session tier scoping (B2).** A manager not in a register's `cashiers` resolves the open shift for that register; two open registers → `sessions` length 2, `count:2`. A cashier scoped to register B does not see a session open on register A. The register-resolution query count is constant regardless of register count (S4).
-12. **Backup surface (B1).** Anonymous `/api/dashboard/backup/` → 401, cashier → 403, manager → 200. With `backup_path` unset, `backup_path_configured:false` and the "Backup now" button disabled; with a `backup_*.json` dump present, `last_backup_at_local` renders in the business IANA zone when `business_timezone` is passed to `formatDateTime`.
+12. **Backup surface (B1).** Anonymous `/api/dashboard/backup/` → 401/403, cashier → 403, manager/admin → 200 (this endpoint stays manager-tier while the other seven read endpoints are open to any authenticated user). With `backup_path` unset, `backup_path_configured:false` and the "Backup now" button disabled; with a `backup_*.json` dump present, `last_backup_at_local` renders in the business IANA zone when `business_timezone` is passed to `formatDateTime`.
 
 ## 10. Open questions and the cheapest experiments to resolve them
 

@@ -6,12 +6,13 @@ import './DashboardPage.css';
 /**
  * Current open shift(s) card.
  *
- * Shows every open session for the business day the manager can operate a
- * shift on — one card per open register (opened when + by whom), or a compact
- * "No open shift" state when none is open. The card renders three states:
- * zero sessions, a single session (the historical single-card layout), and
- * multiple sessions (a list/accordion). Only the manager dashboard feeds this
- * (the API that backs it is manager-gated).
+ * Shows the open shift(s) for the business day — one card per open register
+ * (opened when + by whom), or a compact "No open shift" state when none is
+ * open. The card renders three states: zero sessions, a single session (the
+ * historical single-card layout), and multiple sessions (a list/accordion).
+ * The dashboard is available to every authenticated role: managers and admins
+ * see shifts on all registers, while cashiers see only registers they may
+ * operate (`IsDashboardReader` requires only authentication).
  */
 function singleSessionRow(session: DashboardOpenSession, businessTimezone?: string | null) {
   const openedLabel = formatDateTime(
