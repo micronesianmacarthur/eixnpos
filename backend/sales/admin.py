@@ -22,7 +22,7 @@ class SaleLineAdmin(RoleAwareModelAdmin):
 
 @admin.register(Payment)
 class PaymentAdmin(RoleAwareModelAdmin):
-    list_display = ['sale', 'method', 'amount', 'tendered', 'change_due', 'manager_approved', 'created_at']
+    list_display = ['sale', 'method', 'amount', 'tendered', 'change_due', 'manager_approved', 'idempotency_key', 'source', 'transaction_id', 'correlation_id', 'created_at']
     list_filter = ['method', 'manager_approved']
     search_fields = ['sale__number']
     ordering = ['-created_at']

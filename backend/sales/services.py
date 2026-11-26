@@ -8,6 +8,7 @@ models for stock management.
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Optional, Dict, Any, List
+import uuid
 
 from django.contrib.auth import authenticate
 from django.db import IntegrityError
@@ -637,7 +638,8 @@ class TransactionService:
                 raise TransactionError(str(e))
 
             # Link the sale to the customer. The authoritative ledger/balance
-            # write happens only after the processor succeeds (see below).
+            # write happens only after the processor succeeds (see below), and
+            # it re-applies the ceiling under a row lock.
             sale.customer = target_customer
             sale.save(update_fields=['customer'])
 
@@ -659,7 +661,10 @@ class TransactionService:
         if not result.success:
             raise TransactionError(f'Payment failed: {result.error_message}')
 
-        # Create payment record
+        # Create payment record atomically with sale completion so a crash
+        # never leaves a completed sale without its payment or a dangling
+        # payment on an open sale. Keyed by a stable per-sale idempotency key
+        # so a duplicated completion reuses the existing recorded payment.
         payment_kwargs = {
             "sale": sale,
             "method": method.value,
@@ -671,11 +676,37 @@ class TransactionService:
             payment_kwargs["tendered"] = Decimal(str(metadata.get("tendered", amount)))
             payment_kwargs["change_due"] = result.change_due
 
+        idempotency_key = f"sale:{sale.id}:service:{method.value}:{result.amount_processed}"
+        payment_kwargs["idempotency_key"] = idempotency_key
+        payment_kwargs["source"] = Payment.SOURCE_SERVICE
+        payment_kwargs["transaction_id"] = result.transaction_id
+
         # Complete the sale - create the Payment row, any ledger write, the
         # terminal status and the stock movements inside one atomic block so
         # they all commit or roll back together.
         with db_transaction.atomic():
-            Payment.objects.create(**payment_kwargs)
+            # R2b: dedupe is scoped to genuine SOURCE_SERVICE rows (clients can
+            # only write SOURCE_UI via set_payment), so a client row can never
+            # shadow the service-recorded payment. Source-filtering also matches
+            # the suggested fix (dedupe by source). If a client row squats the
+            # deterministic service key on the SAME sale, the payload write with
+            # that key would violate the unique constraint (or silently skip),
+            # so record under a fresh UUID — the genuine payment is never lost.
+            existing = Payment.objects.filter(
+                sale=sale, idempotency_key=idempotency_key,
+                source=Payment.SOURCE_SERVICE,
+            ).select_for_update().first()
+            if existing is None:
+                effective_key = idempotency_key
+                if Payment.objects.filter(
+                    idempotency_key=idempotency_key,
+                ).exists():
+                    effective_key = str(uuid.uuid4())
+                Payment.objects.create(**{
+                    **payment_kwargs,
+                    "idempotency_key": effective_key,
+                })
+
 
             sale.status = Sale.STATUS_COMPLETED
             sale.completed_at = timezone.now()

@@ -437,3 +437,156 @@ describe('SalesPage — sale note participates in submission', () => {
     expect(screen.getByRole('textbox')).toHaveValue('')
   })
 })
+
+describe('SalesPage — per-tender idempotency key (R1)', () => {
+  function paidSale() {
+    return makeSale({
+      subtotal: '20.00',
+      total: '20.00',
+      lines: [
+        {
+          id: 72,
+          product: PAID_PRODUCT.id,
+          product_name: PAID_PRODUCT.name,
+          quantity: 2,
+          unit_price: '10.00',
+          discount_type: 'none',
+          discount_value: '0.00',
+          discount_amount: '0.00',
+          line_total: '20.00',
+        },
+      ],
+    })
+  }
+
+  it('sends an idempotency_key per tender and reuses it for a retry of the same attempt', async () => {
+    const sale = paidSale()
+    const keysSeen: Array<string | undefined> = []
+    let setPaymentAttempts = 0
+
+    mockedFetch.mockImplementation(async (url, init) => {
+      const method = String((init as { method?: string } | undefined)?.method ?? 'GET').toUpperCase()
+      const route = `${method} ${url}`
+      const body = (init as { body?: string } | undefined)?.body
+        ? JSON.parse(String((init as { body?: string }).body))
+        : {}
+      switch (route) {
+        case 'GET /api/products/':
+          return [PAID_PRODUCT]
+        case 'GET /api/customers/':
+          return []
+        case 'GET /api/business/':
+          return { company_name: 'Test Biz' }
+        case 'POST /api/sales/':
+          return sale
+        case 'GET /api/sales/55/':
+          return sale
+        case 'PATCH /api/sales/55/lines/72/':
+          return sale.lines[0]
+        case 'POST /api/sales/55/set_payment/': {
+          keysSeen.push(body.idempotency_key)
+          setPaymentAttempts += 1
+          // First submission of this tender fails (network / in-flight); the
+          // retry is the SAME attempt and must reuse the same key.
+          if (setPaymentAttempts === 1) throw new ApiError('network error', 500, undefined)
+          return {
+            id: 99,
+            method: body.method,
+            amount: body.amount,
+            tendered: body.tendered ?? null,
+            change_due: '0.00',
+            manager_approved: false,
+          }
+        }
+        default:
+          throw new ApiError(`unrouted request in R1 test: ${route}`, 500, undefined)
+      }
+    })
+
+    renderPage()
+    await screen.findByText(PAID_PRODUCT.name)
+    const user = userEvent.setup()
+    const card = screen
+      .getAllByRole('button', { name: new RegExp(PAID_PRODUCT.name) })
+      .find((b) => b.querySelector('.product-name')?.textContent === PAID_PRODUCT.name)!
+    await user.click(card)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Cash' })).toBeEnabled())
+
+    // First attempt: submits a key, fails on the wire.
+    await user.click(screen.getByRole('button', { name: 'Cash' }))
+    await waitFor(() => expect(keysSeen.length).toBe(1))
+
+    // Retry of the same attempt: same key.
+    await user.click(screen.getByRole('button', { name: 'Cash' }))
+    await waitFor(() => expect(setPaymentAttempts).toBe(2))
+
+    expect(keysSeen).toHaveLength(2)
+    expect(keysSeen[0]).toBeTruthy()
+    expect(keysSeen[0]).toBe(keysSeen[1])
+    // A per-attempt UUID (R1 requirement: crypto.randomUUID()).
+    expect(keysSeen[0]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    )
+  })
+
+  it('a new tender mints a fresh idempotency_key after a successful record', async () => {
+    const sale = paidSale()
+    const keysSeen: Array<string | undefined> = []
+
+    mockedFetch.mockImplementation(async (url, init) => {
+      const method = String((init as { method?: string } | undefined)?.method ?? 'GET').toUpperCase()
+      const route = `${method} ${url}`
+      const body = (init as { body?: string } | undefined)?.body
+        ? JSON.parse(String((init as { body?: string }).body))
+        : {}
+      switch (route) {
+        case 'GET /api/products/':
+          return [PAID_PRODUCT]
+        case 'GET /api/customers/':
+          return []
+        case 'GET /api/business/':
+          return { company_name: 'Test Biz' }
+        case 'POST /api/sales/':
+          return sale
+        case 'GET /api/sales/55/':
+          // After a payment is recorded, reflect it in the sale so the UI
+          // resets `paymentRecorded` state as the underlying behaviour does.
+          return sale
+        case 'PATCH /api/sales/55/lines/72/':
+          return sale.lines[0]
+        case 'POST /api/sales/55/set_payment/': {
+          keysSeen.push(body.idempotency_key)
+          return {
+            id: 99,
+            method: body.method,
+            amount: body.amount,
+            tendered: body.tendered ?? null,
+            change_due: '0.00',
+            manager_approved: false,
+          }
+        }
+        default:
+          throw new ApiError(`unrouted request in R1 fresh-key test: ${route}`, 500, undefined)
+      }
+    })
+
+    renderPage()
+    await screen.findByText(PAID_PRODUCT.name)
+    const user = userEvent.setup()
+    const card = screen
+      .getAllByRole('button', { name: new RegExp(PAID_PRODUCT.name) })
+      .find((b) => b.querySelector('.product-name')?.textContent === PAID_PRODUCT.name)!
+    await user.click(card)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Cash' })).toBeEnabled())
+
+    await user.click(screen.getByRole('button', { name: 'Cash' }))
+    await waitFor(() => expect(keysSeen.length).toBe(1))
+    await user.click(screen.getByRole('button', { name: 'Card' }))
+    await waitFor(() => expect(keysSeen.length).toBe(2))
+
+    // The second tender is a different submission and must not reuse key #1.
+    expect(keysSeen[0]).toBeTruthy()
+    expect(keysSeen[1]).toBeTruthy()
+    expect(keysSeen[1]).not.toBe(keysSeen[0])
+  })
+})

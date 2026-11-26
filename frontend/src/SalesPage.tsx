@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
 } from 'react';
@@ -129,6 +130,25 @@ export default function SalesPage() {
   const [saleNoteModalOpen, setSaleNoteModalOpen] = useState(false);
   const [changeDue, setChangeDue] = useState('0');
   const [changeModalOpen, setChangeModalOpen] = useState(false);
+
+  // R1 — per-tender payment idempotency. One `crypto.randomUUID()` is minted
+  // lazily when a tender submission attempt starts, and REUSED for every retry
+  // of that same attempt (double-click while the request is in flight, network
+  // error → resubmit), so the back-end reconciles it to a single Payment row.
+  // A NEW tender gets a NEW key: we clear the ref once a tender is recorded
+  // (recordPayment success), so the next submission mints afresh. Minting is
+  // per-attempt, never per-component-mount, so consecutive tenders never share
+  // a key.
+  const tenderKeyRef = useRef<string | null>(null);
+  const getTenderKey = useCallback((): string => {
+    if (!tenderKeyRef.current) {
+      tenderKeyRef.current = crypto.randomUUID();
+    }
+    return tenderKeyRef.current;
+  }, []);
+  const resetTenderKey = useCallback(() => {
+    tenderKeyRef.current = null;
+  }, []);
 
   const [receiptSale, setReceiptSale] = useState<Sale | null>(null);
 
@@ -323,6 +343,10 @@ export default function SalesPage() {
         payload.manager_password = payManagerPass;
       }
     }
+    // R1: one idempotency_key per tender submission attempt, reused for any
+    // retry of this attempt (double-click / network error) so the back-end
+    // never double-records. Minted here, at attempt start, not per mount.
+    payload.idempotency_key = getTenderKey();
     try {
       await apiFetch(`/api/sales/${sale.id}/set_payment/`, {
         method: 'POST',
@@ -330,6 +354,9 @@ export default function SalesPage() {
       });
       const updated = await refreshSale(sale.id);
       setPaymentRecorded(true);
+      // This tender is now recorded — the next submission is a NEW tender and
+      // must get a fresh key.
+      resetTenderKey();
       // reset manager creds
       setPayManagerUser('');
       setPayManagerPass('');
@@ -374,6 +401,10 @@ export default function SalesPage() {
             payload.manager_password = payManagerPass;
           }
         }
+        // R1: the auto-recorded tender shares the same per-tender key as a
+        // manual record would, so a replayed/duplicated submission of this
+        // sale's payment collapses to a single row server-side.
+        payload.idempotency_key = getTenderKey();
         await apiFetch(`/api/sales/${sale.id}/set_payment/`, {
           method: 'POST',
           body: JSON.stringify(payload),
@@ -390,13 +421,14 @@ export default function SalesPage() {
       setPaymentRecorded(false);
       setPayTendered('');
       setSaleNote('');
+      resetTenderKey();
       await loadProducts();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : err instanceof Error ? err.message : 'Failed to complete sale');
     } finally {
       setBusy(false);
     }
-  }, [sale, paymentRecorded, payMethod, payTendered, payCustomer, payManagerUser, payManagerPass, loadProducts]);
+  }, [sale, paymentRecorded, payMethod, payTendered, payCustomer, payManagerUser, payManagerPass, saleNote, getTenderKey, resetTenderKey, loadProducts]);
 
   const voidSale = useCallback(async () => {
     if (!sale) {
@@ -411,12 +443,13 @@ export default function SalesPage() {
       setSale(null);
       setPaymentRecorded(false);
       setPayTendered('');
+      resetTenderKey();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to void sale');
     } finally {
       setBusy(false);
     }
-  }, [sale]);
+  }, [sale, resetTenderKey]);
 
   const closeReceipt = () => {
     setReceiptSale(null);

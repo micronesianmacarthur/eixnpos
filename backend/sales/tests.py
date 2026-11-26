@@ -506,7 +506,64 @@ class SaleApiTests(TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(Payment.objects.get(sale=sale).method, 'card')
 
-    def test_split_payment_is_recorded(self):
+    def test_split_payment_stores_per_method_rows(self):
+        sale = self.make_sale_with_line(quantity=2)
+
+        response = self.client.post(
+            f'/api/sales/{sale.id}/set_payment/',
+            {
+                'method': 'split',
+                'amount': '20.00',
+                'splits': [
+                    {'method': 'cash', 'amount': '10.00', 'metadata': {'tendered': '10.00'}},
+                    {'method': 'card', 'amount': '10.00', 'metadata': {'card_token': 'tok_test'}},
+                ],
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        rows = {p.method: p for p in Payment.objects.filter(sale=sale)}
+        self.assertEqual(set(rows), {'cash', 'card'})
+        self.assertEqual(rows['cash'].amount, Decimal('10.00'))
+        self.assertEqual(rows['card'].amount, Decimal('10.00'))
+        # Each component is one top-level Payment row with its own unique
+        # idempotency key, all grouped under a shared correlation_id.
+        self.assertIsNotNone(rows['cash'].idempotency_key)
+        self.assertIsNotNone(rows['cash'].correlation_id)
+        self.assertEqual(rows['cash'].correlation_id, rows['card'].correlation_id)
+        self.assertNotEqual(rows['cash'].idempotency_key, rows['card'].idempotency_key)
+
+    def test_split_cash_component_visible_to_cash_up_after_complete(self):
+        # Proves a split's cash portion becomes a method='cash' Payment row on
+        # the completed sale, so the cash-up close aggregation
+        # (method='cash', sale__status='completed') totals it correctly.
+        sale = self.make_sale_with_line(quantity=2)
+
+        set_response = self.client.post(
+            f'/api/sales/{sale.id}/set_payment/',
+            {
+                'method': 'split',
+                'amount': '20.00',
+                'splits': [
+                    {'method': 'cash', 'amount': '10.00', 'metadata': {'tendered': '10.00'}},
+                    {'method': 'card', 'amount': '10.00', 'metadata': {'card_token': 'tok_test'}},
+                ],
+            },
+            format='json',
+        )
+        self.assertEqual(set_response.status_code, 201)
+
+        complete = self.client.post(f'/api/sales/{sale.id}/complete/')
+        self.assertEqual(complete.status_code, 200)
+
+        from django.db.models import Sum
+        cash = Payment.objects.filter(
+            method='cash', sale__status='completed', sale=sale,
+        ).aggregate(s=Sum('amount'))['s'] or Decimal('0')
+        self.assertEqual(cash, Decimal('10.00'))
+
+    def test_split_requires_splits_list(self):
         sale = self.make_sale_with_line(quantity=2)
 
         response = self.client.post(
@@ -515,8 +572,52 @@ class SaleApiTests(TestCase):
             format='json',
         )
 
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(Payment.objects.get(sale=sale).method, 'split')
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(Payment.objects.filter(sale=sale).exists())
+
+    def test_set_payment_duplicate_post_is_idempotent(self):
+        sale = self.make_sale_with_line(quantity=2)
+
+        # Duplicate POSTs share a client-supplied nonce; idempotency is
+        # expressed through the key (B1 option b — keyless POSTs are
+        # non-idempotent).
+        key = "dup-nonce"
+        first = self.client.post(
+            f'/api/sales/{sale.id}/set_payment/',
+            {'method': 'cash', 'amount': '20.00', 'tendered': '20.00', 'idempotency_key': key},
+            format='json',
+        )
+        second = self.client.post(
+            f'/api/sales/{sale.id}/set_payment/',
+            {'method': 'cash', 'amount': '20.00', 'tendered': '20.00', 'idempotency_key': key},
+            format='json',
+        )
+
+        self.assertEqual(first.status_code, 201)
+        # A retried identical POST is a no-op returning the existing row (200).
+        self.assertEqual(second.status_code, 200)
+        rows = Payment.objects.filter(sale=sale)
+        self.assertEqual(rows.count(), 1)
+        total_recorded = sum((p.amount for p in rows), Decimal('0'))
+        self.assertEqual(total_recorded, sale.total)
+
+    def test_set_payment_distinct_client_keys_record_distinct_tenders(self):
+        sale = self.make_sale_with_line(quantity=2)
+
+        a = self.client.post(
+            f'/api/sales/{sale.id}/set_payment/',
+            {'method': 'cash', 'amount': '10.00', 'tendered': '10.00', 'idempotency_key': 'uuid-a'},
+            format='json',
+        )
+        b = self.client.post(
+            f'/api/sales/{sale.id}/set_payment/',
+            {'method': 'cash', 'amount': '10.00', 'tendered': '10.00', 'idempotency_key': 'uuid-b'},
+            format='json',
+        )
+
+        self.assertEqual(a.status_code, 201)
+        self.assertEqual(b.status_code, 201)
+        self.assertEqual(Payment.objects.filter(sale=sale).count(), 2)
 
     def test_manager_payment_is_flagged_as_approved(self):
         sale = self.make_sale_with_line(quantity=2)

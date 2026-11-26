@@ -2,17 +2,23 @@ from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.contrib.auth import authenticate
-from django.db import transaction as db_transaction
+from django.db import transaction as db_transaction, IntegrityError
 from django.utils import timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+import uuid
 
 from .models import Sale, SaleLine, Payment
 from .serializers import SaleSerializer, SaleLineSerializer, PaymentSerializer
 from .services import TransactionService, CartService, CartError, CartItemNotFoundError, InvalidQuantityError, SaleNotModifiableError, TransactionError, InsufficientPaymentError, InvalidPaymentMethodError, complete_sale_stock
+from .payments import PaymentMethod, get_processor
 from products.models import Product
 from customers.models import Customer
 from customers.services import LedgerService, LedgerError, can_override_credit
 from accounts.utils import is_manager
+
+
+class PaymentProcessingRejected(Exception):
+    """Raised when a payment processor refuses a tender (HTTP 400-equivalent)."""
 
 
 class SaleViewSet(viewsets.ModelViewSet):
@@ -181,12 +187,162 @@ class SaleViewSet(viewsets.ModelViewSet):
         line.refresh_from_db()
         return Response(SaleLineSerializer(line).data)
 
+    def _idempotency_key(self, request):
+        """Resolve a stable idempotency key for a tender.
+
+        Idempotency is client-driven: only a client-supplied `idempotency_key`
+        participates in dedupe (a retried POST with the same key replays the
+        existing row). A keyless tender is deliberately NON-idempotent: it gets
+        a fresh random key per POST, so every POST records a new row and two
+        genuine equal-amount tenders never collapse into one (B1). No
+        server-side key is derived from the payload — derived keys were
+        guessable and enabled cross-sale squatting (B2) and equal-tender
+        collisions.
+
+        Returns ``(effective_key, client_key)``: ``effective_key`` is always a
+        valid 64-char key (client's or a fresh UUID); ``client_key`` is the
+        client-supplied key or ``None`` for a keyless tender (only client
+        keys participate in dedupe and cross-sale rejection).
+        """
+        supplied = request.data.get('idempotency_key')
+        if supplied is None or str(supplied).strip() == '':
+            return str(uuid.uuid4()), None
+        key = str(supplied)
+        if len(key) > 64:
+            raise PaymentProcessingRejected('idempotency_key too long (max 64 characters)')
+        return key, key
+
+    def _record_payments(self, sale, method, amount, tendered, manager_approved, customer, splits, idempotency_key, *, operator=None, account_exception=False):
+        """Create Payment row(s) through the payments.py processor framework.
+
+        All writes happen inside a transaction.atomic() block (the caller
+        owns the block); the idempotency `select_for_update` lookup has already
+        passed. Returns a list of created Payment objects. Raises
+        PaymentProcessingRejected on processor refusal, which the caller maps
+        to an HTTP 400 (nothing is written on that path).
+        """
+        method_enum = PaymentMethod(method)
+
+        # Split: one top-level Payment row per component method, so the cash
+        # component is an independent method='cash' row that cash-up's
+        # method='cash' aggregation can see and total. require_token=False so
+        # a POS cash+card split records without a gateway token (B4).
+        if method == Payment.METHOD_SPLIT:
+            processor = get_processor(PaymentMethod.SPLIT, require_token=False)
+            result = processor.process_payment(amount, PaymentMethod.SPLIT, {'splits': splits})
+            if not result.success:
+                raise PaymentProcessingRejected(result.error_message)
+            rows = []
+            for comp in result.metadata['splits']:
+                comp_tendered = comp.get('tendered')
+                if comp_tendered is not None:
+                    try:
+                        comp_tendered = Decimal(str(comp_tendered))
+                    except InvalidOperation:
+                        comp_tendered = None
+                rows.append(Payment.objects.create(
+                    sale=sale,
+                    method=comp['method'],
+                    amount=Decimal(comp['amount']),
+                    tendered=comp_tendered,
+                    change_due=Decimal(comp.get('change_due') or 0),
+                    manager_approved=manager_approved,
+                    # R4: each split component gets a fresh UUID key. Deriving a
+                    # component key from the client key (f"{idempotency_key}:{method}:
+                    # {idx}") overflowed the 64-char column for a long client key
+                    # (accepted by SQLite, DataError → 500 on PostgreSQL). Idempotent
+                    # replay of a split is keyed by correlation_id (== client key),
+                    # never by the per-component key, so a fixed-length UUID is safe.
+                    idempotency_key=str(uuid.uuid4()),
+                    source=Payment.SOURCE_UI,
+                    transaction_id=comp.get('transaction_id'),
+                    correlation_id=idempotency_key,
+                ))
+            return rows
+
+        # Single-method tender. Card/mobile are recorded without a gateway
+        # token (the real gateway hook stays in the processor); only cash
+        # validates tendered and invoice carries the customer id.
+        processor_kwargs = {}
+        if method_enum in (PaymentMethod.CARD, PaymentMethod.MOBILE):
+            processor_kwargs['require_token'] = False
+        processor = get_processor(method_enum, **processor_kwargs)
+        metadata = {}
+        if method == Payment.METHOD_CASH and tendered is not None:
+            metadata['tendered'] = tendered
+        elif method == Payment.METHOD_INVOICE:
+            metadata['customer_id'] = (customer or sale.customer).id
+        result = processor.process_payment(amount, method_enum, metadata)
+        if not result.success:
+            raise PaymentProcessingRejected(result.error_message)
+
+        # Over-tender change is the tender excess over the outstanding sale
+        # balance this tender settles (existing POS reconciliation).
+        change_due = Decimal('0')
+        if method == Payment.METHOD_CASH and tendered is not None:
+            settled = sum((p.amount for p in sale.payments.all()), Decimal('0'))
+            remaining = max(Decimal('0'), sale.total - settled)
+            change_due = max(Decimal('0'), tendered - min(tendered, remaining))
+
+        if method == Payment.METHOD_INVOICE:
+            sale.customer = customer
+            sale.save(update_fields=['customer'])
+            # Authoritative ledger write: appends the invoice charge and
+            # re-derives the balance under a row lock (the ceiling is
+            # re-enforced there, race-safely). This keeps the ledger and the
+            # cached Customer.balance from diverging.
+            LedgerService.record_invoice_payment(
+                customer, amount, operator=operator, sale=sale,
+                account_exception=account_exception,
+            )
+
+        row = Payment.objects.create(
+            sale=sale,
+            method=method,
+            amount=amount,
+            tendered=tendered,
+            change_due=change_due,
+            manager_approved=manager_approved,
+            idempotency_key=idempotency_key,
+            source=Payment.SOURCE_UI,
+            transaction_id=result.transaction_id,
+        )
+        return [row]
+
     @action(detail=True, methods=['post'])
     def set_payment(self, request, pk=None):
         sale = self.get_object()
+        method = request.data.get('method')
+
+        # Resolve the idempotency key up front so key-length validation returns
+        # a clean 400 and the R5 replay guard can run before the open-status
+        # check.
+        try:
+            effective_key, client_key = self._idempotency_key(request)
+        except PaymentProcessingRejected as e:
+            return Response({'detail': str(e)}, status=400)
+
+        # R5 — a tender already recorded under this client key replays its
+        # existing row(s) even if the sale has since been completed. Without
+        # this, tender-with-key → complete → resubmit-same-key returned 400
+        # "sale not open" even though the row exists. Scoped to this sale only
+        # (never another sale's payment body).
+        if client_key is not None:
+            if method == Payment.METHOD_SPLIT:
+                comps = list(
+                    Payment.objects.filter(sale=sale, correlation_id=client_key).order_by('id')
+                )
+                if comps:
+                    return Response(PaymentSerializer(comps, many=True).data, status=200)
+            else:
+                existing = Payment.objects.filter(
+                    sale=sale, idempotency_key=client_key,
+                ).first()
+                if existing is not None:
+                    return Response(PaymentSerializer(existing).data, status=200)
+
         if not sale.is_open():
             return Response({'detail': 'sale not open'}, status=400)
-        method = request.data.get('method')
         if method not in dict(Payment.METHOD_CHOICES):
             return Response({'detail': 'invalid payment method'}, status=400)
         try:
@@ -202,7 +358,13 @@ class SaleViewSet(viewsets.ModelViewSet):
         # input, splitting the two records (e.g. 20.005 -> Payment 20.00,
         # ledger 20.01).
         amount = amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-        
+
+        splits = None
+        if method == Payment.METHOD_SPLIT:
+            splits = request.data.get('splits')
+            if not isinstance(splits, list) or not splits:
+                return Response({'detail': 'split payment requires a splits list'}, status=400)
+
         tendered = request.data.get('tendered')
         if tendered is not None:
             try:
@@ -211,7 +373,7 @@ class SaleViewSet(viewsets.ModelViewSet):
                 return Response({'detail': 'invalid tendered amount'}, status=400)
             if method == Payment.METHOD_CASH and tendered < amount:
                 return Response({'detail': 'tendered amount is less than amount due'}, status=400)
-        
+
         manager_approved = is_manager(request.user)
         # allow manager creds override
         mu = request.data.get('manager_username')
@@ -220,8 +382,8 @@ class SaleViewSet(viewsets.ModelViewSet):
             cand = authenticate(username=mu, password=mp)
             if cand and is_manager(cand):
                 manager_approved = True
-        
-        # invoice gating
+
+        # invoice gating (validation only; DB writes happen in the atomic block)
         customer = None
         account_exception = False
         if method == Payment.METHOD_INVOICE:
@@ -251,34 +413,132 @@ class SaleViewSet(viewsets.ModelViewSet):
             except LedgerError as e:
                 return Response({'detail': str(e)}, status=400)
 
-        # Change due is the tender excess over the outstanding sale balance this
-        # tender settles: an over-tender returns change, exact/under returns none.
-        change_due = Decimal('0')
-        if method == Payment.METHOD_CASH and tendered is not None:
-            settled = sum((p.amount for p in sale.payments.all()), Decimal('0'))
-            remaining = max(Decimal('0'), sale.total - settled)
-            change_due = max(Decimal('0'), tendered - min(tendered, remaining))
+        # Idempotency: a client-supplied key is the only thing that participates
+        # in dedupe. A keyless tender gets a fresh random key (per-tender nonce)
+        # and is therefore never replayed — two genuine equal-amount tenders
+        # always record two rows (B1). We scope every lookup to this sale so a
+        # key can never leak another sale's payment body (B2). The key is
+        # resolved at the top of set_payment (see R5 guard).
 
-        # Record the payment and (for invoices) the ledger/balance entry in one
-        # atomic block so a failed write can never leave them inconsistent.
+        if client_key is not None:
+            # B2 (cross-sale): a client key already owned by another sale must
+            # be rejected, never replayed and never shadowed. Client-supplied
+            # keys must not collide with a key the server would derive (we no
+            # longer derive guessable keys), so only a genuine reuse is caught
+            # here.
+            owned_by_other = (
+                Payment.objects.filter(idempotency_key=client_key).exclude(sale=sale).exists()
+                or Payment.objects.filter(correlation_id=client_key).exclude(sale=sale).exists()
+            )
+            if owned_by_other:
+                return Response(
+                    {'detail': 'idempotency key already used by another sale'},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
         try:
             with db_transaction.atomic():
-                payment = Payment.objects.create(
-                    sale=sale,
-                    method=method,
-                    amount=amount,
-                    tendered=tendered,
-                    change_due=change_due,
-                    manager_approved=manager_approved
+                # Dedupe applies only to a client-supplied key (keyless tenders
+                # never replay). Scope to (sale, key) so retries re-read their
+                # own sale's row, never a sibling's. Split replay reads by
+                # correlation_id so it returns the full component set (B3).
+                existing = None
+                if client_key is not None:
+                    if method == Payment.METHOD_SPLIT:
+                        comps = list(
+                            Payment.objects.filter(sale=sale, correlation_id=client_key)
+                            .select_for_update()
+                            .order_by('id')
+                        )
+                        if comps:
+                            return Response(PaymentSerializer(comps, many=True).data, status=200)
+                    else:
+                        existing = Payment.objects.filter(
+                            sale=sale, idempotency_key=client_key,
+                        ).select_for_update().first()
+                        if existing is not None:
+                            return Response(PaymentSerializer(existing).data, status=200)
+
+                created = self._record_payments(
+                    sale, method, amount, tendered,
+                    manager_approved, customer, splits, effective_key,
+                    operator=request.user, account_exception=account_exception,
                 )
-                if method == Payment.METHOD_INVOICE:
-                    LedgerService.record_invoice_payment(
-                        customer, amount, operator=request.user, sale=sale,
-                        account_exception=account_exception,
-                    )
+                if method == Payment.METHOD_SPLIT:
+                    payload = PaymentSerializer(created, many=True).data
+                else:
+                    payload = PaymentSerializer(created[0]).data
+                return Response(payload, status=201)
+        except PaymentProcessingRejected as e:
+            return Response({'detail': str(e)}, status=400)
         except LedgerError as e:
             return Response({'detail': str(e)}, status=400)
-        return Response(PaymentSerializer(payment).data, status=201)
+        except IntegrityError:
+            # A concurrent request with the same key committed between our
+            # select_for_update lookup and insert; the atomic block rolled
+            # back, so return the committed (winning) row(s) as the idempotent
+            # replay result — still scoped to this sale.
+            if client_key is not None:
+                if method == Payment.METHOD_SPLIT:
+                    match = list(
+                        Payment.objects.filter(sale=sale, correlation_id=client_key).order_by('id')
+                    )
+                    if match:
+                        return Response(PaymentSerializer(match, many=True).data, status=200)
+                else:
+                    match = Payment.objects.filter(sale=sale, idempotency_key=client_key).first()
+                    if match is not None:
+                        return Response(PaymentSerializer(match).data, status=200)
+            raise
+
+    def _record_complete_cash_payment(self, sale):
+        """Backward-compat single cash tender for the `complete` endpoint.
+
+        Route through CashProcessor and apply the same idempotency/atomic
+        guard as set_payment so a duplicated complete does not double-record.
+        """
+        amount = sale.total
+        processor = get_processor(PaymentMethod.CASH)
+        result = processor.process_payment(amount, PaymentMethod.CASH, {'tendered': amount})
+        if not result.success:
+            return False
+        key = f'sale:{sale.id}:complete:backcompat'
+        try:
+            with db_transaction.atomic():
+                # R2a: scope the dedupe to THIS sale (a key is only meaningful on
+                # one sale) AND to genuine complete-flow rows, so a client row
+                # that squats the backcompat key can never shadow the real cash
+                # tender. Because idempotency_key is globally unique, a squat on
+                # ANY sale (this or another) makes the deterministic key unusable
+                # for this write — in that case record the genuine tender under a
+                # fresh UUID so the payment is never lost and never collides.
+                effective_key = key
+                existing = Payment.objects.filter(
+                    sale=sale,
+                    idempotency_key=key,
+                    source=Payment.SOURCE_COMPLETE_FLOW,
+                ).select_for_update().first()
+                if existing is not None:
+                    return True
+                if Payment.objects.filter(idempotency_key=key).exists():
+                    effective_key = str(uuid.uuid4())
+                settled = sum((p.amount for p in sale.payments.all()), Decimal('0'))
+                remaining = max(Decimal('0'), sale.total - settled)
+                change_due = max(Decimal('0'), amount - min(amount, remaining))
+                Payment.objects.create(
+                    sale=sale,
+                    method=Payment.METHOD_CASH,
+                    amount=amount,
+                    tendered=amount,
+                    change_due=change_due,
+                    manager_approved=True,
+                    idempotency_key=effective_key,
+                    source=Payment.SOURCE_COMPLETE_FLOW,
+                    transaction_id=result.transaction_id,
+                )
+        except IntegrityError:
+            return True  # a concurrent complete already recorded this cash tender
+        return True
 
     @action(detail=True, methods=['post'])
     def complete(self, request, pk=None):
@@ -293,15 +553,7 @@ class SaleViewSet(viewsets.ModelViewSet):
 
         if sale.total > 0 and not sale.payments.exists():
             # Backward-compatible single cash payment for older clients.
-            payment = Payment.objects.create(
-                sale=sale,
-                method=Payment.METHOD_CASH,
-                amount=sale.total,
-                tendered=sale.total,
-                change_due=Decimal('0'),
-                manager_approved=True,
-            )
-            _ = payment
+            self._record_complete_cash_payment(sale)
 
         if sale.total > 0:
             total_paid = sum((p.amount for p in sale.payments.all()), Decimal('0'))
@@ -333,14 +585,7 @@ class SaleViewSet(viewsets.ModelViewSet):
                 completed_sale = sale
             else:
                 if not sale.payments.exists():
-                    Payment.objects.create(
-                        sale=sale,
-                        method=Payment.METHOD_CASH,
-                        amount=sale.total,
-                        tendered=sale.total,
-                        change_due=Decimal('0'),
-                        manager_approved=True,
-                    )
+                    self._record_complete_cash_payment(sale)
                 ts = TransactionService(require_payment_tokens=False)
                 ts._current_sale = sale
                 ts._cart = CartService(sale)
