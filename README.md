@@ -52,3 +52,13 @@ exception.
 For the API permission rules and payload details, see
 [the dashboard metrics & data contract](research/dashboard-metrics-and-data-contract.md),
 especially §7.
+
+## Help topics
+
+- [Cashier invoicing of registered customers](docs/cashier-invoice-permission.md)
+  — roles, customer eligibility, when approval is still required, audit trail,
+  and troubleshooting.
+- [Store-staff runbook: invoice a registered customer](docs/runbooks/cashier-invoice-runbook.md)
+  — steps and error messages for the sales screen.
+- [Changelog](CHANGELOG.md) — release notes, including the cashier invoicing
+  permission change.
