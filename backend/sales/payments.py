@@ -74,6 +74,15 @@ class PaymentProcessor(ABC):
     Abstract base class for payment processors.
 
     All payment processors must implement the process_payment method.
+
+    Lock-scope constraint: ``process_payment`` is invoked from within
+    ``transaction.atomic()`` blocks that may hold a row lock (e.g. a Sale or
+    Session row) so that the payment result and its DB records commit/roll back
+    together. A processor MUST therefore be a local, in-process implementation
+    that performs no blocking external I/O — no real network gateway call is
+    ever made under a row lock. Today Cash/Card/Mobile/Split/Invoice are all
+    in-process stubs. A future gateway integration belongs OUTSIDE the atomic
+    blocks (charge first, then commit the DB records), never inside one.
     """
 
     @abstractmethod

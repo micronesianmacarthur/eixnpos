@@ -502,6 +502,16 @@ class SaleViewSet(viewsets.ModelViewSet):
 
         try:
             with db_transaction.atomic():
+                # Re-fetch + lock the sale row inside the atomic: the open-status
+                # guard above ran on the view's (unlocked) instance, so a
+                # completion landing between that guard and this write would
+                # otherwise append a Payment to an already-completed sale. The
+                # authoritative is_open() check now runs against the LOCKED row;
+                # the loser 400s and its block rolls back (no orphan Payment).
+                sale = Sale.objects.select_for_update().get(pk=sale.pk)
+                if not sale.is_open():
+                    return Response({'detail': 'sale not open'}, status=400)
+
                 # Dedupe applies only to a client-supplied key (keyless tenders
                 # never replay). Scope to (sale, key) so retries re-read their
                 # own sale's row, never a sibling's. Split replay reads by
@@ -569,6 +579,23 @@ class SaleViewSet(viewsets.ModelViewSet):
         key = f'sale:{sale.id}:complete:backcompat'
         try:
             with db_transaction.atomic():
+                # Lock the sale row FIRST and re-validate against the LOCKED
+                # row, mirroring set_payment: a tender recorded by set_payment,
+                # or a completion, landing concurrently must suppress this
+                # backcompat cash tender instead of double-recording money. If
+                # any non-voided payment already covers the sale, or the sale
+                # is no longer open, defer to that payment/completion (the
+                # caller's finalize_sale re-validates coverage on the locked
+                # row).
+                sale = Sale.objects.select_for_update().get(pk=sale.pk)
+                if not sale.is_open():
+                    return True  # completed/voided/refunded; nothing to add
+                covered = Payment.objects.filter(
+                    sale=sale, voided=False
+                ).exists()
+                if covered:
+                    return True  # a concurrent tender already paid this sale
+
                 # R2a: scope the dedupe to THIS sale (a key is only meaningful on
                 # one sale) AND to genuine complete-flow rows, so a client row
                 # that squats the backcompat key can never shadow the real cash
@@ -619,28 +646,31 @@ class SaleViewSet(viewsets.ModelViewSet):
 
         note = request.data.get('note', '')
 
-        # Everything that writes state — the backward-compatible auto cash
-        # payment, the note/needs_review folds, the terminal status write and
-        # the stock movements — happens inside TransactionService.complete_view_sale
-        # under a single select_for_update row lock. Two concurrent completes
-        # on the same open sale therefore cannot both insert a payment or both
-        # deduct stock: the loser waits on the lock, re-checks is_open() on the
-        # now-completed locked instance, and its whole transaction rolls back.
-        try:
-            ts = TransactionService(require_payment_tokens=False)
-            completed_sale = ts.complete_view_sale(
-                sale.pk,
-                note=note,
-                auto_cash_payment=sale.total > 0,
-                generate_receipt=True,
-            )
-        except (TransactionError, InsufficientPaymentError) as e:
-            return Response({'detail': str(e)}, status=400)
+        if sale.total > 0 and not sale.payments.exists():
+            # Backward-compatible single cash payment for older clients.
+            self._record_complete_cash_payment(sale)
+
+        if note:
+            sale.note = note
 
         # Calculate change from stored cash tender change values.
-        change_due = sum((p.change_due for p in completed_sale.payments.all() if p.method == Payment.METHOD_CASH), Decimal('0'))
+        change_due = sum((p.change_due for p in sale.payments.all() if p.method == Payment.METHOD_CASH), Decimal('0'))
         if change_due < 0:
             change_due = Decimal('0')
+
+        # Use TransactionService.finalize_sale for both paths: it does the
+        # no-lines/empty-sale check, the zero-total note + needs_review handling,
+        # the payment coverage check (positive-total) and the stock movements.
+        try:
+            # The zero-total and positive-total paths both route through
+            # finalize_sale so they cannot drift (validation, stock movement
+            # and the sanctioned completed transition are identical).
+            ts = TransactionService(require_payment_tokens=False)
+            ts._current_sale = sale
+            ts._cart = CartService(sale)
+            completed_sale = ts.finalize_sale(sale, generate_receipt=True)
+        except (TransactionError, InsufficientPaymentError) as e:
+            return Response({'detail': str(e)}, status=400)
 
         data = SaleSerializer(completed_sale).data
         data['change_due'] = str(change_due)

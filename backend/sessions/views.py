@@ -178,31 +178,37 @@ class SessionViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def close(self, request, pk=None):
         session = self.get_object()
-        if session.status == Session.STATUS_CLOSED:
-            return Response({'detail':'already closed'}, status=400)
         counts = request.data.get('counts', {})
-        totals = calculate_totals(counts)
-        # Serialize the close: lock the session row and recompute/re-write the
-        # cash counts, variance and sales_total against that locked instance so
-        # two concurrent closes can't each read the pre-close state and write a
-        # stale snapshot (lost-update on counted_cash/expected_cash/variance).
-        # The Z-report PDF + backup below run outside this lock (external I/O).
+
+        # Persist the closed session and its immutable Z-report snapshot in one
+        # database transaction that begins by locking the session row. The
+        # guard (already-closed), the totals computation, the field writes and
+        # the snapshot all run against the LOCKED row, so two concurrent
+        # closes cannot both recompute from their own payload and both write —
+        # the loser blocks on the lock, then observes STATUS_CLOSED, returns
+        # 400 and rolls back (its ZReportSnapshot INSERT never fires, so the
+        # unique key cannot double). The snapshot records the exact summary
+        # inputs needed to re-render the filed PDF, so a re-download can never
+        # diverge from what was filed — even if sales are later refunded or
+        # edited. If the summary cannot be captured, the close fails and rolls
+        # back: better to leave the shift open than to file it with no
+        # immutable report.
         from sales.summary import compute_session_summary
         from .models import ZReportSnapshot
 
         with transaction.atomic():
+            # Re-fetch + lock the session: authoritative STATUS_CLOSED check
+            # must be against the locked row, not the view's stale instance.
             session = Session.objects.select_for_update().get(pk=session.pk)
-            # Re-check the terminal state on the LOCKED instance: a second
-            # concurrent close that passed the pre-lock guard must not overwrite
-            # the first close's filing.
             if session.status == Session.STATUS_CLOSED:
                 return Response({'detail': 'already closed'}, status=400)
+            totals = calculate_totals(counts)
             counted = totals['grand_total']
             # Net cash retained on THIS session, via the shared canonical
-            # calculation (used identically by close, Z-summary, and dashboard
-            # so the three surfaces cannot disagree). Session scope: sales
-            # linked to the session, or (legacy fallback — pre-migration history
-            # with no link) unlinked sales created inside the session window.
+            # calculation (used identically by close, Z-summary, and dashboard so
+            # the three surfaces cannot disagree). Session scope: sales linked to
+            # the session, or (legacy fallback — pre-migration history with no
+            # link) unlinked sales created inside the session's time window.
             figures = compute_cash_sales(session)
             cash_sales = figures['by_tender'].get('cash', Decimal('0'))
             expected = session.starting_cash + cash_sales
@@ -211,18 +217,13 @@ class SessionViewSet(viewsets.ModelViewSet):
             session.counted_cash = counted
             session.expected_cash = expected
             session.variance = variance
-            # Completed-revenue total for the Z-report (gross == Σ completed).
+            # Completed-revenue total for the Z-report (gross == Σ completed totals).
             session.sales_total = figures['gross']
             session.status = Session.STATUS_CLOSED
             session.closed_at = timezone.now()
             if 'cash_removed' in request.data:
                 session.cash_removed = request.data['cash_removed']
 
-            # Persist the closed session and its immutable Z-report snapshot in
-            # the same transaction. The snapshot records the exact summary
-            # inputs needed to re-render the filed PDF, so a re-download can
-            # never diverge from what was filed — even if sales are later
-            # refunded. If the summary cannot be captured, the close rolls back.
             session.save()
             _data = compute_session_summary(session.id)
             _data['store_name'] = _store_name()

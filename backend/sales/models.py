@@ -1,29 +1,53 @@
 """
 Transaction locking invariants for the sales module.
 
-Transactional operations (db_transaction.atomic + select_for_update):
-- Sale.save() — number allocation via SaleNumberSequence
-- TransactionService.complete_sale() — sale-row lock, validate/mutate
-- TransactionService.void_sale() — sale-row lock inside atomic
-- TransactionService.refund_sale() — sale-row lock inside atomic
+Sale numbers
+------------
+``Sale.number`` is allocated from a single, monotonic ``SaleNumberSequence``
+row (id=1, a high-water mark). That row is the SOLE authority for sale
+numbers: no caller ever computes a number from the ``sales_sale`` table, so
+deleting the largest-numbered sale can never free a number for reuse.
 
-Lock order: sale row FIRST, then counter/sequence row. Never reverse.
-Prevents double-post (duplicate sale numbers) and duplicate-number races.
+Critical invariant: **a transaction may never hold the sale-row lock and then
+allocate (or advance) a sale number.** The sequence row has its own lock
+(``select_for_update`` on id=1), and any code path that would take both locks
+in the same transaction creates a deadlock cycle against ``Sale.save()``'s
+number allocation. Number allocation therefore happens in its own
+``transaction.atomic()`` that locks ONLY the sequence row, and never runs
+inside a block that already holds a sale-row lock.
 
-Critical: select_for_update is a no-op on SQLite. Concurrency guarantees
-only on PostgreSQL. Run tests against PostgreSQL:
-  python manage.py test sales --test-name-pattern=concurrency
+Missing-row self-heal: if the sequence row is absent (test DB flushes,
+runtime deletion, manual loss) it is (re)created from ``MAX(number)`` under a
+row lock with an ``IntegrityError`` retry inside the same atomic, so the next
+allocation starts strictly above all existing numbers instead of colliding
+with number 1.
+
+Manual numbers: a sale created with an explicit ``number`` (admin/import/seed)
+advances the high-water mark to at least that number, so a later auto-allocated
+sale can never reuse a hand-assigned number.
+
+Sale-row locking
+----------------
+Every mutating lifecycle transition (complete, finalize, void, refund) opens a
+``transaction.atomic()``, re-fetches the persisted row with
+``select_for_update``, and validates + mutates against that LOCKED instance —
+never a possibly-stale in-memory copy. ``select_for_update`` is a no-op on
+SQLite (writers serialize); on PostgreSQL it is a real row lock.
+
+Lock order (when more than one row is locked): the sale row FIRST, then
+payment/line/customer rows, then product rows in ascending id. The sequence
+row is never held together with a sale row (see above).
+
+External I/O (receipt/PDF generation, backups, gateway-style payment-network
+calls) must stay OUTSIDE the atomic blocks. Lock scope is as small as
+correctness allows.
 
 New sale mutation checklist:
 1. open transaction.atomic
-2. re-fetch with select_for_update
+2. re-fetch the persisted row with select_for_update
 3. validate against the locked instance
-4. keep lock order (sale before counter)
+4. never allocate a sale number while holding a sale-row lock
 5. don't do I/O inside the transaction
-
-Ref: Sale.save() (models.py:52-56), TransactionService.complete_sale()
-(services.py:460), TransactionService.void_sale() (services.py:665),
-TransactionService.refund_sale() (services.py:696).
 """
 from django.db import models, transaction, IntegrityError
 from django.contrib.auth import get_user_model
@@ -35,6 +59,16 @@ User = get_user_model()
 
 # Maximum bounded-retry attempts for allocating a unique sale number.
 NUMBER_ALLOCATION_ATTEMPTS = 10
+
+
+def _max_sale_number() -> int:
+    """Max ``Sale.number`` currently persisted, or 0 for an empty table.
+
+    The seed used when the ``SaleNumberSequence`` singleton row is missing and
+    must be recreated: the new high-water mark must start strictly above every
+    existing number so the next allocation never collides with number 1.
+    """
+    return Sale.objects.aggregate(max_number=models.Max('number'))['max_number'] or 0
 
 
 class SaleNumberError(Exception):
@@ -86,31 +120,59 @@ class SaleNumberSequence(models.Model):
         observe a strictly increasing value. (``select_for_update`` is a no-op
         on SQLite, which serializes writes anyway; on PostgreSQL it takes a
         real row lock.)
+
+        Missing-row self-heal: if the singleton row is absent (a test DB
+        flush, runtime deletion, or manual loss), it is (re)created from the
+        max existing ``Sale.number`` under the row lock — never from 0 — so
+        the first allocation after a loss starts strictly above all existing
+        numbers instead of colliding with number 1. A concurrent first INSERT
+        of the singleton raises IntegrityError; we catch it and retry the
+        locked read of the row the winner committed.
         """
         for _ in range(NUMBER_ALLOCATION_ATTEMPTS):
             try:
                 with transaction.atomic():
-                    try:
-                        seq = SaleNumberSequence.objects.select_for_update().get(pk=1)
-                    except SaleNumberSequence.DoesNotExist:
-                        # A flush/legacy DB can lack the seeded singleton. Seed
-                        # from the current max sale number inside the locked
-                        # block so the next allocation can never re-issue an
-                        # existing number; a concurrent first insert raises
-                        # IntegrityError and is retried against the survivor.
-                        max_number = (
-                            Sale.objects.aggregate(m=models.Max('number'))['m'] or 0
+                    seq, _created = (
+                        SaleNumberSequence.objects.select_for_update().get_or_create(
+                            pk=1,
+                            defaults={'last_value': _max_sale_number()},
                         )
-                        seq = SaleNumberSequence.objects.create(
-                            pk=1, last_value=max_number,
-                        )
+                    )
                     seq.last_value += 1
                     seq.save(update_fields=['last_value'])
                     return seq.last_value
             except IntegrityError:
-                # Concurrent writer beat us to the increment; retry.
+                # Concurrent writer beat us to the increment (or to the first
+                # INSERT after a row loss); re-read the committed row.
                 continue
         raise SaleNumberError('Could not allocate a unique sale number after retry')
+
+    def advance_to(self, n: int) -> None:
+        """Raise the high-water mark to at least ``n``.
+
+        Used when a sale is created with an explicit/manual ``number`` (seed
+        data, admin or import), so a later auto-allocation can never hand out a
+        number <= a hand-assigned one. ``select_for_update`` is a no-op on
+        SQLite; a real row lock on PostgreSQL. Like :meth:`allocate_next`, this
+        self-heals a missing singleton row from ``MAX(number)`` and retries on a
+        concurrent first INSERT.
+        """
+        for _ in range(NUMBER_ALLOCATION_ATTEMPTS):
+            try:
+                with transaction.atomic():
+                    seq, _created = (
+                        SaleNumberSequence.objects.select_for_update().get_or_create(
+                            pk=1,
+                            defaults={'last_value': max(_max_sale_number(), n)},
+                        )
+                    )
+                    if seq.last_value < n:
+                        seq.last_value = n
+                        seq.save(update_fields=['last_value'])
+                    return
+            except IntegrityError:
+                continue
+        raise SaleNumberError('Could not raise the sale-number high-water mark after retry')
 
 
 #: Statuses that mark a sale as still editable / hard-deletable. Anything
@@ -249,6 +311,12 @@ class Sale(models.Model):
     objects = SaleQuerySet.as_manager()
 
     def save(self, *args, **kwargs):
+        # A brand-new row created with an explicit/manual number must advance
+        # the sequence high-water mark so a later auto-allocation never reuses
+        # the hand-assigned number. (Auto-allocated numbers go through
+        # allocate_next and leave the mark where it should be; only the
+        # explicit-number path needs the extra bump.)
+        advance_for_manual = bool(self.number) and self._state.adding
         if not self.number:
             self.number = self._allocate_number()
         self._guard_immutable_save()
@@ -257,6 +325,10 @@ class Sale(models.Model):
         finally:
             # A sanctioned transition consumes its one-shot flag on save.
             self._transition_pending = False
+        # after the row is persisted, not before, so a failed INSERT never
+        # advances the mark (the number stays unused and NO-REUSE holds).
+        if advance_for_manual:
+            SaleNumberSequence().advance_to(self.number)
 
     def _column_name(self, field_name):
         """The actual DB column for a field (FKs use ``<name>_id``)."""
