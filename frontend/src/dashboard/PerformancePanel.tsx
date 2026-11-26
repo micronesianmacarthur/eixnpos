@@ -265,7 +265,7 @@ export default function PerformancePanel({ initialData }: PerformancePanelProps)
       <header className="mm-card-header">
         <div>
           <h2 className="mm-card-title" id="performance-title">
-            Shop Performance
+            {/*Shop */}Performance
           </h2>
           <p className="mm-card-subtitle">
             Monthly revenue vs the previous month, trailing {MONTHS_SHOWN} months

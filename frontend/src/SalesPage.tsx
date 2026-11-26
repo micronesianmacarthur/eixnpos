@@ -820,14 +820,14 @@ export default function SalesPage() {
               </div>
             </div>
 
-            {payMethod === 'cash' && (
+            {/*{payMethod === 'cash' && (
               <div className="change-due">
                 Change due: {formatMoney(Math.max(0, toNumber(payTendered) - toNumber(sale?.total ?? 0)))}
               </div>
-            )}
+            )}*/}
 
             <div className="mm-field">
-              <span>Sale note</span>
+              {/*<span>Sale note</span>*/}
               <button
                 type="button"
                 className="mm-btn mm-btn--ghost"
