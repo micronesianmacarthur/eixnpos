@@ -354,16 +354,27 @@ class SessionTimezoneTests(DashboardBase):
         info.timezone = 'America/Los_Angeles'
         info.save(update_fields=['timezone'])
 
+        # Freeze "now" so the current business-local day is a fixed, known
+        # value regardless of when the suite runs. 2026-11-24 07:45Z ==
+        # 2026-11-23 23:45 LA, i.e. a moment after the session below opened.
+        frozen_now = _aware(2026, 11, 24, 7, 45)
+
         session = Session.objects.create(
             cashier=self.cashier, starting_cash=Decimal('100.00'),
-            register=self.register, business_day=date(2026, 11, 23),
+            register=self.register,
+            business_day=services.local_date_of(frozen_now),
         )
-        # Opened 2026-11-23 23:30 LA == 2026-11-24 07:30 UTC.
+        # Opened 2026-11-23 23:30 LA == 2026-11-24 07:30 UTC, still on the
+        # same business-local day as ``frozen_now``.
         Session.objects.filter(pk=session.pk).update(
             opened_at=_aware(2026, 11, 24, 7, 30))
         session.refresh_from_db()
 
-        payload = services.current_session_payload(self.manager)
+        with mock.patch(
+            'dashboard.services._now_utc', return_value=frozen_now,
+        ):
+            payload = services.current_session_payload(self.manager)
+
         self.assertTrue(payload['open'])
         # The single-session accessor preserves the pre-B2 shape; it also
         # carries the canonical ``started_at_local`` alias.
