@@ -95,36 +95,41 @@ class DashboardBase(TestCase):
 
 
 class DashboardAccessTests(DashboardBase):
-    def test_anonymous_is_rejected(self):
-        # Anonymous callers are rejected. DRF returns either 401 (NotAuthenticated)
-        # or 403 for a manager-gated endpoint without a successful authenticator;
-        # the codebase convention treats both as the rejection state.
-        response = self.client.get('/api/dashboard/sales/today/')
-        self.assertIn(response.status_code, (401, 403))
+    _READ_URLS = ('/api/dashboard/sales/today/',
+                  '/api/dashboard/sales/period/?start=2026-11-01&end=2026-11-24',
+                  '/api/dashboard/sales/top/',
+                  '/api/dashboard/sales/monthly/',
+                  '/api/dashboard/sessions/current/',
+                  '/api/dashboard/inventory/low-stock/',
+                  '/api/dashboard/')
+    _BACKUP_URL = '/api/dashboard/backup/'
 
-    def test_cashier_gets_403(self):
-        self.client.force_authenticate(self.cashier)
-        for url in ('/api/dashboard/sales/today/',
-                    '/api/dashboard/sales/period/?start=2026-11-01&end=2026-11-24',
-                    '/api/dashboard/sales/top/',
-                    '/api/dashboard/sales/monthly/',
-                    '/api/dashboard/sessions/current/',
-                    '/api/dashboard/inventory/low-stock/',
-                    '/api/dashboard/backup/',
-                    '/api/dashboard/'):
+    def test_anonymous_is_rejected(self):
+        # Anonymous callers are rejected on every dashboard endpoint. DRF
+        # returns either 401 (NotAuthenticated) or 403 for an endpoint without
+        # a successful authenticator; the codebase convention treats both as
+        # the rejection state.
+        for url in self._READ_URLS + (self._BACKUP_URL,):
             response = self.client.get(url)
-            self.assertEqual(response.status_code, 403, msg=url)
+            self.assertIn(response.status_code, (401, 403), msg=url)
+
+    def test_cashier_can_read_dashboard_aggregates(self):
+        # Any authenticated role (incl. cashiers) may read the dashboard read
+        # endpoints: today/period/top/monthly/session/low-stock/composite.
+        self.client.force_authenticate(self.cashier)
+        for url in self._READ_URLS:
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, 200, msg=url)
+
+    def test_cashier_cannot_read_backup_status(self):
+        # The backup-status endpoint stays manager-tier: cashiers get 403.
+        self.client.force_authenticate(self.cashier)
+        response = self.client.get(self._BACKUP_URL)
+        self.assertEqual(response.status_code, 403)
 
     def test_manager_gets_200(self):
         self.client.force_authenticate(self.manager)
-        for url in ('/api/dashboard/sales/today/',
-                    '/api/dashboard/sales/period/?start=2026-11-01&end=2026-11-24',
-                    '/api/dashboard/sales/top/',
-                    '/api/dashboard/sales/monthly/',
-                    '/api/dashboard/sessions/current/',
-                    '/api/dashboard/inventory/low-stock/',
-                    '/api/dashboard/backup/',
-                    '/api/dashboard/'):
+        for url in self._READ_URLS + (self._BACKUP_URL,):
             response = self.client.get(url)
             self.assertEqual(response.status_code, 200, msg=url)
 
@@ -132,6 +137,8 @@ class DashboardAccessTests(DashboardBase):
         self.client.force_authenticate(self.admin)
         self.assertEqual(
             self.client.get('/api/dashboard/sales/today/').status_code, 200)
+        self.assertEqual(
+            self.client.get('/api/dashboard/backup/').status_code, 200)
 
 
 class SalesTodayTests(DashboardBase):
@@ -427,8 +434,8 @@ class SessionCurrentTests(DashboardBase):
     def test_cashier_sees_only_assigned_registers(self):
         """A cashier only sees sessions on registers they are assigned to.
 
-        The dashboard HTTP endpoint is manager-gated (cashiers get 403), so the
-        cashier-side scoping is exercised at the service-function level.
+        Exercised through the real HTTP endpoint now that cashiers can read the
+        dashboard: the register-scoping rule still holds per role.
         """
         self.register.cashiers.set([self.cashier])
         other = Register.objects.create(name='Other')
@@ -439,8 +446,9 @@ class SessionCurrentTests(DashboardBase):
         Session.objects.create(
             cashier=self.manager, register=other, business_day=self.today,
         )
-        data = services.current_session_payload(self.cashier)
-        self.assertTrue(data['open'])
+        self.client.force_authenticate(self.cashier)
+        data = self.client.get('/api/dashboard/sessions/current/').json()
+        self.assertEqual(data['open'], True)
         self.assertEqual(data['count'], 1)
         self.assertEqual(data['sessions'][0]['register']['id'], self.register.id)
 
