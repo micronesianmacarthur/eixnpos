@@ -40,7 +40,7 @@ class PaymentRegressionTestCase(TestCase):
         self.cashier = User.objects.create_user(username="cashier", password="pw", role="cashier")
         self.client = APIClient()
         self.client.force_authenticate(self.cashier)
-        self.product = Product.objects.create(name="Widget", price=Decimal("10.00"))
+        self.product = Product.objects.create(name="Widget", price=Decimal("10.00"), quantity=10)
 
     def make_sale_with_line(self, quantity=2):
         sale = Sale.objects.create(cashier=self.cashier)
@@ -214,7 +214,7 @@ class ConcurrentRetryTests(TransactionTestCase):
 
     def setUp(self):
         self.cashier = User.objects.create_user(username="cashier2", password="pw", role="cashier")
-        self.product = Product.objects.create(name="Widget", price=Decimal("10.00"))
+        self.product = Product.objects.create(name="Widget", price=Decimal("10.00"), quantity=10)
 
     def make_sale_with_line(self, quantity=2):
         sale = Sale.objects.create(cashier=self.cashier)
@@ -308,7 +308,7 @@ class PaymentBlockerAcceptanceTests(TestCase):
         self.cashier = User.objects.create_user(username="accept1", password="pw", role="cashier")
         self.client = APIClient()
         self.client.force_authenticate(self.cashier)
-        self.product = Product.objects.create(name="Widget", price=Decimal("10.00"))
+        self.product = Product.objects.create(name="Widget", price=Decimal("10.00"), quantity=10)
 
     def make_sale_with_line(self, quantity=2):
         sale = Sale.objects.create(cashier=self.cashier)
@@ -490,7 +490,7 @@ class PaymentRemediationRound2Tests(TestCase):
         self.cashier = User.objects.create_user(username="round2", password="pw", role="cashier")
         self.client = APIClient()
         self.client.force_authenticate(self.cashier)
-        self.product = Product.objects.create(name="Widget", price=Decimal("10.00"))
+        self.product = Product.objects.create(name="Widget", price=Decimal("10.00"), quantity=10)
 
     def make_sale_with_line(self, quantity=2):
         sale = Sale.objects.create(cashier=self.cashier)

@@ -18,7 +18,7 @@ def backfill_idempotency_keys(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('sales', '0006_payment_idempotency_fields'),
+        ('sales', '0007_payment_idempotency_fields'),
     ]
 
     operations = [

@@ -28,7 +28,7 @@ def noop_reverse(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('sales', '0007_payment_unique_idempotency_key'),
+        ('sales', '0008_payment_unique_idempotency_key'),
     ]
 
     operations = [

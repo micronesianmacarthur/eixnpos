@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('sales', '0008_alter_payment_idempotency_key'),
+        ('sales', '0009_alter_payment_idempotency_key'),
     ]
 
     operations = [

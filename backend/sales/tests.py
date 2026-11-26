@@ -539,6 +539,9 @@ class SaleApiTests(TestCase):
         # the completed sale, so the cash-up close aggregation
         # (method='cash', sale__status='completed') totals it correctly.
         sale = self.make_sale_with_line(quantity=2)
+        # The receipt/inventory branch enforces non-negative on-hand at
+        # completion, so give the product stock before completing.
+        StockMovement.objects.create(product=self.product, movement_type='receive', quantity=10)
 
         set_response = self.client.post(
             f'/api/sales/{sale.id}/set_payment/',

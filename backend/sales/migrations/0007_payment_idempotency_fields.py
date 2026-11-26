@@ -11,7 +11,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('sales', '0005_sale_session'),
+        ('sales', '0006_saleline_unit_cost'),
     ]
 
     operations = [
