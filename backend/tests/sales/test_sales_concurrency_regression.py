@@ -1,176 +1,189 @@
-"""Regression tests for the sales void/complete/delete TOCTOU races.
+"""Deterministic stale-interleave regressions for the sales write paths.
 
-Re-review findings B3–B5 (and the model-level service repros behind them) from
-the sales concurrency remediation. Each test FAILS on base ``d6caa2b`` (where
-the view/service trust a stale in-memory instance and the model re-reads status
-without a lock) and PASSES on the fix tip (``select_for_update`` re-read under
-``transaction.atomic`` before every status-changing transition or delete, plus a
-persisted-status whitelist in ``transition_to``).
+Each test scripts the exact interleave a concurrent actor would create
+under a real race (a "concurrent actor" flips the sale's DB row to
+completed between the view's ``get_object()`` / service guard read and the
+write) and asserts the second, stale actor is refused. These complement
+``tests/sales/test_concurrency_races.py``, which runs the same classes of
+bug with real threads on PostgreSQL — the suite here is backend-agnostic
+and runs under the project's default runner::
 
-The concurrency here is scripted deterministically: a "concurrent actor" flips
-the sale's DB row to completed (and posts its stock movement) precisely between
-the guard's read and the write, exactly reproducing the interleave a real
-concurrent transaction would create on PostgreSQL. ``select_for_update`` is a
-no-op on the SQLite test DB, so the re-read (not the lock) is what makes these
-observable.
+    cd backend
+    python manage.py test tests.sales.test_sales_concurrency_regression
+
+(For the real-thread races, use ``--settings=tests.settings_pg`` against
+PostgreSQL — see that module's docstring.)
+
+Every test FAILED on the unlocked baseline and PASSES with the
+``select_for_update`` re-read under ``transaction.atomic`` before every
+status-changing transition or delete, plus the persisted-status whitelist
+in ``transition_to``.
 """
 
 from decimal import Decimal
 from unittest import mock
 
-import pytest
 from django.contrib.auth import get_user_model
+from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
 from inventory.models import StockMovement
+from products.models import Product
 from sales.models import ImmutableSaleError, Payment, Sale, SaleLine
 from sales.services import TransactionError, TransactionService
 from sales.views import SaleViewSet
+from suppliers.models import Supplier
 
 User = get_user_model()
 
 
-def make_user(username, role):
-    return User.objects.create_user(username=username, password='pw', role=role)
+class StaleInterleaveTestBase(TestCase):
+    """Shared fixtures: stock-backed product + open sale with a covering payment."""
+
+    def setUp(self):
+        super().setUp()
+        self.cashier = User.objects.create_user(
+            username='cashier_cc', password='pw', role='cashier'
+        )
+        self.manager = User.objects.create_user(
+            username='manager_cc', password='pw', role='manager'
+        )
+        supplier = Supplier.objects.create(name='Acme')
+        # The product needs on-hand stock: the scripted actor posts a -2
+        # StockMovement, and product_quantity_non_negative rejects that
+        # against quantity=0 (review finding B5 fixture bug).
+        self.product = Product.objects.create(
+            name='Widget',
+            price=Decimal('10.00'),
+            cost=Decimal('4.00'),
+            supplier=supplier,
+            quantity=100,
+        )
+
+    def _make_open_stock_sale(self, qty=2):
+        """An open sale with one stock line and a covering cash payment."""
+        sale = Sale.objects.create(cashier=self.cashier)
+        SaleLine.objects.create(
+            sale=sale, product=self.product, quantity=qty,
+            unit_price=Decimal('10.00'), line_total=Decimal('10.00') * qty,
+        )
+        sale.recompute()  # subtotal=20, total=20
+        Payment.objects.create(
+            sale=sale, method='cash', amount=sale.total, tendered=sale.total,
+            change_due=Decimal('0'), manager_approved=True,
+        )
+        return sale
+
+    def _actor_completes(self, sale, qty=2):
+        """The 'concurrent actor': complete the row + post the stock decrement."""
+        Sale.objects.filter(pk=sale.pk).update(
+            status=Sale.STATUS_COMPLETED, completed_at=timezone.now(),
+        )
+        StockMovement.objects.create(
+            product=self.product, quantity=-qty, movement_type='sale',
+            reference=f'sale:{sale.number}',
+        )
 
 
-@pytest.fixture
-def cashier(db):
-    return make_user('cashier_cc', 'cashier')
+class TestConcurrentVoid(StaleInterleaveTestBase):
+    """A void must be refused if a completion landed after the guard read."""
 
-
-@pytest.fixture
-def manager(db):
-    return make_user('manager_cc', 'manager')
-
-
-@pytest.fixture
-def product(db):
-    from suppliers.models import Supplier
-    supplier = Supplier.objects.create(name='Acme')
-    from products.models import Product
-    return Product.objects.create(name='Widget', price=Decimal('10.00'), supplier=supplier)
-
-
-def _make_open_stock_sale(cashier, product, qty=2):
-    """An open sale with one stock line and a covering cash payment."""
-    sale = Sale.objects.create(cashier=cashier)
-    SaleLine.objects.create(
-        sale=sale, product=product, quantity=qty,
-        unit_price=Decimal('10.00'), line_total=Decimal('10.00') * qty,
-    )
-    sale.recompute()  # subtotal=20, total=20
-    Payment.objects.create(
-        sale=sale, method='cash', amount=sale.total, tendered=sale.total,
-        change_due=Decimal('0'), manager_approved=True,
-    )
-    return sale
-
-
-def _actor_completes(sale, product, qty=2):
-    """The 'concurrent actor': complete the row + post the stock decrement."""
-    Sale.objects.filter(pk=sale.pk).update(
-        status=Sale.STATUS_COMPLETED, completed_at=timezone.now(),
-    )
-    StockMovement.objects.create(
-        product=product, quantity=-qty, movement_type='sale',
-        reference=f'sale:{sale.number}',
-    )
-
-
-class TestConcurrentVoid:
-    """B3: a void must be refused if a completion landed after the guard read."""
-
-    @pytest.mark.django_db
-    def test_http_void_refused_when_completed_between_get_and_guard(
-        self, cashier, manager, product
-    ):
-        sale = _make_open_stock_sale(cashier, product)
+    def test_http_void_refused_when_completed_between_get_and_guard(self):
+        sale = self._make_open_stock_sale()
         stale = Sale.objects.get(pk=sale.pk)  # the "view-loaded" open instance
-        _actor_completes(sale, product)  # completion lands after get_object()
+        self._actor_completes(sale)  # completion lands after get_object()
         client = APIClient()
-        client.force_authenticate(manager)
+        client.force_authenticate(self.manager)
 
         with mock.patch.object(SaleViewSet, 'get_object', return_value=stale):
             resp = client.post(f'/api/sales/{sale.id}/void/', {'reason': 'x'}, format='json')
 
         # Voiding a completed sale is illegal; refusing it means the completion's
-        # stock movement (-2) is not left unreversed by a bogus mold.
-        assert resp.status_code == 400
+        # stock movement (-2) is not left unreversed by a bogus void.
+        self.assertEqual(resp.status_code, 400)
         sale.refresh_from_db()
-        assert sale.status == Sale.STATUS_COMPLETED
-        assert sale.voided_at is None
+        self.assertEqual(sale.status, Sale.STATUS_COMPLETED)
+        self.assertIsNone(sale.voided_at)
 
-    @pytest.mark.django_db
-    def test_service_void_refused_when_stale_instance_completed_under_it(
-        self, cashier, manager, product
-    ):
-        sale = _make_open_stock_sale(cashier, product)
+    def test_service_void_refused_when_stale_instance_completed_under_it(self):
+        sale = self._make_open_stock_sale()
         stale = Sale.objects.get(pk=sale.pk)
-        _actor_completes(sale, product)
+        self._actor_completes(sale)
         ts = TransactionService()
         ts._current_sale = stale
 
-        with pytest.raises(TransactionError):
-            ts.void_sale(by=manager, reason='x')
-        Sale.objects.get(pk=sale.pk).status == Sale.STATUS_COMPLETED
+        with self.assertRaises(TransactionError):
+            ts.void_sale(by=self.manager, reason='x')
+        # The row must still be a completed sale, never a voided one.
+        self.assertEqual(
+            Sale.objects.get(pk=sale.pk).status, Sale.STATUS_COMPLETED,
+            'a completed sale must not be voided off a stale open instance',
+        )
 
-    @pytest.mark.django_db
-    def test_stale_transition_to_of_completed_row_is_illegal(self, cashier, manager, product):
+    def test_stale_transition_to_of_completed_row_is_illegal(self):
         """Model-level: transition_to must key its whitelist on the persisted row."""
-        sale = _make_open_stock_sale(cashier, product)
+        sale = self._make_open_stock_sale()
         Sale.objects.filter(pk=sale.pk).update(
             status=Sale.STATUS_COMPLETED, completed_at=timezone.now(),
         )
-        with pytest.raises(ImmutableSaleError):
-            sale.transition_to(Sale.STATUS_VOIDED, by=manager, reason='x')
-        Sale.objects.get(pk=sale.pk).status == Sale.STATUS_COMPLETED
+        with self.assertRaises(ImmutableSaleError):
+            sale.transition_to(Sale.STATUS_VOIDED, by=self.manager, reason='x')
+        self.assertEqual(
+            Sale.objects.get(pk=sale.pk).status, Sale.STATUS_COMPLETED,
+            'a completed row must stay completed after a refused transition',
+        )
 
 
-class TestConcurrentDoubleComplete:
-    """B4: a second completion must never post a second stock decrement."""
+class TestConcurrentDoubleComplete(StaleInterleaveTestBase):
+    """A second completion must never post a second stock decrement."""
 
-    @pytest.mark.django_db
-    def test_http_double_complete_posts_single_movement(self, cashier, product):
-        sale = _make_open_stock_sale(cashier, product)
+    def test_http_double_complete_posts_single_movement(self):
+        sale = self._make_open_stock_sale()
         stale = Sale.objects.get(pk=sale.pk)  # open in-memory
-        _actor_completes(sale, product)  # concurrent actor posts the 1st decrement
+        self._actor_completes(sale)  # concurrent actor posts the 1st decrement
         client = APIClient()
-        client.force_authenticate(cashier)
+        client.force_authenticate(self.cashier)
 
         with mock.patch.object(SaleViewSet, 'get_object', return_value=stale):
             resp = client.post(f'/api/sales/{sale.id}/complete/', {}, format='json')
 
         reference = f'sale:{sale.number}'
-        assert resp.status_code == 400
-        assert StockMovement.objects.filter(
-            movement_type='sale', reference=reference
-        ).count() == 1
-        Sale.objects.get(pk=sale.pk).status == Sale.STATUS_COMPLETED
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(
+            StockMovement.objects.filter(
+                movement_type='sale', reference=reference
+            ).count(), 1,
+            'a second complete must not post a second stock movement',
+        )
+        self.assertEqual(
+            Sale.objects.get(pk=sale.pk).status, Sale.STATUS_COMPLETED,
+            'the first completion must be the persisted terminal state',
+        )
 
-    @pytest.mark.django_db
-    def test_service_finalize_stale_double_complete_rejected(self, cashier, product):
-        sale = _make_open_stock_sale(cashier, product)
+    def test_service_finalize_stale_double_complete_rejected(self):
+        sale = self._make_open_stock_sale()
         stale = Sale.objects.get(pk=sale.pk)
-        _actor_completes(sale, product)
+        self._actor_completes(sale)
         ts = TransactionService(require_payment_tokens=False)
         ts._current_sale = stale
 
-        with pytest.raises(TransactionError):
+        with self.assertRaises(TransactionError):
             ts.finalize_sale(stale)
         reference = f'sale:{sale.number}'
-        assert StockMovement.objects.filter(
-            movement_type='sale', reference=reference
-        ).count() == 1
+        self.assertEqual(
+            StockMovement.objects.filter(
+                movement_type='sale', reference=reference
+            ).count(), 1,
+            'a stale finalize must not post a second stock movement',
+        )
 
 
-class TestConcurrentDelete:
-    """B5: a completed flip between the delete guard's read and DELETE must refuse."""
+class TestConcurrentDelete(StaleInterleaveTestBase):
+    """A completed flip between the delete guard's read and DELETE must refuse."""
 
-    @pytest.mark.django_db
-    def test_delete_refused_when_completed_after_guard_read(self, cashier):
-        sale = Sale.objects.create(cashier=cashier)
+    def test_delete_refused_when_completed_after_guard_read(self):
+        sale = Sale.objects.create(cashier=self.cashier)
         triggered = [False]
         orig_sfu = Sale.objects.select_for_update
 
@@ -185,7 +198,10 @@ class TestConcurrentDelete:
             return orig_sfu(*args, **kwargs)
 
         with mock.patch.object(Sale.objects, 'select_for_update', side_effect=race_sfu):
-            with pytest.raises(ImmutableSaleError):
+            with self.assertRaises(ImmutableSaleError):
                 sale.delete()
 
-        assert Sale.objects.filter(pk=sale.pk).exists()
+        self.assertTrue(
+            Sale.objects.filter(pk=sale.pk).exists(),
+            'a completed sale must not be hard-deleted off a stale guard read',
+        )
