@@ -1,4 +1,5 @@
 from django.contrib import admin
+from django.core.exceptions import ValidationError
 from django.utils.text import capfirst
 
 from .models import Payment, Sale, SaleLine, ImmutableSaleError
@@ -16,11 +17,16 @@ class SaleAdmin(RoleAwareModelAdmin):
     #: immutable; they are only editable (via the form) while the sale is still
     #: open/pending. ``status`` is deliberately in this set so a completed sale's
     #: status can never be hand-edited away from the DB-backed immutability.
+    #: ``refund_reason`` is here too: a non-readonly ``refund_reason`` on a
+    #: completed/voided/refunded sale would let the change form POST it straight
+    #: to ``Sale.save()``, where the model guard raises ``ImmutableSaleError``
+    #: and bubbles up as an unhandled HTTP 500. Readonly fields are never
+    #: applied from the request, so the guard cannot be tripped through the form.
     IMMUTABLE_ONLY_FIELDS = (
         'customer', 'cashier', 'session', 'status',
         'subtotal', 'discount_total', 'tax_total', 'total',
         'voided_by', 'voided_at', 'void_reason',
-        'refunded_by', 'refunded_at', 'completed_at',
+        'refunded_by', 'refunded_at', 'refund_reason', 'completed_at',
     )
 
     def get_readonly_fields(self, request, obj=None):
@@ -33,6 +39,23 @@ class SaleAdmin(RoleAwareModelAdmin):
                 if f not in readonly
             ]
         return readonly
+
+    def save_model(self, request, obj, form, change):
+        """Handle a DB-backed ``ImmutableSaleError`` cleanly instead of a 500.
+
+        All protected fields are readonly for an immutable sale, so the normal
+        form cannot trip the model guard. But a stale admin form opened while a
+        sale was still open and submitted *after* it was completed (or voided/
+        refunded) through another path still reaches ``Sale.save()``, where the
+        DB-backed guard raises ``ImmutableSaleError``. Convert that to a
+        ValidationError so the admin re-renders the change form with a friendly
+        message rather than an unhandled HTTP 500 (no data is written either
+        way — the guard refuses the write before persisting anything).
+        """
+        try:
+            super().save_model(request, obj, form, change)
+        except ImmutableSaleError as e:
+            raise ValidationError(str(e))
 
     def has_delete_permission(self, request, obj=None):
         # Hide/deny the single-object delete for an immutable sale (both the

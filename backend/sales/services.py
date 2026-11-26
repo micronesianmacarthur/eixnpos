@@ -653,28 +653,50 @@ class TransactionService:
             if not sale.note:
                 raise TransactionError('A sales note is required for zero-value sales')
 
+        # The caller may set the note directly on the passed instance (the
+        # ``complete`` view does ``sale.note = ...`` before calling us) rather
+        # than via the ``note`` kwarg. Capture it so it is applied to the
+        # re-read (locked) row below — the locked row is a fresh DB read and
+        # would otherwise miss an in-memory-only note.
+        if note is None and sale.note:
+            note = sale.note
+
         # Complete the sale - create stock movements
         with db_transaction.atomic():
-            sale.transition_to(Sale.STATUS_COMPLETED)
-            if sale.total == 0:
-                sale.needs_review = True
+            # Re-read + lock the persisted row: the authoritative is_open()
+            # must be against the DB (not the stale caller-supplied instance)
+            # and must be held across the transition + movement writes, so two
+            # concurrent completions cannot both post a stock decrement. An
+            # already-completed sale is refused here (idempotent completion:
+            # never a second ledger post). ``select_for_update`` is a no-op on
+            # SQLite (writers serialize); on PostgreSQL it is a real row lock.
+            locked = Sale.objects.select_for_update().get(pk=sale.pk)
+            if not locked.is_open():
+                raise TransactionError(f'Cannot complete sale with status: {locked.status}')
+            if not locked.lines.exists():
+                raise TransactionError('Cannot complete sale with no items')
+            locked.transition_to(Sale.STATUS_COMPLETED)
+            if locked.total == 0:
+                locked.needs_review = True
             if note:
-                sale.note = note
+                locked.note = note
             if needs_review is not None:
-                sale.needs_review = needs_review
+                locked.needs_review = needs_review
             update_fields = ['status', 'completed_at', 'note', 'needs_review']
-            sale.save(update_fields=update_fields)
+            locked.save(update_fields=update_fields)
 
             # Create stock movements for each stock product only
-            for line in sale.lines.all():
+            for line in locked.lines.all():
                 if line.product.non_stock:
                     continue
                 StockMovement.objects.create(
                     product=line.product,
                     quantity=-line.quantity,
                     movement_type='sale',
-                    reference=f'sale:{sale.number}'
+                    reference=f'sale:{locked.number}'
                 )
+
+        sale = locked
 
         # Generate receipt if requested
         if generate_receipt:
@@ -724,17 +746,29 @@ class TransactionService:
             raise TransactionError('A void reason is required')
 
         with db_transaction.atomic():
-            sale.transition_to(
+            # Re-read + lock the persisted row: the authoritative is_open()
+            # must be against the DB (not the stale callback-loaded instance)
+            # and must be held across the transition, so a completion that lands
+            # after the in-memory guard above cannot be overwritten by a void
+            # (leaving the completion's stock movement unreversed).
+            # ``select_for_update`` is a no-op on SQLite (writers serialize);
+            # on PostgreSQL it takes a real row lock.
+            locked = Sale.objects.select_for_update().get(pk=sale.pk)
+            if not locked.is_open():
+                raise TransactionError(
+                    f'Only open/pending sales can be voided, current status: {locked.status}'
+                )
+            locked.transition_to(
                 Sale.STATUS_VOIDED,
                 by=by,
                 reason=reason,
             )
-            sale.save(update_fields=['status', 'voided_by', 'voided_at', 'void_reason'])
+            locked.save(update_fields=['status', 'voided_by', 'voided_at', 'void_reason'])
 
         self._current_sale = None
         self._cart = None
 
-        return sale
+        return locked
 
     def refund_sale(
         self,

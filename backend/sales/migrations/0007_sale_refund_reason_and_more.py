@@ -22,10 +22,21 @@ def backfill_voided_at(apps, schema_editor):
 
 
 def unbackfill_voided_at(apps, schema_editor):
-    """Reverse: clear the backdated timestamps so reversing the migration
-    restores the pre-0007 state exactly."""
+    """Reverse: clear only the timestamps the forward backfill stamped.
+
+    The forward backfill set ``voided_at`` to ``updated_at`` only on rows that
+    had previously NULL ``voided_at`` (legacy pre-0006 voids). Rows voided
+    after 0006 shipped carry a *genuine* audit timestamp (``voided_at !=
+    updated_at``). Clearing ``voided_at`` for every ``status='voided'`` row here
+    would destroy those real audit timestamps, so the reverse targets only the
+    rows the forward pass stamped (those where ``voided_at == updated_at``),
+    restoring the pre-0007 state without wiping post-0006 audit data.
+    """
     Sale = apps.get_model('sales', 'Sale')
-    Sale.objects.filter(status='voided').update(voided_at=None)
+    Sale.objects.filter(
+        status='voided',
+        voided_at=models.F('updated_at'),
+    ).update(voided_at=None)
 
 
 class Migration(migrations.Migration):

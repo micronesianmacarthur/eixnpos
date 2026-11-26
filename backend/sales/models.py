@@ -94,14 +94,21 @@ class SaleQuerySet(models.QuerySet):
     """
 
     def delete(self):
-        immutable = self.filter(~models.Q(status__in=EDITABLE_SALE_STATUSES))
-        if immutable.exists():
-            raise ImmutableSaleError(
-                'Cannot hard-delete sale(s) with immutable status '
-                '(completed/voided/refunded) via a queryset; void or refund '
-                'them instead.'
-            )
-        return super().delete()
+        # Re-read the matched rows under a row lock immediately before the
+        # delete (atomic conditional delete semantics), so a concurrent
+        # completion cannot flip a just-delted row to immutable between the
+        # guard check above and the actual DELETE. (``select_for_update`` is a
+        # no-op on SQLite, which serializes writers anyway; on PostgreSQL it
+        # takes a real row lock.)
+        with transaction.atomic():
+            locked = self.select_for_update()
+            if locked.filter(~models.Q(status__in=EDITABLE_SALE_STATUSES)).exists():
+                raise ImmutableSaleError(
+                    'Cannot hard-delete sale(s) with immutable status '
+                    '(completed/voided/refunded) via a queryset; void or refund '
+                    'them instead.'
+                )
+            return super().delete()
 
 
 class Sale(models.Model):
@@ -217,6 +224,17 @@ class Sale(models.Model):
         """The actual DB column for a field (FKs use ``<name>_id``)."""
         return self._meta.get_field(field_name).attname
 
+    #: Fields a sanctioned ``transition_to`` may (re)write on an immutable
+    #: sale. ``_transition_pending`` suppresses ``_guard_immutable_save`` only
+    #: for these, so a pending transition can never smuggle an identity or a
+    #: different transition's audit rewrite past the guard on the same save.
+    TRANSITION_SCOPE_FIELDS = frozenset({
+        'status',
+        'completed_at',
+        'voided_by', 'voided_at', 'void_reason',
+        'refunded_by', 'refunded_at', 'refund_reason',
+    })
+
     def _guard_immutable_save(self):
         """Refuse to mutate an already-immutable sale via plain ``save()``.
 
@@ -226,11 +244,13 @@ class Sale(models.Model):
         (``_transition_pending``), any protected identity/audit field whose new
         value differs from the persisted row raises ``ImmutableSaleError``.
         Callers never need to remember to call ``check_inviolate_fields()``.
+
+        ``_transition_pending`` is restricted to the single sanctioned save
+        (and its own scope fields); it never exempts identity fields or audit
+        fields belonging to a *different* transition.
         """
         if self._state.adding:
             return  # brand-new row; nothing persisted to protect.
-        if getattr(self, '_transition_pending', False):
-            return  # sanctioned status transition; transition_to is the writer.
         persisted = (
             Sale.objects.filter(pk=self.pk)
             .values(*[self._column_name(f) for f in self.PROTECTED_FIELDS])
@@ -244,6 +264,11 @@ class Sale(models.Model):
             f for f in self.PROTECTED_FIELDS
             if getattr(self, self._column_name(f)) != persisted.get(self._column_name(f))
         )
+        if getattr(self, '_transition_pending', False):
+            # A status transition may only rewrite status + its own audit
+            # fields; any other protected (identity / other-audit) change is
+            # still refused even mid-transition.
+            changed = [f for f in changed if f not in self.TRANSITION_SCOPE_FIELDS]
         if changed:
             raise ImmutableSaleError(
                 f'Cannot change field(s) on a completed sale: {", ".join(changed)}.'
@@ -268,21 +293,26 @@ class Sale(models.Model):
         open/pending (draft) sales may be hard-deleted; a completed sale must
         be voided/refunded (which records an audit trail), never erased.
 
-        The guard re-reads ``status`` from the database (a point-in-time
-        source of truth) rather than trusting the in-memory instance, so a
-        stale object loaded while the sale was open cannot later erase it after
-        the row was completed through another path.
+        The guard re-reads ``status`` from the database under a row lock and
+        inside an atomic block (a point-in-time source of truth), rather than
+        trusting the in-memory instance, so a stale object loaded while the
+        sale was open cannot later erase it after the row was completed through
+        another path — and a concurrent completion between the re-read and the
+        DELETE cannot slip through (``select_for_update`` is a no-op on SQLite,
+        which serializes writers; it is a real row lock on PostgreSQL).
         """
-        current = type(self).objects.filter(pk=self.pk).values_list('status', flat=True).first()
-        if current is None:
-            # Row is already gone; nothing to protect or delete.
-            return (0, {})
-        if current not in EDITABLE_SALE_STATUSES:
-            raise ImmutableSaleError(
-                f'Cannot hard-delete sale #{self.number}: status is '
-                f'{current} (only open/pending sales may be deleted).'
-            )
-        return super().delete(*args, **kwargs)
+        with transaction.atomic():
+            try:
+                current = type(self).objects.select_for_update().get(pk=self.pk)
+            except type(self).DoesNotExist:
+                # Row is already gone; nothing to protect or delete.
+                return (0, {})
+            if current.status not in EDITABLE_SALE_STATUSES:
+                raise ImmutableSaleError(
+                    f'Cannot hard-delete sale #{current.number}: status is '
+                    f'{current.status} (only open/pending sales may be deleted).'
+                )
+            return super().delete(*args, **kwargs)
 
     def check_inviolate_fields(self, payload):
         """Raise if *payload* would mutate an inviolate field on this sale.
@@ -311,15 +341,44 @@ class Sale(models.Model):
         immutable, and it records the corresponding audit fields atomically in
         the caller's transaction.
 
+        The whitelist is keyed on the **persisted** row's status (re-read from
+        the DB in the caller's transaction, so ``select_for_update``/atomic
+        framing around the caller applies), not a possibly-stale in-memory
+        ``self.status``: a stale open instance whose row has since been
+        completed cannot authorize an illegal completed->voided write. (An
+        object whose own ``transition_to`` already ran but hasn't saved yet —
+        ``_transition_pending`` — whitelists from its in-memory status, since
+        the DB legitimately lags a sanctioned in-flight transition.)
+
         Allowed transitions:
             pending/open  -> completed | voided
             completed     -> refunded
             voided/refunded are terminal.
         """
-        allowed = self._allowed_transitions().get(self.status, set())
+        # The whitelist is keyed on the *authoritative* current status: the
+        # persisted row's status (re-read in the caller's transaction, so
+        # select_for_update/atomic framing around the caller applies) — not a
+        # possibly-stale in-memory ``self.status``. A stale open instance whose
+        # row has since been completed cannot authorize an illegal
+        # completed->voided write. The one exception is an object that is
+        # *mid*-transition (transition_to -> save is the unit of work): its
+        # in-memory status was set by a sanctioned transition not yet persisted,
+        # and the DB legitimately lags it, so we whitelist from in-memory state.
+        if getattr(self, '_transition_pending', False):
+            base_status = self.status
+        else:
+            base_status = self.status
+            current = (
+                type(self).objects.filter(pk=self.pk)
+                .values_list('status', flat=True)
+                .first()
+            )
+            if current is not None:
+                base_status = current
+        allowed = self._allowed_transitions().get(base_status, set())
         if new_status not in allowed:
             raise ImmutableSaleError(
-                f'Illegal status transition {self.status} -> {new_status}.'
+                f'Illegal status transition {base_status} -> {new_status}.'
             )
         self.status = new_status
         # Mark this instance as mid-sanctioned-transition so the immutability

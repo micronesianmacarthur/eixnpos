@@ -137,6 +137,37 @@ class TestAdminChangeFormReadonly:
                   'void_reason', 'refunded_at'):
             assert not self._change_page_has_editable(body, f), f'{f} is editable on completed sale'
 
+    def test_refund_reason_not_editable_on_completed_sale(self, admin_client, cashier, product):
+        """S8: ``refund_reason`` is readonly on a completed sale (no textarea)."""
+        sale = _completed_sale(cashier, product)
+
+        resp = admin_client.get(f'/admin/sales/sale/{sale.pk}/change/')
+
+        assert resp.status_code == 200
+        # An editable TextField renders a <textarea name="refund_reason">.
+        assert b'<textarea name="refund_reason"' not in resp.content
+
+    def test_submitting_refund_reason_on_completed_sale_is_noop(
+        self, admin_client, cashier, product
+    ):
+        """S8: POSTing ``refund_reason`` to a completed sale is a no-op, not a 500.
+
+        Before the fix the field was exposed as editable on a completed sale, and
+        POSTing it reached ``Sale.save()`` where the DB-backed immutability guard
+        raised an unhandled ``ImmutableSaleError`` -> HTTP 500. With it readonly,
+        the value is ignored and nothing is written.
+        """
+        sale = _completed_sale(cashier, product)
+
+        resp = admin_client.post(f'/admin/sales/sale/{sale.pk}/change/', {
+            'refund_reason': 'on-sale hand-written audit note',
+            '_save': 'Save',
+        })
+
+        assert resp.status_code in (200, 302)
+        sale.refresh_from_db()
+        assert sale.refund_reason == ''
+
     def test_identity_fields_editable_on_open_sale(self, admin_client, cashier, customer):
         sale = Sale.objects.create(cashier=cashier)
 

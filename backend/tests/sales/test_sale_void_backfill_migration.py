@@ -12,10 +12,13 @@ mirroring Django's documented migration-testing recipe and the accounts app's
 existing migration tests.
 """
 
+from datetime import timedelta
+
 from django.contrib.auth import get_user_model
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase
+from django.utils import timezone
 
 User = get_user_model()
 
@@ -59,3 +62,29 @@ class SaleVoidBackfillMigrationTests(TransactionTestCase):
 
         row = Sale.objects.get(pk=self.legacy.pk)
         self.assertIsNotNone(row.voided_at)
+
+    def test_reverse_preserves_genuine_voided_at_audit_timestamps(self):
+        """Reversing 0007 must clear only the backfill-stamped rows, never a
+        genuine post-0006 voided_at (real audit timestamp)."""
+        MigrationExecutor(connection).migrate(self.migrate_to)  # forward: stamps self.legacy
+        new_apps = MigrationExecutor(connection).loader.project_state(self.migrate_to).apps
+        Sale = new_apps.get_model('sales', 'Sale')
+
+        # A genuine voided row created after 0006 shipped carries a real audit
+        # timestamp (voided_at != updated_at).
+        genuine_ts = timezone.now() - timedelta(minutes=5)
+        genuine = Sale.objects.create(
+            cashier_id=self.cashier.id, status='voided', number=91002,
+            voided_at=genuine_ts,
+        )
+
+        MigrationExecutor(connection).migrate(self.migrate_from)  # reverse: back to 0006
+        old_apps = MigrationExecutor(connection).loader.project_state(self.migrate_from).apps
+        Sale = old_apps.get_model('sales', 'Sale')
+
+        # The backfilled legacy row's voided_at is cleared (pre-0007 state).
+        self.assertIsNone(Sale.objects.get(pk=self.legacy.pk).voided_at)
+        # The genuine timestamp survives the reverse.
+        self.assertEqual(
+            Sale.objects.get(pk=genuine.pk).voided_at, genuine_ts,
+        )
