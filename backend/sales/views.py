@@ -619,31 +619,28 @@ class SaleViewSet(viewsets.ModelViewSet):
 
         note = request.data.get('note', '')
 
-        if sale.total > 0 and not sale.payments.exists():
-            # Backward-compatible single cash payment for older clients.
-            self._record_complete_cash_payment(sale)
-
-        if note:
-            sale.note = note
-
-        # Calculate change from stored cash tender change values.
-        change_due = sum((p.change_due for p in sale.payments.all() if p.method == Payment.METHOD_CASH), Decimal('0'))
-        if change_due < 0:
-            change_due = Decimal('0')
-
-        # Use TransactionService.finalize_sale for both paths: it does the
-        # no-lines/empty-sale check, the zero-total note + needs_review handling,
-        # the payment coverage check (positive-total) and the stock movements.
+        # Everything that writes state — the backward-compatible auto cash
+        # payment, the note/needs_review folds, the terminal status write and
+        # the stock movements — happens inside TransactionService.complete_view_sale
+        # under a single select_for_update row lock. Two concurrent completes
+        # on the same open sale therefore cannot both insert a payment or both
+        # deduct stock: the loser waits on the lock, re-checks is_open() on the
+        # now-completed locked instance, and its whole transaction rolls back.
         try:
-            # The zero-total and positive-total paths both route through
-            # finalize_sale so they cannot drift (validation, stock movement
-            # and the sanctioned completed transition are identical).
             ts = TransactionService(require_payment_tokens=False)
-            ts._current_sale = sale
-            ts._cart = CartService(sale)
-            completed_sale = ts.finalize_sale(sale, generate_receipt=True)
+            completed_sale = ts.complete_view_sale(
+                sale.pk,
+                note=note,
+                auto_cash_payment=sale.total > 0,
+                generate_receipt=True,
+            )
         except (TransactionError, InsufficientPaymentError) as e:
             return Response({'detail': str(e)}, status=400)
+
+        # Calculate change from stored cash tender change values.
+        change_due = sum((p.change_due for p in completed_sale.payments.all() if p.method == Payment.METHOD_CASH), Decimal('0'))
+        if change_due < 0:
+            change_due = Decimal('0')
 
         data = SaleSerializer(completed_sale).data
         data['change_due'] = str(change_due)

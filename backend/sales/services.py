@@ -591,31 +591,9 @@ class TransactionService:
         if not self._current_sale:
             raise TransactionError('No sale in progress. Call start_sale() first.')
 
-        sale = self._current_sale
-
-        if not sale.is_open():
-            raise TransactionError(f'Cannot complete sale with status: {sale.status}')
-
-        if not sale.lines.exists():
-            raise TransactionError('Cannot complete sale with no items')
-
-        # Validate payment method
-        try:
-            method = PaymentMethod(payment_method)
-        except ValueError:
-            raise InvalidPaymentMethodError(f'Invalid payment method: {payment_method}')
-
-        # Validate amount
-        if amount <= 0:
-            raise InsufficientPaymentError('Payment amount must be positive')
-
-        # Check if payment covers total (except for invoice which can be partial)
-        if method != PaymentMethod.INVOICE and amount < sale.total:
-            raise InsufficientPaymentError(
-                f'Payment amount {amount} is less than sale total {sale.total}'
-            )
-
-        # Handle manager approval for invoice
+        # Resolve manager approval via PBKDF2 BEFORE taking the row lock:
+        # password hashing is CPU-bound and must not run while holding the
+        # sale row lock (it would serialize unrelated completions).
         effective_manager_approved = manager_approved
         if manager_credentials:
             username = manager_credentials.get('username')
@@ -624,6 +602,12 @@ class TransactionService:
                 user = authenticate(username=username, password=password)
                 if user and is_manager(user):
                     effective_manager_approved = True
+
+        sale = self._current_sale
+        try:
+            method = PaymentMethod(payment_method)
+        except ValueError:
+            raise InvalidPaymentMethodError(f'Invalid payment method: {payment_method}')
 
         # Validate invoice payment
         account_exception = False
@@ -754,6 +738,92 @@ class TransactionService:
 
         return sale
 
+
+    def complete_view_sale(
+        self,
+        sale_id: int,
+        *,
+        note: str = '',
+        auto_cash_payment: bool = False,
+        generate_receipt: bool = True,
+        receipt_format: str = 'text',
+    ) -> Sale:
+        """Complete a sale from the API view under a single row lock.
+
+        The optional auto cash-payment insert, the note/needs_review folds,
+        the sanctioned terminal transition, the ledger/stock writes and the
+        stock movements all commit in ONE transaction begun with
+        ``select_for_update``, so two concurrent completes on the same open
+        sale cannot double-post a payment or double-deduct stock: the loser
+        waits on the row lock, re-checks ``is_open()`` on the now-completed
+        locked instance, raises, and rolls back its insert.
+
+        Args:
+            sale_id: The sale to complete.
+            note: Sales note to fold into the same transaction.
+            auto_cash_payment: Create a single cash payment for a paid sale
+                that has no payments yet (backward-compatible with clients that
+                POST a bare complete and expect the tender to be recorded).
+            generate_receipt: Generate the receipt (outside the lock).
+
+        Raises:
+            TransactionError: If the sale cannot be completed.
+        """
+        with db_transaction.atomic():
+            # Lock the sale row first, then validate and mutate against the
+            # locked instance so a concurrent complete/void/refund cannot slip
+            # between the state checks and the final status write.
+            sale = Sale.objects.select_for_update().get(pk=sale_id)
+
+            if not sale.is_open():
+                raise TransactionError(f'Cannot complete sale with status: {sale.status}')
+
+            if not sale.lines.exists():
+                raise TransactionError('Cannot complete sale with no items')
+
+            if sale.total > 0:
+                if not sale.payments.exists():
+                    if not auto_cash_payment:
+                        raise TransactionError('Payment required before completion')
+                    # Backward-compatible single cash tender. Provenance is
+                    # SOURCE_COMPLETE_FLOW so cash-up and idempotency dedupe can
+                    # tell it apart from a client-recorded tender.
+                    Payment.objects.create(
+                        sale=sale,
+                        method=Payment.METHOD_CASH,
+                        amount=sale.total,
+                        tendered=sale.total,
+                        change_due=Decimal('0'),
+                        manager_approved=True,
+                        source=Payment.SOURCE_COMPLETE_FLOW,
+                    )
+                total_paid = sum(p.amount for p in sale.payments.all())
+                if total_paid < sale.total:
+                    raise TransactionError(
+                        f'Total paid ({total_paid}) is less than '
+                        f'sale total ({sale.total})'
+                    )
+            elif not note and not sale.note:
+                raise TransactionError('a sales note is required for zero-value sales')
+
+            if note:
+                sale.note = note
+            if sale.total == 0:
+                sale.needs_review = True
+
+            # Sanctioned transition + guarded stock deduction, in the same
+            # transaction as the payment insert above.
+            sale.transition_to(Sale.STATUS_COMPLETED)
+            sale.save(update_fields=['status', 'completed_at', 'note', 'needs_review'])
+            complete_sale_stock(sale, reference=f'sale:{sale.number}')
+
+        # Receipt generation is external I/O and must not hold the row lock.
+        # Zero-value completions historically produced no receipt.
+        if generate_receipt and sale.total > 0:
+            self.receipt_generator.generate_receipt(sale, format=receipt_format)
+
+        return sale
+
     def finalize_sale(self, sale: Sale, generate_receipt: bool = True, receipt_format: str = "text", *, note: Optional[str] = None, needs_review: Optional[bool] = None) -> Sale:
         """Finalize a sale into the completed state.
 
@@ -873,7 +943,11 @@ class TransactionService:
         if not self._current_sale:
             raise TransactionError('No sale in progress. Call start_sale() first.')
 
-        sale = self._current_sale
+        # Lock the sale row first, then validate and mutate against the locked
+        # instance so a concurrent complete/refund cannot slip between the
+        # status guard and the void write.
+        with db_transaction.atomic():
+            sale = Sale.objects.select_for_update().get(pk=self._current_sale.pk)
 
         if not sale.is_open():
             raise TransactionError(

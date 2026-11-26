@@ -2,7 +2,7 @@
 Transaction locking invariants for the sales module.
 
 Transactional operations (db_transaction.atomic + select_for_update):
-- Sale.save() — number allocation via SaleNumberCounter
+- Sale.save() — number allocation via SaleNumberSequence
 - TransactionService.complete_sale() — sale-row lock, validate/mutate
 - TransactionService.void_sale() — sale-row lock inside atomic
 - TransactionService.refund_sale() — sale-row lock inside atomic
@@ -93,7 +93,17 @@ class SaleNumberSequence(models.Model):
                     try:
                         seq = SaleNumberSequence.objects.select_for_update().get(pk=1)
                     except SaleNumberSequence.DoesNotExist:
-                        seq = SaleNumberSequence.objects.create(pk=1, last_value=0)
+                        # A flush/legacy DB can lack the seeded singleton. Seed
+                        # from the current max sale number inside the locked
+                        # block so the next allocation can never re-issue an
+                        # existing number; a concurrent first insert raises
+                        # IntegrityError and is retried against the survivor.
+                        max_number = (
+                            Sale.objects.aggregate(m=models.Max('number'))['m'] or 0
+                        )
+                        seq = SaleNumberSequence.objects.create(
+                            pk=1, last_value=max_number,
+                        )
                     seq.last_value += 1
                     seq.save(update_fields=['last_value'])
                     return seq.last_value
@@ -442,22 +452,37 @@ class Sale(models.Model):
         Args:
             tax_rate: Tax rate as a decimal (e.g., Decimal('0.10') for 10%)
         """
-        subtotal = Decimal('0')
-        discount_total = Decimal('0')
-        for line in self.lines.all():
-            line.line_total = (line.unit_price * line.quantity) - line.discount_amount
-            line.save(update_fields=['line_total'])
-            # Update in-memory object to reflect saved value
-            line.refresh_from_db(fields=['line_total'])
-            subtotal += line.unit_price * line.quantity
-            discount_total += line.discount_amount
-        
-        self.subtotal = subtotal
-        self.discount_total = discount_total
-        taxable_amount = subtotal - discount_total
-        self.tax_total = (taxable_amount * tax_rate).quantize(Decimal('0.01'))
-        self.total = taxable_amount + self.tax_total
-        self.save(update_fields=['subtotal', 'discount_total', 'tax_total', 'total'])
+        from django.db import transaction as db_transaction
+        with db_transaction.atomic():
+            # Serialize cart recomputation on this sale: lock the sale row before
+            # reading lines/writing totals so two concurrent cart edits cannot
+            # lose each other's line_total / sale-total updates.
+            locked = Sale.objects.select_for_update().get(pk=self.pk)
+            subtotal = Decimal('0')
+            discount_total = Decimal('0')
+            for line in locked.lines.all():
+                line.line_total = (line.unit_price * line.quantity) - line.discount_amount
+                line.save(update_fields=['line_total'])
+                # Update in-memory object to reflect saved value
+                line.refresh_from_db(fields=['line_total'])
+                subtotal += line.unit_price * line.quantity
+                discount_total += line.discount_amount
+
+            locked.subtotal = subtotal
+            locked.discount_total = discount_total
+            taxable_amount = subtotal - discount_total
+            locked.tax_total = (taxable_amount * tax_rate).quantize(Decimal('0.01'))
+            locked.total = taxable_amount + locked.tax_total
+            locked.save(update_fields=['subtotal', 'discount_total', 'tax_total', 'total'])
+
+        # The recomputation happened on the locked `locked` instance, not on
+        # `self`; refresh `self` so callers reading `self.total` / subtotal /
+        # tax_total after recompute() see the persisted values rather than the
+        # stale pre-lock snapshot.
+        if self.pk:
+            self.refresh_from_db(
+                fields=['subtotal', 'discount_total', 'tax_total', 'total']
+            )
 
     def is_open(self) -> bool:
         """Check if sale is in a modifiable state."""

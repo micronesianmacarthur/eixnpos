@@ -13,7 +13,7 @@ from products.models import Product
 from suppliers.models import Supplier
 
 from .cash_count import calculate_removal, calculate_totals
-from .models import Payment, Sale, SaleLine, Refund
+from .models import Payment, Sale, SaleLine, Refund, SaleNumberSequence
 from .services import TransactionService, TransactionError
 
 User = get_user_model()
@@ -30,6 +30,34 @@ class SaleModelTests(TestCase):
 
         self.assertEqual(first.number, 1)
         self.assertEqual(second.number, 2)
+
+    def test_missing_counter_row_falls_back_to_max_plus_one(self):
+        # A TransactionTestCase flush (or a DB that never ran the seed
+        # migration) can delete the singleton pk=1 counter row. Sale.save()
+        # must recreate it race-safely from MAX(number)+1 instead of 500ing
+        # with DoesNotExist on every sale creation.
+        _a = Sale.objects.create(cashier=self.cashier)          # number 1
+        _b = Sale.objects.create(cashier=self.cashier)          # number 2
+        max_before = Sale.objects.order_by('-number').values_list('number', flat=True).first()
+        self.assertEqual(max_before, 2)
+
+        # Delete the singleton row to force the fallback path.
+        SaleNumberSequence.objects.get(pk=1).delete()
+
+        recreated = Sale.objects.create(cashier=self.cashier)
+        self.assertEqual(recreated.number, max_before + 1)      # 3
+        # No duplicate: the previous two keep their numbers and the new one
+        # is the next in the sequence.
+        numbers = sorted(Sale.objects.values_list('number', flat=True))
+        self.assertEqual(numbers, [1, 2, 3])
+        self.assertEqual(len(numbers), len(set(numbers)))
+
+        # No later reuse: the counter row persists and next sale is 4.
+        after = Sale.objects.create(cashier=self.cashier)
+        self.assertEqual(after.number, 4)
+        self.assertEqual(
+            SaleNumberSequence.objects.get(pk=1).last_value, 4,
+        )
 
     def test_recompute_sums_lines_and_applies_discounts(self):
         sale = Sale.objects.create(cashier=self.cashier)
