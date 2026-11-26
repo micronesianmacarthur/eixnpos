@@ -618,10 +618,12 @@ class SaleApiTests(TestCase):
         movement = StockMovement.objects.get(movement_type='sale')
         self.assertEqual(movement.quantity, -2)
         self.assertEqual(movement.reference, f'sale:{sale.number}')
+        self.product.refresh_from_db()
         self.assertEqual(self.product.quantity, 8)
 
     def test_complete_twice_is_rejected_without_duplicate_movements(self):
         sale = self.make_sale_with_line(quantity=2)
+        StockMovement.objects.create(product=self.product, movement_type='receive', quantity=10)
         self.client.post(f'/api/sales/{sale.id}/complete/')
         movement_count = StockMovement.objects.filter(movement_type='sale').count()
 
@@ -629,6 +631,20 @@ class SaleApiTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(StockMovement.objects.filter(movement_type='sale').count(), movement_count)
+
+    def test_complete_rejects_selling_more_than_on_hand(self):
+        sale = self.make_sale_with_line(quantity=5)
+        StockMovement.objects.create(product=self.product, movement_type='receive', quantity=2)
+
+        response = self.client.post(f'/api/sales/{sale.id}/complete/')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('Insufficient stock', response.data.get('detail', ''))
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, Sale.STATUS_OPEN)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.quantity, 2)
+        self.assertFalse(StockMovement.objects.filter(movement_type='sale').exists())
 
     def test_void_open_sale_has_no_stock_side_effects(self):
         sale = self.make_sale_with_line(quantity=2)
@@ -733,6 +749,10 @@ class ZeroValueSaleTests(TestCase):
         self.product = Product.objects.create(name='Repack Item', price=Decimal('0.00'))
 
     def _create_zero_sale(self):
+        # Zero-value repack sales legitimately consume one unit of the stock
+        # product, so seed that unit (an out-of-stock repack item must not
+        # drive on_hand negative — the stock guard rejects it).
+        StockMovement.objects.create(product=self.product, movement_type='receive', quantity=1)
         sale = Sale.objects.create(cashier=self.cashier)
         SaleLine.objects.create(
             sale=sale,

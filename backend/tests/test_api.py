@@ -6,6 +6,7 @@ from rest_framework.test import APIClient
 
 from inventory.models import StockMovement
 from products.models import Product
+from suppliers.models import Supplier
 from sales.models import Payment, Sale, SaleLine
 
 User = get_user_model()
@@ -88,7 +89,8 @@ class ProductApiTests(TestCase):
         self.assertIn('name', response.data)
 
     def test_receive_adds_stock_and_records_a_movement(self):
-        product = Product.objects.create(name='Widget', price=Decimal('10.00'))
+        supplier = Supplier.objects.create(name='Acme')
+        product = Product.objects.create(name='Widget', price=Decimal('10.00'), supplier=supplier)
 
         response = self.client.post(
             f'/api/products/{product.id}/receive/',
@@ -104,7 +106,8 @@ class ProductApiTests(TestCase):
         self.assertEqual(movement.note, 'delivery')
 
     def test_receive_quantity_includes_prior_sales(self):
-        product = Product.objects.create(name='Widget')
+        supplier = Supplier.objects.create(name='Acme')
+        product = Product.objects.create(name='Widget', supplier=supplier)
         StockMovement.objects.create(product=product, movement_type='receive', quantity=10)
         StockMovement.objects.create(product=product, movement_type='sale', quantity=-3)
 

@@ -68,15 +68,18 @@ class ProductModelTests(TestCase):
         StockMovement.objects.create(product=product, movement_type='sale', quantity=-5)
         StockMovement.objects.create(product=product, movement_type='damage', quantity=-2)
         StockMovement.objects.create(product=product, movement_type='adjustment', quantity=1)
+        product.refresh_from_db()
 
         self.assertEqual(product.quantity, 6)
 
     def test_low_stock_boundary_is_inclusive(self):
         product = Product.objects.create(name='Widget', min_stock=5)
         StockMovement.objects.create(product=product, movement_type='receive', quantity=5)
+        product.refresh_from_db()
         self.assertTrue(product.is_low_stock())
 
         StockMovement.objects.create(product=product, movement_type='receive', quantity=1)
+        product.refresh_from_db()
         self.assertFalse(product.is_low_stock())
 
     def test_str_is_the_product_name(self):

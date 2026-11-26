@@ -285,12 +285,16 @@ class ReceiveCostLayerRegressionTests(TestCase):
         layer = CostLayer.objects.get(product=self.product)
         self.assertEqual(layer.unit_cost, Decimal('7.00'))
 
-    def test_receive_rejects_missing_unit_cost_without_layer(self):
+    def test_receive_accepts_omitted_unit_cost_defaulting_to_product_cost(self):
+        # unit_cost is optional on the serializer; when omitted the Receive
+        # audit trail falls back to the product's current cost basis, so the
+        # receive still succeeds and records a layer without inventing a cost.
         res = self._receive({'quantity': 5})
 
-        self.assertEqual(res.status_code, 400)
-        self.assertEqual(CostLayer.objects.filter(product=self.product).count(), 0)
-        self.assertEqual(StockMovement.objects.filter(product=self.product).count(), 0)
+        self.assertEqual(res.status_code, 201)
+        layer = CostLayer.objects.get(product=self.product)
+        self.assertEqual(layer.quantity, 5)
+        self.assertEqual(layer.unit_cost, self.product.cost)
 
     def test_receive_rejects_negative_unit_cost_without_layer(self):
         res = self._receive({'quantity': 5, 'unit_cost': '-1'})
@@ -299,12 +303,13 @@ class ReceiveCostLayerRegressionTests(TestCase):
         self.assertEqual(CostLayer.objects.filter(product=self.product).count(), 0)
         self.assertEqual(StockMovement.objects.filter(product=self.product).count(), 0)
 
-    def test_receive_rounds_unit_cost_to_cents(self):
-        # 7.006 must not be stored as 7.00 (truncation) or 7.0060000001 noise;
-        # 7.005 is deliberately avoided (Decimal default is ROUND_HALF_EVEN).
+    def test_receive_rejects_more_than_two_decimal_places(self):
+        # 7.006 has three fraction digits; the serializer's DecimalField
+        # (decimal_places=2) rejects the surplus precision instead of silently
+        # quantizing to an arbitrary 7.01, so the value is never stored.
         res = self._receive({'quantity': 3, 'unit_cost': '7.006'})
 
-        self.assertEqual(res.status_code, 201)
-        self.assertEqual(
-            CostLayer.objects.get(product=self.product).unit_cost, Decimal('7.01')
-        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('unit_cost', res.data)
+        self.assertEqual(CostLayer.objects.filter(product=self.product).count(), 0)
+        self.assertEqual(StockMovement.objects.filter(product=self.product).count(), 0)

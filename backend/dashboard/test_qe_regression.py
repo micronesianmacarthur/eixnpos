@@ -20,6 +20,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from unittest import mock
 
+from django.db import IntegrityError
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
@@ -280,13 +281,14 @@ class LowStockBoundaryTests(DashboardBase):
         self.assertIn('Exact', names)    # qty == min_stock is at-threshold
         self.assertNotIn('Above', names)
 
-    def test_net_ledger_negative_is_lowest_severity(self):
-        # Negative net on-hand (over-sold ledger) sorts first and is reported.
+    def test_drained_to_zero_is_lowest_severity(self):
+        # B2: on-hand can never go below zero, so a product drained exactly to
+        # zero is the lowest reachable on-hand and sorts first / is reported.
         drained = self.make_product('Drained', min_stock=2)
         StockMovement.objects.create(
             product=drained, movement_type='receive', quantity=3)
         StockMovement.objects.create(
-            product=drained, movement_type='sale', quantity=-5)
+            product=drained, movement_type='sale', quantity=-3)
         healthy = self.make_product('Healthy', min_stock=2)
         StockMovement.objects.create(
             product=healthy, movement_type='receive', quantity=10)
@@ -294,9 +296,21 @@ class LowStockBoundaryTests(DashboardBase):
         self.client.force_authenticate(self.manager)
         data = self.client.get('/api/dashboard/inventory/low-stock/').json()
         self.assertEqual(data['items'][0]['product_name'], 'Drained')
-        self.assertEqual(data['items'][0]['quantity_on_hand'], -2)
+        self.assertEqual(data['items'][0]['quantity_on_hand'], 0)
         self.assertNotIn(
             'Healthy', [i['product_name'] for i in data['items']])
+
+    def test_ledger_cannot_be_driven_negative(self):
+        # B2 regression: even with the application guard bypassed (a movement
+        # written straight to the ledger), over-drawing stock raises the
+        # Product.quantity >= 0 CHECK constraint — negative on-hand is
+        # impossible, not merely discouraged.
+        drained = self.make_product('Drained', min_stock=2)
+        StockMovement.objects.create(
+            product=drained, movement_type='receive', quantity=3)
+        with self.assertRaises(IntegrityError):
+            StockMovement.objects.create(
+                product=drained, movement_type='sale', quantity=-5)
 
 
 class LowStockQueryCountTests(DashboardBase):
