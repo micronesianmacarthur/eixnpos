@@ -701,6 +701,22 @@ class TransactionService:
         # terminal status and the stock movements inside one atomic block so
         # they all commit or roll back together.
         with db_transaction.atomic():
+            # Lock the sale row FIRST: re-fetch + FOR UPDATE the persisted row
+            # so two concurrent completes (e.g. different methods) cannot both
+            # record a Payment + stock movement against the same open sale. The
+            # authoritative ``is_open()`` check and the payment insert, ledger
+            # write, transition and stock movement below all run against the
+            # LOCKED instance (``locked``). A racing loser blocks here, then
+            # observes status already completed, raises, and its whole block
+            # rolls back — no orphan Payment, no double movement. The payment
+            # processor already ran above (outside this lock) so no network
+            # call is made under a row lock.
+            locked = Sale.objects.select_for_update().get(pk=sale.pk)
+            if not locked.is_open():
+                raise TransactionError(
+                    f'Cannot complete sale with status: {locked.status}'
+                )
+
             # R2b: dedupe is scoped to genuine SOURCE_SERVICE rows (clients can
             # only write SOURCE_UI via set_payment), so a client row can never
             # shadow the service-recorded payment. Source-filtering also matches
@@ -709,7 +725,7 @@ class TransactionService:
             # that key would violate the unique constraint (or silently skip),
             # so record under a fresh UUID — the genuine payment is never lost.
             existing = Payment.objects.filter(
-                sale=sale, idempotency_key=idempotency_key,
+                sale=locked, idempotency_key=idempotency_key,
                 source=Payment.SOURCE_SERVICE,
             ).select_for_update().first()
             if existing is None:
@@ -719,15 +735,15 @@ class TransactionService:
                 ).exists():
                     effective_key = str(uuid.uuid4())
                 Payment.objects.create(**{
-                    **payment_kwargs,
+                    **{k: (locked if k == 'sale' else v) for k, v in payment_kwargs.items()},
                     "idempotency_key": effective_key,
                 })
 
 
-            sale.status = Sale.STATUS_COMPLETED
-            sale.completed_at = timezone.now()
-            sale.transition_to(Sale.STATUS_COMPLETED)
-            sale.save(update_fields=['status', 'completed_at'])
+            locked.status = Sale.STATUS_COMPLETED
+            locked.completed_at = timezone.now()
+            locked.transition_to(Sale.STATUS_COMPLETED)
+            locked.save(update_fields=['status', 'completed_at'])
 
             # Record the invoice against the customer's ledger and re-derive the
             # balance. Done here — after the processor succeeded — so a failed
@@ -736,23 +752,23 @@ class TransactionService:
             if method == PaymentMethod.INVOICE:
                 try:
                     LedgerService.record_invoice_payment(
-                        sale.customer, amount,
-                        operator=sale.cashier, sale=sale,
+                        locked.customer, amount,
+                        operator=locked.cashier, sale=locked,
                         account_exception=account_exception,
                     )
                 except LedgerError as e:
                     raise TransactionError(str(e))
 
-            complete_sale_stock(sale, reference=f'sale:{sale.number}')
+            complete_sale_stock(locked, reference=f'sale:{locked.number}')
         # Generate receipt if requested
         if generate_receipt:
-            self.receipt_generator.generate_receipt(sale, format=receipt_format)
+            self.receipt_generator.generate_receipt(locked, format=receipt_format)
 
         # Clear current sale
         self._current_sale = None
         self._cart = None
 
-        return sale
+        return locked
 
     def finalize_sale(self, sale: Sale, generate_receipt: bool = True, receipt_format: str = "text", *, note: Optional[str] = None, needs_review: Optional[bool] = None) -> Sale:
         """Finalize a sale into the completed state.
@@ -786,23 +802,6 @@ class TransactionService:
         if not sale.lines.exists():
             raise TransactionError('Cannot complete sale with no items')
 
-        if sale.total > 0:
-            if not sale.payments.exists():
-                raise TransactionError('Payment required before completion')
-            # Verify total paid covers sale total
-            total_paid = sum(p.amount for p in sale.payments.all())
-            if total_paid < sale.total:
-                raise TransactionError(
-                    f'Total paid ({total_paid}) is less than sale total ({sale.total})'
-                )
-        elif sale.total == 0:
-            # Zero-total documented sale: payment isn't required, but the sale
-            # must carry a note explaining why (a silent zero-value completion
-            # would be indistinguishable from a bug). It is always marked for
-            # manager review.
-            if not sale.note:
-                raise TransactionError('A sales note is required for zero-value sales')
-
         # The caller may set the note directly on the passed instance (the
         # ``complete`` view does ``sale.note = ...`` before calling us) rather
         # than via the ``note`` kwarg. Capture it so it is applied to the
@@ -814,18 +813,40 @@ class TransactionService:
         # Complete the sale - validate availability, deduct stock and mark the
         # sale completed inside one atomic block.
         with db_transaction.atomic():
-            # Re-read + lock the persisted row: the authoritative is_open()
-            # must be against the DB (not the stale caller-supplied instance)
-            # and must be held across the transition + movement writes, so two
-            # concurrent completions cannot both post a stock decrement. An
-            # already-completed sale is refused here (idempotent completion:
-            # never a second ledger post). ``select_for_update`` is a no-op on
-            # SQLite (writers serialize); on PostgreSQL it is a real row lock.
+            # Re-read + lock the persisted row: the authoritative is_open() and
+            # payment-coverage checks must be against the DB (not the stale
+            # caller-supplied instance) and must be held across the transition +
+            # movement writes, so two concurrent completions cannot both post a
+            # stock decrement, and a sale that completes between the pre-lock
+            # guard and this write is refused here. An already-completed sale is
+            # refused (idempotent completion: never a second ledger post).
+            # ``select_for_update`` is a no-op on SQLite (writers serialize); on
+            # PostgreSQL it is a real row lock.
             locked = Sale.objects.select_for_update().get(pk=sale.pk)
             if not locked.is_open():
                 raise TransactionError(f'Cannot complete sale with status: {locked.status}')
             if not locked.lines.exists():
                 raise TransactionError('Cannot complete sale with no items')
+
+            # Payment-coverage validation lives on the LOCKED row: a payment
+            # might have been added, or the sale completed, between the guard at
+            # the top of this method and the lock.
+            if locked.total > 0:
+                if not locked.payments.exists():
+                    raise TransactionError('Payment required before completion')
+                total_paid = sum(p.amount for p in locked.payments.all())
+                if total_paid < locked.total:
+                    raise TransactionError(
+                        f'Total paid ({total_paid}) is less than sale total ({locked.total})'
+                    )
+            elif locked.total == 0:
+                # Zero-total documented sale: payment isn't required, but the
+                # sale must carry a note explaining why (a silent zero-value
+                # completion would be indistinguishable from a bug). It is always
+                # marked for manager review.
+                if not note:
+                    raise TransactionError('A sales note is required for zero-value sales')
+
             locked.transition_to(Sale.STATUS_COMPLETED)
             if locked.total == 0:
                 locked.needs_review = True
@@ -1032,6 +1053,23 @@ class TransactionService:
             RefundValidationError: amount > captured or > line capacity (400).
             RefundConflictError: voided payment or double refund (409).
         """
+        # Verify manager approval (explicit flag or valid credentials). Done
+        # ABOVE the atomic: authenticate() runs PBKDF2 (~10² ms of CPU) and must
+        # not sit under the sale-row lock. It does not depend on sale state, so
+        # computing it before locking is safe; the boolean result is what the
+        # locked block below consumes.
+        effective_manager_approved = manager_approved
+        if manager_credentials:
+            username = manager_credentials.get('username')
+            password = manager_credentials.get('password')
+            if username and password:
+                user = authenticate(username=username, password=password)
+                if user and is_manager(user):
+                    effective_manager_approved = True
+
+        if not effective_manager_approved:
+            raise TransactionError('Manager approval required for refunds')
+
         with db_transaction.atomic():
             try:
                 sale = Sale.objects.select_for_update().get(pk=sale_id)
@@ -1042,19 +1080,6 @@ class TransactionService:
                 raise TransactionError(
                     f'Can only refund completed sales, current status: {sale.status}'
                 )
-
-            # Verify manager approval (explicit flag or valid credentials).
-            effective_manager_approved = manager_approved
-            if manager_credentials:
-                username = manager_credentials.get('username')
-                password = manager_credentials.get('password')
-                if username and password:
-                    user = authenticate(username=username, password=password)
-                    if user and is_manager(user):
-                        effective_manager_approved = True
-
-            if not effective_manager_approved:
-                raise TransactionError('Manager approval required for refunds')
 
             lines = list(
                 SaleLine.objects.select_for_update().filter(sale=sale).order_by('id')

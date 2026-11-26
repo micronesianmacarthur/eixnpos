@@ -502,6 +502,16 @@ class SaleViewSet(viewsets.ModelViewSet):
 
         try:
             with db_transaction.atomic():
+                # Re-fetch + lock the sale row inside the atomic: the open-status
+                # guard above ran on the view's (unlocked) instance, so a
+                # completion landing between that guard and this write would
+                # otherwise append a Payment to an already-completed sale. The
+                # authoritative is_open() check now runs against the LOCKED row;
+                # the loser 400s and its block rolls back (no orphan Payment).
+                sale = Sale.objects.select_for_update().get(pk=sale.pk)
+                if not sale.is_open():
+                    return Response({'detail': 'sale not open'}, status=400)
+
                 # Dedupe applies only to a client-supplied key (keyless tenders
                 # never replay). Scope to (sale, key) so retries re-read their
                 # own sale's row, never a sibling's. Split replay reads by
@@ -569,6 +579,23 @@ class SaleViewSet(viewsets.ModelViewSet):
         key = f'sale:{sale.id}:complete:backcompat'
         try:
             with db_transaction.atomic():
+                # Lock the sale row FIRST and re-validate against the LOCKED
+                # row, mirroring set_payment: a tender recorded by set_payment,
+                # or a completion, landing concurrently must suppress this
+                # backcompat cash tender instead of double-recording money. If
+                # any non-voided payment already covers the sale, or the sale
+                # is no longer open, defer to that payment/completion (the
+                # caller's finalize_sale re-validates coverage on the locked
+                # row).
+                sale = Sale.objects.select_for_update().get(pk=sale.pk)
+                if not sale.is_open():
+                    return True  # completed/voided/refunded; nothing to add
+                covered = Payment.objects.filter(
+                    sale=sale, voided=False
+                ).exists()
+                if covered:
+                    return True  # a concurrent tender already paid this sale
+
                 # R2a: scope the dedupe to THIS sale (a key is only meaningful on
                 # one sale) AND to genuine complete-flow rows, so a client row
                 # that squats the backcompat key can never shadow the real cash
