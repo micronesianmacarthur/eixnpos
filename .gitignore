@@ -11,3 +11,10 @@ backend/db.sqlite3
 # Server runtime logs (audit trail lives here in dev; never commit them).
 server.log
 *.log
+
+# Operator-generated change/incident notes. These may carry per-deploy
+# credential state, so they must never be committed anywhere in this repo.
+CHANGE_LOGIN_FIX_*.md
+
+# SQLite sidecar files (*.sqlite3 already ignored above).
+*.sqlite3-*
