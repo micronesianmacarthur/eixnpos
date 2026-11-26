@@ -3,13 +3,14 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.contrib.auth import authenticate
 from django.db import transaction as db_transaction, IntegrityError
+from django.db.models import Q
 from django.utils import timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import uuid
 
 from .models import Sale, SaleLine, Payment
 from .serializers import SaleSerializer, SaleLineSerializer, PaymentSerializer
-from .services import TransactionService, CartService, CartError, CartItemNotFoundError, InvalidQuantityError, SaleNotModifiableError, TransactionError, InsufficientPaymentError, InvalidPaymentMethodError, complete_sale_stock
+from .services import TransactionService, CartService, CartError, CartItemNotFoundError, InvalidQuantityError, SaleNotModifiableError, TransactionError, InsufficientPaymentError, InvalidPaymentMethodError, RefundValidationError, RefundConflictError, VoidConflictError, complete_sale_stock
 from .payments import PaymentMethod, get_processor
 from products.models import Product
 from customers.models import Customer
@@ -25,6 +26,19 @@ class SaleViewSet(viewsets.ModelViewSet):
     queryset = Sale.objects.all()
     serializer_class = SaleSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        # A manager/admin may operate on any sale. A cashier is scoped to the
+        # sales they handle: open/pending sales (which they run at the POS) and
+        # completed sales they themselves recorded. This is both a data-scope
+        # guard and the substrate for the B2 authorisation gate on voiding a
+        # completed sale (only managers/admin may void a financial sale).
+        if is_manager(self.request.user):
+            return Sale.objects.all()
+        return Sale.objects.filter(
+            Q(status__in=[Sale.STATUS_PENDING, Sale.STATUS_OPEN])
+            | Q(cashier=self.request.user)
+        )
     
     # Transactions are instantiated per-request (see checkout/void handlers).
     # Do NOT instantiate a TransactionService at import time: its constructor
@@ -605,29 +619,39 @@ class SaleViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def void(self, request, pk=None):
         sale = self.get_object()
-        if sale.status == Sale.STATUS_COMPLETED:
-            return Response({'detail': 'cannot void completed'}, status=400)
-        if sale.status == Sale.STATUS_REFUNDED:
-            return Response({'detail': 'cannot void refunded'}, status=400)
-        
-        # Use TransactionService to void
+
+        # Void of a *completed* sale is a financial reversal (tender
+        # neutralised, receivable reversed, goods restocked) — the same
+        # operation as a refund — so it carries the same manager/admin gate
+        # (B2). Voiding an open/pending sale (no money moved yet) stays open to
+        # the cashier who is running it at the POS.
+        if sale.status == Sale.STATUS_COMPLETED and not is_manager(request.user):
+            return Response(
+                {'detail': 'Only managers and admins can void a completed sale.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Void is allowed on pending/open/completed sales. A voided or refunded
+        # sale is rejected by the service as a 409 conflict so duplicate void
+        # requests surface instead of being silently absorbed.
         try:
             ts = TransactionService()
             ts._current_sale = sale
             ts._cart = CartService(sale)
             ts.void_sale()
+        except VoidConflictError as e:
+            return Response({'detail': str(e)}, status=status.HTTP_409_CONFLICT)
         except TransactionError as e:
-            return Response({'detail': str(e)}, status=400)
-        
+            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        sale.refresh_from_db()
         return Response(SaleSerializer(sale).data)
 
     @action(detail=True, methods=['post'])
     def refund(self, request, pk=None):
-        """Refund a completed sale."""
+        """Refund a completed sale (full, or partial per-line line items)."""
         sale = self.get_object()
-        if sale.status != Sale.STATUS_COMPLETED:
-            return Response({'detail': 'can only refund completed sales'}, status=400)
-        
+
         # manager gating
         manager_username = request.data.get('manager_username')
         manager_password = request.data.get('manager_password')
@@ -636,20 +660,28 @@ class SaleViewSet(viewsets.ModelViewSet):
             cand = authenticate(username=manager_username, password=manager_password)
             if cand and is_manager(cand):
                 manager_approved = True
-        
+
         if not manager_approved:
             return Response({'detail': 'manager required'}, status=403)
-        
+
         reason = request.data.get('reason', '')
-        
+        items = request.data.get('items')
+        if items is not None and not isinstance(items, list):
+            return Response({'detail': 'items must be a list'}, status=400)
+
         try:
             ts = TransactionService()
             refunded_sale = ts.refund_sale(
                 sale_id=sale.id,
                 reason=reason,
-                manager_approved=manager_approved
+                manager_approved=manager_approved,
+                items=items,
             )
+        except (RefundConflictError, VoidConflictError) as e:
+            return Response({'detail': str(e)}, status=status.HTTP_409_CONFLICT)
+        except (RefundValidationError,) as e:
+            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except TransactionError as e:
-            return Response({'detail': str(e)}, status=400)
-        
+            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
         return Response(SaleSerializer(refunded_sale).data)

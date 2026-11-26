@@ -138,7 +138,7 @@ def compute_cash_sales(shift: Shift) -> Dict[str, Any]:
         Sale.objects
         .filter(scope)
         .filter(status__in=(Sale.STATUS_COMPLETED, Sale.STATUS_REFUNDED))
-        .prefetch_related("payments")
+        .prefetch_related("payments", "refunds")
     )
 
     gross = Decimal("0")
@@ -151,6 +151,13 @@ def compute_cash_sales(shift: Shift) -> Dict[str, Any]:
             for payment in sale.payments.all():
                 for tender, amount in _payment_breakdown(payment, _q(payment.amount)).items():
                     by_tender[tender] = by_tender.get(tender, Decimal("0")) + amount
+            # A partial refund leaves the sale ``completed``: the tenders were
+            # taken and then partly returned, so the drawer keeps only the net.
+            # Refund documents carry the tender that was given back.
+            for refund in sale.refunds.all():
+                tender = refund.method or "other"
+                by_tender[tender] = by_tender.get(tender, Decimal("0")) - _q(refund.amount)
+                refunds += _q(refund.amount)
         else:  # refunded — net cash retained is zero; the refund is surfaced below.
             refunds += _q(sale.total)
 

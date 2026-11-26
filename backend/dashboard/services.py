@@ -27,7 +27,7 @@ from accounts.roles import has_manager_role
 from business.models import BusinessInfo
 from inventory.models import StockMovement
 from products.models import Product
-from sales.models import Payment, Sale, SaleLine
+from sales.models import Payment, Refund, Sale, SaleLine
 from sales.cash import compute_cash_sales
 from sessions.models import Session, business_tzinfo, local_date_of
 
@@ -120,14 +120,27 @@ def _range_aggregates(start_utc, end_utc) -> Dict[str, Any]:
         sale__status__in=SETTLED_STATUSES,
         sale__created_at__gte=start_utc,
         sale__created_at__lt=end_utc,
+        voided=False,
     ).aggregate(
         invoice_count=Count('id', filter=Q(method=Payment.METHOD_INVOICE)),
         invoice_total=Sum('amount', filter=Q(method=Payment.METHOD_INVOICE)),
     )
     # Cash figure from the shared canonical calculation (sales/cash.py), so the
     # dashboard, shift close, and Z-summary cannot disagree on the same shift.
-    # A refunded sale nets to zero retained cash here.
+    # A refunded sale nets to zero retained cash here, and partial refunds are
+    # subtracted per tender inside the canonical calculation.
     cash_sales = compute_cash_sales((start_utc, end_utc))['by_tender'].get('cash', Decimal('0'))
+    # Reconcile invoice receivables against what was actually credited back:
+    # refund documents record the tender returned, so the outstanding invoice
+    # total is the tendered total minus the invoice refunds.
+    refunds = Refund.objects.filter(
+        sale__status__in=SETTLED_STATUSES,
+        sale__created_at__gte=start_utc,
+        sale__created_at__lt=end_utc,
+    ).aggregate(
+        cash=Sum('amount', filter=Q(method=Payment.METHOD_CASH)),
+        invoice=Sum('amount', filter=Q(method=Payment.METHOD_INVOICE)),
+    )
 
     sales_count = agg['sales_count'] or 0
     revenue = _pq(agg['revenue'])
@@ -138,7 +151,9 @@ def _range_aggregates(start_utc, end_utc) -> Dict[str, Any]:
         'revenue': _money(revenue),
         'cash_sales': _money(cash_sales),
         'invoice_count': payments['invoice_count'] or 0,
-        'invoice_total': _money(_pq(payments['invoice_total'])),
+        'invoice_total': _money(
+            _pq(payments['invoice_total']) - _pq(refunds['invoice'])
+        ),
         'void_count': agg['void_count'] or 0,
         'refund_count': agg['refund_count'] or 0,
         'avg_basket': _money(avg_basket),

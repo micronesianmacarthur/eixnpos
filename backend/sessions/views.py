@@ -9,6 +9,7 @@ from decimal import Decimal
 from .models import Session, Register, local_date_of
 from .serializers import SessionSerializer
 from sales.cash import compute_cash_sales
+from sales.models import Refund, Sale, Payment
 from sales.cash_count import calculate_totals, calculate_removal
 from sales.summary import compute_session_summary
 

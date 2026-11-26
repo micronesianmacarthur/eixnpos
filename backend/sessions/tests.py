@@ -10,7 +10,7 @@ from rest_framework.test import APIClient
 
 from business.models import BusinessInfo
 from products.models import Product
-from sales.models import Payment, Sale
+from sales.models import Payment, Refund, Sale, SaleLine
 from suppliers.models import Supplier
 
 from .models import Register, Session
@@ -133,6 +133,34 @@ class SessionApiTests(TestCase):
         self.assertEqual(session.expected_cash, Decimal('20.00'))
         self.assertEqual(session.counted_cash, Decimal('20.00'))
         self.assertEqual(session.sales_total, Decimal('50.00'))
+        self.assertEqual(session.variance, Decimal('0.00'))
+
+    def test_close_subtracts_partial_cash_refund_from_expected_cash(self):
+        # S4: a partial cash refund is paid out of the drawer, so expected cash
+        # must drop by the refunded amount or the close always reports a
+        # variance.
+        session = self.make_session(starting_cash=Decimal('0.00'))
+        sale = self.make_completed_sale(Decimal('50.00'), method='cash', amount=Decimal('50.00'))
+        payment = sale.payments.get(method='cash')
+        line = SaleLine.objects.create(
+            sale=sale, product=self.product, quantity=1, unit_price=Decimal('50.00'),
+        )
+        Refund.objects.create(
+            sale=sale, line=line, payment=payment, quantity=0,
+            amount=Decimal('10.00'), method='cash',
+        )
+
+        response = self.client.post(
+            f'/api/sessions/{session.id}/close/',
+            {'counts': {'twenties': 2}},  # 40.00 in the drawer
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        session.refresh_from_db()
+        # 50.00 came in, 10.00 went back out => 40.00 expected.
+        self.assertEqual(session.expected_cash, Decimal('40.00'))
+        self.assertEqual(session.counted_cash, Decimal('40.00'))
         self.assertEqual(session.variance, Decimal('0.00'))
 
     def test_close_twice_is_rejected(self):
