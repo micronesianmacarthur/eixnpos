@@ -89,6 +89,21 @@ function formatMoney(value: string | number): string {
   return currency.format(toNumber(value));
 }
 
+/**
+ * Map a rejected invoice tender to a friendly, actionable message.
+ * The credit-limit breach (OverLimitError, surfaced as a 400 detail) is the
+ * common dead-end today: the backend text already names the limit, and we add
+ * the one action the operator can actually take. Any other rejection is shown
+ * verbatim so no server reason is lost.
+ */
+function invoicePayErrorMessage(err: unknown): string {
+  const detail = err instanceof ApiError ? err.message : '';
+  if (err instanceof ApiError && err.status === 400 && /credit\s*limit|exceed/i.test(detail)) {
+    return `${detail} An admin must raise this customer's credit limit.`;
+  }
+  return detail || 'Failed to record payment';
+}
+
 function isManagerRole(role: string): boolean {
   return role === 'manager' || role === 'admin';
 }
@@ -120,8 +135,6 @@ export default function SalesPage() {
   const [payMethod, setPayMethod] = useState('cash');
   const [payTendered, setPayTendered] = useState('');
   const [payCustomer, setPayCustomer] = useState('');
-  const [payManagerUser, setPayManagerUser] = useState('');
-  const [payManagerPass, setPayManagerPass] = useState('');
   const [payError, setPayError] = useState('');
   const [paySaving, setPaySaving] = useState(false);
   const [paymentRecorded, setPaymentRecorded] = useState(false);
@@ -338,10 +351,6 @@ export default function SalesPage() {
         return;
       }
       payload.customer = Number(payCustomer);
-      if (payManagerUser || payManagerPass) {
-        payload.manager_username = payManagerUser;
-        payload.manager_password = payManagerPass;
-      }
     }
     // R1: one idempotency_key per tender submission attempt, reused for any
     // retry of this attempt (double-click / network error) so the back-end
@@ -357,12 +366,9 @@ export default function SalesPage() {
       // This tender is now recorded — the next submission is a NEW tender and
       // must get a fresh key.
       resetTenderKey();
-      // reset manager creds
-      setPayManagerUser('');
-      setPayManagerPass('');
       void updated;
     } catch (err) {
-      setPayError(err instanceof ApiError ? err.message : 'Failed to record payment');
+      setPayError(method === 'invoice' ? invoicePayErrorMessage(err) : (err instanceof ApiError ? err.message : 'Failed to record payment'));
     } finally {
       setPaySaving(false);
     }
@@ -396,10 +402,6 @@ export default function SalesPage() {
         if (method === 'invoice') {
           if (!payCustomer) throw new Error('Select a customer for invoice payment.');
           payload.customer = Number(payCustomer);
-          if (payManagerUser || payManagerPass) {
-            payload.manager_username = payManagerUser;
-            payload.manager_password = payManagerPass;
-          }
         }
         // R1: the auto-recorded tender shares the same per-tender key as a
         // manual record would, so a replayed/duplicated submission of this
@@ -424,11 +426,11 @@ export default function SalesPage() {
       resetTenderKey();
       await loadProducts();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : err instanceof Error ? err.message : 'Failed to complete sale');
+      setError(payMethod === 'invoice' ? invoicePayErrorMessage(err) : (err instanceof ApiError ? err.message : err instanceof Error ? err.message : 'Failed to complete sale'));
     } finally {
       setBusy(false);
     }
-  }, [sale, paymentRecorded, payMethod, payTendered, payCustomer, payManagerUser, payManagerPass, saleNote, getTenderKey, resetTenderKey, loadProducts]);
+  }, [sale, paymentRecorded, payMethod, payTendered, payCustomer, saleNote, getTenderKey, resetTenderKey, loadProducts]);
 
   const voidSale = useCallback(async () => {
     if (!sale) {
@@ -821,27 +823,6 @@ export default function SalesPage() {
                 Available credit: {formatMoney(availableCredit)}
                 {availableCredit < 0 ? ' (over limit)' : ''}
               </p>
-            )}
-            {!isManager && payCustomer && (
-              <>
-                <label className="mm-field">
-                  <span>Manager username</span>
-                  <input className="mm-input"
-                    type="text"
-                    value={payManagerUser}
-                    onChange={(e) => setPayManagerUser(e.target.value)}
-                    placeholder="Manager approval required for invoice"
-                  />
-                </label>
-                <label className="mm-field">
-                  <span>Manager password</span>
-                  <input className="mm-input"
-                    type="password"
-                    value={payManagerPass}
-                    onChange={(e) => setPayManagerPass(e.target.value)}
-                  />
-                </label>
-              </>
             )}
 
             <div className="mm-field">
