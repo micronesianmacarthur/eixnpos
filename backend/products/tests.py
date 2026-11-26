@@ -3,7 +3,8 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 from suppliers.models import Supplier
 from products.models import Product
-from inventory.models import StockMovement
+from inventory.models import StockMovement, CostLayer
+from decimal import Decimal
 
 User = get_user_model()
 
@@ -21,10 +22,84 @@ class InventoryTests(TestCase):
         self.assertEqual(self.product.quantity, 7)
 
     def test_receive_endpoint(self):
-        res = self.client.post(f'/api/products/{self.product.id}/receive/', {'quantity': 4, 'note': 'delivery'})
+        res = self.client.post(
+            f'/api/products/{self.product.id}/receive/',
+            {'quantity': 4, 'note': 'delivery', 'unit_cost': '7.50'},
+        )
         self.assertEqual(res.status_code, 201)
         self.assertEqual(self.product.quantity, 4)
         self.assertTrue(StockMovement.objects.filter(product=self.product, movement_type='receive').exists())
+
+    def test_receive_creates_cost_layer(self):
+        res = self.client.post(
+            f'/api/products/{self.product.id}/receive/',
+            {'quantity': 10, 'unit_cost': '7.00'},
+        )
+        self.assertEqual(res.status_code, 201)
+        layer = CostLayer.objects.get(product=self.product)
+        self.assertEqual(layer.quantity, 10)
+        self.assertEqual(layer.unit_cost, Decimal('7.00'))
+        self.assertIsNotNone(layer.received_at)
+        # layer source reference falls back to note when absent
+        self.assertEqual(layer.source_reference, '')
+        # stock quantity and cost-layer quantity stay in step for the receive
+        m = StockMovement.objects.get(product=self.product, movement_type='receive')
+        self.assertEqual(m.quantity, layer.quantity)
+
+    def test_receive_source_reference_from_note(self):
+        res = self.client.post(
+            f'/api/products/{self.product.id}/receive/',
+            {'quantity': 3, 'unit_cost': '5.00', 'note': 'PO-1234'},
+        )
+        self.assertEqual(res.status_code, 201)
+        layer = CostLayer.objects.get(product=self.product)
+        self.assertEqual(layer.source_reference, 'PO-1234')
+
+    def test_receive_explicit_source_reference(self):
+        res = self.client.post(
+            f'/api/products/{self.product.id}/receive/',
+            {'quantity': 3, 'unit_cost': '5.00', 'source_reference': 'INV-99'},
+        )
+        self.assertEqual(res.status_code, 201)
+        layer = CostLayer.objects.get(product=self.product)
+        self.assertEqual(layer.source_reference, 'INV-99')
+
+    def test_receive_rejects_missing_unit_cost(self):
+        # missing and blank unit_cost → rejected (multipart/JSON both)
+        for payload in [{'quantity': 4}, {'quantity': 4, 'unit_cost': ''}]:
+            res = self.client.post(f'/api/products/{self.product.id}/receive/', payload)
+            self.assertEqual(res.status_code, 400)
+            self.assertIn('Unit cost', res.data['detail'])
+        res = self.client.post(
+            f'/api/products/{self.product.id}/receive/',
+            {'quantity': 4, 'unit_cost': None},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('Unit cost', res.data['detail'])
+        # nothing recorded on rejected receives
+        self.assertEqual(StockMovement.objects.filter(product=self.product).count(), 0)
+        self.assertEqual(CostLayer.objects.filter(product=self.product).count(), 0)
+
+    def test_receive_rejects_invalid_unit_cost(self):
+        for bad in ['abc', '-1', '1.5.5']:
+            res = self.client.post(
+                f'/api/products/{self.product.id}/receive/',
+                {'quantity': 4, 'unit_cost': bad},
+            )
+            self.assertEqual(res.status_code, 400, f'unit_cost={bad!r}')
+        self.assertEqual(StockMovement.objects.filter(product=self.product).count(), 0)
+        self.assertEqual(CostLayer.objects.filter(product=self.product).count(), 0)
+
+    def test_receive_rejects_zero_or_negative_quantity(self):
+        for bad in [0, -3]:
+            res = self.client.post(
+                f'/api/products/{self.product.id}/receive/',
+                {'quantity': bad, 'unit_cost': '5.00'},
+            )
+            self.assertEqual(res.status_code, 400, f'quantity={bad}')
+        self.assertEqual(StockMovement.objects.filter(product=self.product).count(), 0)
+        self.assertEqual(CostLayer.objects.filter(product=self.product).count(), 0)
 
     def test_low_stock(self):
         StockMovement.objects.create(product=self.product, movement_type='receive', quantity=3)

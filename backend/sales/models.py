@@ -127,11 +127,26 @@ class SaleLine(models.Model):
     product = models.ForeignKey('products.Product', on_delete=models.PROTECT)
     quantity = models.IntegerField(default=1)
     unit_price = models.DecimalField(max_digits=12, decimal_places=2)
+    # Snapshot of the product's cost at sale time, captured when the line is
+    # created so later edits to Product.cost never restate historical COGS.
+    # NULL for pre-migration rows (no reliable historical source).
+    unit_cost = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     discount_type = models.CharField(max_length=16, choices=DISCOUNT_CHOICES, default=DISCOUNT_NONE)
     discount_value = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     discount_authorizer = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name='authorized_discounts')
     line_total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
+    def save(self, *args, **kwargs):
+        # Snapshot the product's cost at the moment the line is created so
+        # later edits to Product.cost never restate historical COGS. Living in
+        # the model's save() (not a call site) guarantees every creation path —
+        # cart/transaction services, the admin form, imports, direct .create()
+        # — captures it. Only on FIRST insert: an explicit unit_cost is
+        # respected and updates never rewrite an existing snapshot.
+        if self._state.adding and self.unit_cost is None:
+            self.unit_cost = self.product.cost
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f'{self.product} x{self.quantity}'

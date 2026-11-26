@@ -1,4 +1,5 @@
 from django.db import models
+from django.utils import timezone
 from products.models import Product
 
 MOVEMENT_TYPES = [('sale','sale'),('receive','receive'),('damage','damage'),('adjustment','adjustment')]
@@ -16,3 +17,28 @@ class StockMovement(models.Model):
 
     def __str__(self):
         return f"{self.product} {self.movement_type} {self.quantity}"
+
+
+class CostLayer(models.Model):
+    """A received-batch cost layer for inventory valuation.
+
+    Each row represents one batch of a product received at a given unit cost,
+    so weighted-average cost can be derived from the layers without reading
+    the product's *current* ``Product.cost`` (which would restate prior
+    periods whenever the cost is edited). ``source_reference`` ties the layer
+    back to the originating receive (e.g. a StockMovement reference or a
+    future receipt number).
+    """
+
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='cost_layers')
+    quantity = models.IntegerField()
+    unit_cost = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    received_at = models.DateTimeField(default=timezone.now)
+    source_reference = models.CharField(max_length=128, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['received_at']
+
+    def __str__(self):
+        return f"{self.product} x{self.quantity} @ {self.unit_cost}"

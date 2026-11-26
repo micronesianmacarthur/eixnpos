@@ -32,10 +32,11 @@ interface Product {
 
 interface ReceiveForm {
   quantity: string;
+  unit_cost: string;
   note: string;
 }
 
-const EMPTY_RECEIVE: ReceiveForm = { quantity: '1', note: '' };
+const EMPTY_RECEIVE: ReceiveForm = { quantity: '1', unit_cost: '', note: '' };
 
 function stockStatus(product: Product): { label: string; badge: string } {
   if (product.quantity === 0) {
@@ -154,13 +155,23 @@ export default function InventoryPage() {
       return;
     }
 
+    const unitCost = Number(receiveForm.unit_cost);
+    if (!Number.isFinite(unitCost) || unitCost < 0) {
+      setReceiveError('Enter a unit cost (0 or greater).');
+      return;
+    }
+
     setReceiveSaving(true);
     setReceiveError('');
 
     try {
       await apiFetch(`/api/products/${receiveProduct.id}/receive/`, {
         method: 'POST',
-        body: JSON.stringify({ quantity: qty, note: receiveForm.note.trim() }),
+        body: JSON.stringify({
+          quantity: qty,
+          unit_cost: receiveForm.unit_cost.trim(),
+          note: receiveForm.note.trim(),
+        }),
       });
       await loadProducts();
       setReceiveOpen(false);
@@ -396,6 +407,22 @@ export default function InventoryPage() {
                     }
                     required
                     autoFocus
+                  />
+                </label>
+
+                <label className="mm-field">
+                  <span className="mm-label">Unit cost</span>
+                  <input
+                    className="mm-input"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={receiveForm.unit_cost}
+                    onChange={(e) =>
+                      setReceiveForm((c) => ({ ...c, unit_cost: e.target.value }))
+                    }
+                    placeholder={receiveProduct.cost}
+                    required
                   />
                 </label>
 

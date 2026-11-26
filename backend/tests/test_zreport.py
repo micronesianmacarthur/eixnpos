@@ -85,6 +85,28 @@ class ZReportLineTests(TestCase):
         self.assertTrue(pdf.startswith(b'%PDF'))
         self.assertGreater(len(pdf), 500)
 
+    def test_lines_report_lines_without_cost_snapshot(self):
+        # A legacy line with no snapshot is excluded from COGS and its unknown
+        # cost is surfaced on the report rather than silently restated.
+        self.make_sale(Decimal('40.00'))
+        SaleLine.objects.filter(sale__cashier=self.cashier).update(unit_cost=None)
+
+        data = compute_session_summary(self.session.id)
+        lines = build_zreport_lines(data)
+        text = '\n'.join(lines)
+
+        self.assertIn('Cost of goods:        0.00', text)
+        self.assertIn('WARNING: sale lines lacking a cost snapshot were excluded from cost of goods.', text)
+
+    def test_lines_omit_warning_when_all_costs_are_snapshotted(self):
+        self.make_sale(Decimal('40.00'))
+
+        data = compute_session_summary(self.session.id)
+        lines = build_zreport_lines(data)
+        text = '\n'.join(lines)
+
+        self.assertNotIn('lacking a cost snapshot', text)
+
     def test_session_zreport_pdf_returns_valid_pdf(self):
         self.make_sale(Decimal('40.00'))
         pdf = build_session_zreport_pdf(self.session.id, store_name='Boots & Brew')

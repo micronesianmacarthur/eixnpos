@@ -164,6 +164,56 @@ class ComputeSessionSummaryTests(TestCase):
             compute_session_summary(999999)
 
 
+class CogsUnitCostSnapshotTests(ComputeSessionSummaryTests):
+    """COGS must come from SaleLine.unit_cost, not the product's current cost."""
+
+    def test_editing_product_cost_after_sale_does_not_change_cogs_or_profit(self):
+        # Closed-period stability: a later edit to Product.cost must never
+        # restate an already-completed sale's COGS or profit.
+        self.make_sale(Decimal('100.00'), Decimal('100.00'), cost_qty=2)  # snapshots cost 4.00
+
+        before = compute_session_summary(self.session.id)
+        self.assertEqual(before['summary']['cost_of_goods'], '8.00')
+        self.assertEqual(before['summary']['profit_loss'], '92.00')
+
+        Product.objects.filter(pk=self.product.pk).update(cost=Decimal('40.00'))
+
+        after = compute_session_summary(self.session.id)
+        self.assertEqual(after['summary']['cost_of_goods'], '8.00')
+        self.assertEqual(after['summary']['profit_loss'], '92.00')
+        self.assertEqual(after['summary']['cost_of_goods'], before['summary']['cost_of_goods'])
+        self.assertEqual(after['summary']['profit_loss'], before['summary']['profit_loss'])
+
+    def test_cogs_uses_sale_line_unit_cost_snapshot(self):
+        # Prove COGS is derived from the line's unit_cost snapshot, not the
+        # product's current cost.
+        self.make_sale(Decimal('100.00'), Decimal('100.00'), cost_qty=3)  # snapshots cost 4.00
+        SaleLine.objects.filter(sale__cashier=self.cashier).update(unit_cost=Decimal('5.00'))
+
+        result = compute_session_summary(self.session.id)
+
+        self.assertEqual(result['summary']['cost_of_goods'], '15.00')  # 5.00 * 3, not 4.00 * 3
+        self.assertEqual(result['warnings']['missing_cost_lines'], 0)
+
+    def test_line_without_cost_snapshot_is_excluded_and_reported(self):
+        # Legacy pre-migration rows carry unit_cost NULL. Their cost is
+        # unknown, so exclude it from COGS and report it — and even editing the
+        # product cost afterward must not silently restate the closed period.
+        self.make_sale(Decimal('50.00'), Decimal('50.00'), cost_qty=1)
+        SaleLine.objects.filter(sale__cashier=self.cashier).update(unit_cost=None)
+
+        result = compute_session_summary(self.session.id)
+
+        self.assertEqual(result['summary']['cost_of_goods'], '0.00')
+        self.assertEqual(result['summary']['sale_count'], 1)  # revenue still counted
+        self.assertEqual(result['warnings']['missing_cost_lines'], 1)
+
+        Product.objects.filter(pk=self.product.pk).update(cost=Decimal('7.00'))
+        after = compute_session_summary(self.session.id)
+        self.assertEqual(after['summary']['cost_of_goods'], '0.00')
+        self.assertEqual(after['warnings']['missing_cost_lines'], 1)
+
+
 class NonNumericAmountToleranceTests(TestCase):
     """Unit tests for the non-numeric coercion helpers (edge-case handling)."""
 

@@ -97,6 +97,8 @@ def build_zreport_lines(data: Dict[str, Any]) -> List[str]:
     warnings = data.get("warnings") or {}
     if any(int(warnings.get(k, 0)) for k in ("invalid_sale_amounts", "invalid_line_amounts", "invalid_payment_amounts")):
         lines.append("WARNING: non-numeric amounts were coerced to zero; see system log.")
+    if int(warnings.get("missing_cost_lines", 0)):
+        lines.append("WARNING: sale lines lacking a cost snapshot were excluded from cost of goods.")
     return lines
 
 

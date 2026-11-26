@@ -13,7 +13,11 @@ Edge cases are handled deliberately:
 * an empty session (no completed sales in the window) produces zeroed totals
   rather than raising;
 * non-numeric / missing amount values are coerced to ``Decimal('0')`` and
-  counted, so a single corrupt row cannot break the whole report.
+  counted, so a single corrupt row cannot break the whole report;
+* cost of goods is computed from each line's ``unit_cost`` (the cost snapshot
+  taken at sale time), so later edits to a product's current cost never
+  restate a closed period. Legacy lines with no snapshot contribute zero to
+  COGS and are reported via ``missing_cost_lines``.
 
 The returned structure is JSON-serializable (monetary figures as fixed 2-dp
 strings, counts as ints) so it can be handed straight to the summary UI or
@@ -122,7 +126,14 @@ def _read_sales(window: SessionWindow) -> pd.DataFrame:
 
 
 def _read_lines(window: SessionWindow) -> pd.DataFrame:
-    """Load sale lines (with product cost and category) into a DataFrame."""
+    """Load sale lines (with cost snapshot, product cost, category) into a DataFrame.
+
+    ``unit_cost`` is the sale-time cost snapshot captured when the line was
+    created; ``product__cost`` is the product's *current* cost, kept only as the
+    fallback/report reference for legacy rows that predate the snapshot
+    (their ``unit_cost`` is null). COGS must be derived from ``unit_cost`` so
+    later edits to ``Product.cost`` never restate closed periods.
+    """
     from sales.models import Sale, SaleLine
     qs = (
         SaleLine.objects
@@ -134,6 +145,7 @@ def _read_lines(window: SessionWindow) -> pd.DataFrame:
             'quantity',
             'unit_price',
             'discount_amount',
+            'unit_cost',
             'product__cost',
             'product__category__name',
         )
@@ -220,9 +232,12 @@ def compute_session_summary(session_id: int) -> Dict[str, Any]:
             and counts ``sale_count``, ``item_count``, plus ``by_payment``
             and ``by_category`` breakdowns. Monetary fields are 2-dp strings.
         ``warnings``
-            a dict reporting rows dropped for non-numeric amounts:
+            a dict reporting rows dropped or excluded from the aggregates:
             ``invalid_sale_amounts``, ``invalid_line_amounts``,
-            ``invalid_payment_amounts``.
+            ``invalid_payment_amounts``, and ``missing_cost_lines`` (sale
+            lines with no sale-time cost snapshot whose unknown cost was
+            excluded from COGS rather than restated from the product's
+            current cost).
 
     Raises:
         Session.DoesNotExist if no Session matches ``session_id``.
@@ -249,11 +264,22 @@ def compute_session_summary(session_id: int) -> Dict[str, Any]:
 
     cogs = Decimal('0')
     invalid_lines = 0
+    missing_cost_lines = 0
     if not lines_df.empty:
         cogs_total = Decimal('0')
         for _, row in lines_df.iterrows():
             qty, qok = _to_decimal(row.get('quantity'))
-            cost, cok = _to_decimal(row.get('product__cost'))
+            unit_cost = row.get('unit_cost')
+            if unit_cost is None:
+                # No sale-time snapshot (legacy pre-migration row). Per
+                # accounting policy, exclude the line's unknown cost from COGS
+                # and report it — never restate a closed period from the
+                # product's *current* cost.
+                missing_cost_lines += 1
+                if not qok:
+                    invalid_lines += 1
+                continue
+            cost, cok = _to_decimal(unit_cost)
             if not (qok and cok):
                 invalid_lines += 1
             elif _finite(qty) and _finite(cost):
@@ -301,5 +327,6 @@ def compute_session_summary(session_id: int) -> Dict[str, Any]:
             'invalid_sale_amounts': invalid_sales,
             'invalid_line_amounts': invalid_lines,
             'invalid_payment_amounts': invalid_payments,
+            'missing_cost_lines': missing_cost_lines,
         },
     }
