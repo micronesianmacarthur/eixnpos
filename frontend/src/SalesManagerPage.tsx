@@ -1100,6 +1100,7 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
   const [discountLine, setDiscountLine] = useState<{ sale: Sale; line: SaleLine } | null>(null);
   const [discountType, setDiscountType] = useState('percent');
   const [discountValue, setDiscountValue] = useState('');
+  const [voidReason, setVoidReason] = useState('');
   const [refundReason, setRefundReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState('');
@@ -1261,14 +1262,21 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
   }
 
   async function voidSale(sale: Sale) {
+    const reason = voidReason.trim();
+    if (!reason) {
+      setActionError('A reason is required to void a sale.');
+      return;
+    }
     setBusy(true);
     setActionError('');
     try {
       const updated = await apiFetch<Sale>(`/api/sales/${sale.id}/void/`, {
         method: 'POST',
+        body: JSON.stringify({ reason }),
       });
       await replaceSale(updated);
       setVoidTarget(null);
+      setVoidReason('');
       pushToast('success', `Sale #${sale.number} voided.`);
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : 'Failed to void sale');
@@ -1373,6 +1381,11 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
     // Void every selected sale sequentially, reporting a toast per row. No
     // silent cap: capping at 10 used to leave rows 11+ selected but unvoided
     // before clearing the selection, making them look handled.
+    const reason = voidReason.trim();
+    if (!reason) {
+      setActionError('A reason is required to void a sale.');
+      return;
+    }
     const targets = sortedSales.filter((s) => selectedIds.has(s.id));
     if (targets.length === 0) return;
     setBusy(true);
@@ -1381,6 +1394,7 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
         try {
           const updated = await apiFetch<Sale>(`/api/sales/${sale.id}/void/`, {
             method: 'POST',
+            body: JSON.stringify({ reason }),
           });
           await replaceSale(updated);
           pushToast('success', `Sale #${sale.number} voided.`);
@@ -1389,10 +1403,11 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
         }
       }
       setSelectedIds(new Set());
+      setVoidReason('');
     } finally {
       setBusy(false);
     }
-  }, [selectedIds, sortedSales, pushToast]);
+  }, [selectedIds, sortedSales, pushToast, voidReason]);
 
   function exportCsv() {
     // Spec §4.5 "Export selected": when a selection exists, export only the
@@ -1491,6 +1506,7 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
 
   const openVoid = (sale: Sale) => {
     setVoidTarget(sale);
+    setVoidReason('');
     setActionError('');
   };
 
@@ -1573,6 +1589,17 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
           <span>
             {selectedIds.size} selected
           </span>
+          <label className="mm-field sales-manager-bulk-reason">
+            <span className="mm-label mm-visually-hidden">Void reason</span>
+            <input
+              className="mm-input mm-input--sm"
+              type="text"
+              value={voidReason}
+              onChange={(e) => setVoidReason(e.target.value)}
+              placeholder="Void reason (required)"
+              aria-label="Void reason"
+            />
+          </label>
           <button
             type="button"
             className="mm-btn mm-btn--danger mm-btn--sm"
@@ -1774,14 +1801,26 @@ export default function SalesManagerPage({ initialSales }: SaleManagerPageProps)
       {voidTarget && (
         <ActionModal
           title={`Void sale #${voidTarget.number}?`}
-          description="This returns stock to inventory and cannot be undone."
+          description="Voiding removes an open sale and records a required audit reason."
           confirmLabel="Void sale"
           busyLabel="Voiding…"
           busy={busy}
           error={actionError}
           onConfirm={() => void voidSale(voidTarget)}
           onClose={() => setVoidTarget(null)}
-        />
+        >
+          <label className="mm-field">
+            <span className="mm-label">Reason (required)</span>
+            <input
+              className="mm-input"
+              type="text"
+              value={voidReason}
+              onChange={(e) => setVoidReason(e.target.value)}
+              placeholder="Why is this sale being voided?"
+              autoFocus
+            />
+          </label>
+        </ActionModal>
       )}
 
       {refundTarget && (

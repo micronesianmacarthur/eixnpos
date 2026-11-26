@@ -8,7 +8,7 @@ from django.utils import timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import uuid
 
-from .models import Sale, SaleLine, Payment
+from .models import Sale, SaleLine, Payment, ImmutableSaleError
 from .serializers import SaleSerializer, SaleLineSerializer, PaymentSerializer
 from .services import TransactionService, CartService, CartError, CartItemNotFoundError, InvalidQuantityError, SaleNotModifiableError, TransactionError, InsufficientPaymentError, InvalidPaymentMethodError, RefundValidationError, RefundConflictError, VoidConflictError, complete_sale_stock
 from .payments import PaymentMethod, get_processor
@@ -16,6 +16,7 @@ from products.models import Product
 from customers.models import Customer
 from customers.services import LedgerService, LedgerError, can_override_credit
 from accounts.utils import is_manager
+from accounts.roles import has_admin_role
 
 
 class PaymentProcessingRejected(Exception):
@@ -79,10 +80,34 @@ class SaleViewSet(viewsets.ModelViewSet):
             )
         return None
 
+    def _immutability_guard(self, request, sale):
+        """Reject a PATCH/PUT that would mutate an immutable sale's identity.
+
+        Completed, voided and refunded sales are immutable records. Any payload
+        touching an inviolate field (number, cashier, customer, session, totals)
+        on a non-open sale is rejected regardless of role — there is no
+        correction path through generic update; corrections only happen via the
+        dedicated void/refund actions which write the audit trail. Returns an
+        error Response to short-circuit, or None to allow.
+        """
+        if sale.is_open():
+            return None
+        data_keys = set(request.data.keys()) if hasattr(request.data, 'keys') else set()
+        touched = sorted(sale.INVIOLATE_FIELDS.intersection(data_keys))
+        if touched:
+            return Response(
+                {'detail': f'Cannot change field(s) on a completed sale: {", ".join(touched)}.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return None
+
     def update(self, request, *args, **kwargs):
-        """Update a sale; gate the `cashier` write behind manager authority."""
+        """Update a sale; gate `cashier` (manager) and immutable identity (all)."""
         instance = self.get_object()
         guard = self._reassign_guard(request, instance)
+        if guard is not None:
+            return guard
+        guard = self._immutability_guard(request, instance)
         if guard is not None:
             return guard
         partial = kwargs.pop('partial', False)
@@ -96,6 +121,31 @@ class SaleViewSet(viewsets.ModelViewSet):
     def partial_update(self, request, *args, **kwargs):
         kwargs['partial'] = True
         return self.update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        """Delete a sale is admin-only and open-sale-only.
+
+        Only a hard-delete of an open/pending (draft) sale is ever allowed, and
+        only by admin authority. Completed/corrected sales refuse deletion at
+        the model level (``Sale.delete`` raises ``ImmutableSaleError``) — a
+        completed sale must be voided/refunded, never erased. A non-admin gets
+        403; any attempt to hard-delete an immutable sale gets 400.
+        """
+        if not has_admin_role(request.user):
+            return Response(
+                {'detail': 'Only admins can delete a sale.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        instance = self.get_object()
+        if not instance.is_open():
+            return Response(
+                {'detail': 'Only open (draft) sales can be deleted.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            return super().destroy(request, *args, **kwargs)
+        except ImmutableSaleError as e:
+            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=True, methods=['post'])
     def add_line(self, request, pk=None):
@@ -556,59 +606,42 @@ class SaleViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def complete(self, request, pk=None):
-        """Complete a sale, supporting zero-value sales and multiple tenders."""
+        """Complete a sale, supporting zero-value sales and multiple tenders.
+
+        Routes BOTH the positive-total and zero-total paths through
+        ``TransactionService.finalize_sale`` (the single service completion
+        operation), so the two paths share the same no-items rejection, stock
+        movements and atomic status transition and cannot drift.
+        """
         sale = self.get_object()
         if sale.status != Sale.STATUS_OPEN and sale.status != Sale.STATUS_PENDING:
             return Response({'detail': 'not open'}, status=400)
 
         note = request.data.get('note', '')
-        if sale.total == 0 and not note and not sale.note:
-            return Response({'detail': 'a sales note is required for zero-value sales'}, status=400)
 
         if sale.total > 0 and not sale.payments.exists():
             # Backward-compatible single cash payment for older clients.
             self._record_complete_cash_payment(sale)
 
-        if sale.total > 0:
-            total_paid = sum((p.amount for p in sale.payments.all()), Decimal('0'))
-            if total_paid < sale.total:
-                return Response({'detail': 'recorded payments are less than the sale total'}, status=400)
-
         if note:
             sale.note = note
-        if sale.total == 0:
-            sale.needs_review = True
 
         # Calculate change from stored cash tender change values.
         change_due = sum((p.change_due for p in sale.payments.all() if p.method == Payment.METHOD_CASH), Decimal('0'))
         if change_due < 0:
             change_due = Decimal('0')
 
-        # Use TransactionService to complete (stock movements only for stock products).
+        # Use TransactionService.finalize_sale for both paths: it does the
+        # no-lines/empty-sale check, the zero-total note + needs_review handling,
+        # the payment coverage check (positive-total) and the stock movements.
         try:
-            if sale.total == 0:
-                from django.db import transaction as db_transaction
-                from django.utils import timezone
-                with db_transaction.atomic():
-                    complete_sale_stock(sale, reference=f'sale:{sale.number}')
-                    sale.status = Sale.STATUS_COMPLETED
-                    sale.completed_at = timezone.now()
-                    sale.note = sale.note
-                    sale.needs_review = True
-                    sale.save(update_fields=['status', 'completed_at', 'note', 'needs_review'])
-                completed_sale = sale
-            else:
-                if not sale.payments.exists():
-                    self._record_complete_cash_payment(sale)
-                ts = TransactionService(require_payment_tokens=False)
-                ts._current_sale = sale
-                ts._cart = CartService(sale)
-                ts._current_sale.note = sale.note
-                ts._current_sale.needs_review = sale.needs_review
-                completed_sale = ts.finalize_sale(sale, generate_receipt=True)
-                completed_sale.note = sale.note
-                completed_sale.needs_review = sale.needs_review
-                completed_sale.save(update_fields=['note', 'needs_review'])
+            # The zero-total and positive-total paths both route through
+            # finalize_sale so they cannot drift (validation, stock movement
+            # and the sanctioned completed transition are identical).
+            ts = TransactionService(require_payment_tokens=False)
+            ts._current_sale = sale
+            ts._cart = CartService(sale)
+            completed_sale = ts.finalize_sale(sale, generate_receipt=True)
         except (TransactionError, InsufficientPaymentError) as e:
             return Response({'detail': str(e)}, status=400)
 
@@ -618,33 +651,43 @@ class SaleViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def void(self, request, pk=None):
-        sale = self.get_object()
-
-        # Void of a *completed* sale is a financial reversal (tender
-        # neutralised, receivable reversed, goods restocked) — the same
-        # operation as a refund — so it carries the same manager/admin gate
-        # (B2). Voiding an open/pending sale (no money moved yet) stays open to
-        # the cashier who is running it at the POS.
-        if sale.status == Sale.STATUS_COMPLETED and not is_manager(request.user):
+        """Void an open/pending sale; manager/admin-only, records audit trail."""
+        if not is_manager(request.user):
             return Response(
-                {'detail': 'Only managers and admins can void a completed sale.'},
+                {'detail': 'Only managers and admins can void a sale.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        sale = self.get_object()
+        # Duplicate/terminal void requests surface as a conflict so a retry is
+        # never silently absorbed; anything else that is not open/pending (a
+        # completed sale) is a 400 — completed sales are corrected by refund.
+        if sale.status == Sale.STATUS_VOIDED:
+            return Response({'detail': 'already voided'}, status=status.HTTP_409_CONFLICT)
+        if sale.status == Sale.STATUS_REFUNDED:
+            return Response(
+                {'detail': 'cannot void a refunded sale'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        if not (sale.status == Sale.STATUS_OPEN or sale.status == Sale.STATUS_PENDING):
+            return Response(
+                {'detail': 'Only open/pending sales can be voided.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        # Void is allowed on pending/open/completed sales. A voided or refunded
-        # sale is rejected by the service as a 409 conflict so duplicate void
-        # requests surface instead of being silently absorbed.
+        reason = request.data.get('reason', '')
+        # Use TransactionService to void (writes voided_by/voided_at/void_reason
+        # atomically with the status change; a completed sale is corrected with
+        # a refund instead).
         try:
             ts = TransactionService()
             ts._current_sale = sale
             ts._cart = CartService(sale)
-            ts.void_sale()
+            sale = ts.void_sale(by=request.user, reason=reason)
         except VoidConflictError as e:
             return Response({'detail': str(e)}, status=status.HTTP_409_CONFLICT)
-        except TransactionError as e:
-            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except (TransactionError, ImmutableSaleError) as e:
+            return Response({'detail': str(e)}, status=400)
 
-        sale.refresh_from_db()
         return Response(SaleSerializer(sale).data)
 
     @action(detail=True, methods=['post'])
@@ -676,6 +719,7 @@ class SaleViewSet(viewsets.ModelViewSet):
                 reason=reason,
                 manager_approved=manager_approved,
                 items=items,
+                by=request.user,
             )
         except (RefundConflictError, VoidConflictError) as e:
             return Response({'detail': str(e)}, status=status.HTTP_409_CONFLICT)

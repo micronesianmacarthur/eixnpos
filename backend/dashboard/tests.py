@@ -74,6 +74,11 @@ class DashboardBase(TestCase):
             discount_total=Decimal('0.00'),
             tax_total=Decimal('0.00'),
             total=total,
+            # The model enforces voided_at/refunded_at whenever the status is
+            # voided/refunded (CHECK constraints), so fixtures that create the
+            # terminal state directly must carry the audit timestamp too.
+            voided_at=timezone.now() if status == Sale.STATUS_VOIDED else None,
+            refunded_at=timezone.now() if status == Sale.STATUS_REFUNDED else None,
         )
         if created_at is not None:
             Sale.objects.filter(pk=sale.pk).update(created_at=created_at)

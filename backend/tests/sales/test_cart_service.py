@@ -82,9 +82,9 @@ class TestCartServiceAddItem:
 
     def test_add_item_rejects_voided_sale(self, cashier_user, product):
         """Test that adding to a voided sale raises SaleNotModifiableError."""
-        voided_sale = Sale.objects.create(
-            cashier=cashier_user, status=Sale.STATUS_VOIDED
-        )
+        voided_sale = Sale.objects.create(cashier=cashier_user)
+        voided_sale.transition_to(Sale.STATUS_VOIDED, by=None, reason='test')
+        voided_sale.save(update_fields=['status', 'voided_by', 'voided_at', 'void_reason'])
         cart = CartService(voided_sale)
         with pytest.raises(SaleNotModifiableError):
             cart.add_item(product, quantity=1)

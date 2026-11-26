@@ -780,43 +780,63 @@ class SaleApiTests(TestCase):
 
     def test_void_open_sale_has_no_stock_side_effects(self):
         sale = self.make_sale_with_line(quantity=2)
+        self.client.force_authenticate(self.manager)
 
-        response = self.client.post(f'/api/sales/{sale.id}/void/')
+        response = self.client.post(
+            f'/api/sales/{sale.id}/void/',
+            {'reason': 'duplicate entry'},
+            format='json',
+        )
 
         self.assertEqual(response.status_code, 200)
         sale.refresh_from_db()
         self.assertEqual(sale.status, Sale.STATUS_VOIDED)
+        self.assertIsNotNone(sale.voided_by)
+        self.assertIsNotNone(sale.voided_at)
         self.assertFalse(StockMovement.objects.filter(movement_type='sale').exists())
 
-    def test_cashier_cannot_void_a_completed_sale(self):
-        # B2: void of a completed sale is a financial reversal (same as a
-        # refund) and carries the same manager/admin gate.
-        sale = self.make_sale(status=Sale.STATUS_COMPLETED)
+    def test_cashier_cannot_void_a_sale(self):
+        sale = self.make_sale_with_line(quantity=2)
 
         response = self.client.post(f'/api/sales/{sale.id}/void/')
 
         self.assertEqual(response.status_code, 403)
         sale.refresh_from_db()
+        self.assertEqual(sale.status, Sale.STATUS_OPEN)
+
+    def test_void_completed_sale_is_rejected(self):
+        sale = self.make_sale(status=Sale.STATUS_COMPLETED)
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post(f'/api/sales/{sale.id}/void/')
+
+        self.assertEqual(response.status_code, 400)
+        sale.refresh_from_db()
         self.assertEqual(sale.status, Sale.STATUS_COMPLETED)
 
-    def test_manager_can_void_a_completed_sale(self):
+    def test_manager_cannot_void_a_completed_sale(self):
+        # A completed sale is corrected with a refund; void is open/pending
+        # only (the sanctioned transition whitelist refuses completed->voided).
         sale = self.make_sale(status=Sale.STATUS_COMPLETED)
         client = APIClient()
         client.force_authenticate(self.manager)
 
         response = client.post(f'/api/sales/{sale.id}/void/')
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 400)
         sale.refresh_from_db()
-        self.assertEqual(sale.status, Sale.STATUS_VOIDED)
+        self.assertEqual(sale.status, Sale.STATUS_COMPLETED)
 
     def test_cashier_refund_of_completed_sale_is_403(self):
         # Refund carries the manager gate; a cashier gets 403 (B2 parity).
-        sale = self.make_sale(status=Sale.STATUS_COMPLETED)
+        sale = self.make_sale()
         line = SaleLine.objects.create(
             sale=sale, product=self.product, quantity=1, unit_price=self.product.price,
         )
         sale.recompute()
+        sale.status = Sale.STATUS_COMPLETED
+        sale.completed_at = timezone.now()
+        sale.save(update_fields=['status', 'completed_at'])
 
         response = self.client.post(
             f'/api/sales/{sale.id}/refund/', {'items': []}, format='json',
@@ -826,11 +846,14 @@ class SaleApiTests(TestCase):
         self.assertFalse(Refund.objects.filter(sale=sale).exists())
 
     def test_refund_empty_items_is_400(self):
-        sale = self.make_sale(status=Sale.STATUS_COMPLETED)
+        sale = self.make_sale()
         SaleLine.objects.create(
             sale=sale, product=self.product, quantity=1, unit_price=self.product.price,
         )
         sale.recompute()
+        sale.status = Sale.STATUS_COMPLETED
+        sale.completed_at = timezone.now()
+        sale.save(update_fields=['status', 'completed_at'])
         client = APIClient()
         client.force_authenticate(self.manager)
 
@@ -843,11 +866,14 @@ class SaleApiTests(TestCase):
         self.assertFalse(Refund.objects.filter(sale=sale).exists())
 
     def test_refund_over_capacity_is_400(self):
-        sale = self.make_sale(status=Sale.STATUS_COMPLETED)
+        sale = self.make_sale()
         line = SaleLine.objects.create(
             sale=sale, product=self.product, quantity=1, unit_price=self.product.price,
         )
         sale.recompute()
+        sale.status = Sale.STATUS_COMPLETED
+        sale.completed_at = timezone.now()
+        sale.save(update_fields=['status', 'completed_at'])
         Payment.objects.create(sale=sale, method='cash', amount=Decimal('10.00'))
         client = APIClient()
         client.force_authenticate(self.manager)
@@ -864,11 +890,14 @@ class SaleApiTests(TestCase):
     def test_refund_with_voided_payment_is_409(self):
         # A completed sale whose tender was already neutralised cannot be
         # refunded; the capacity guard raises 409 (RefundConflictError).
-        sale = self.make_sale(status=Sale.STATUS_COMPLETED)
+        sale = self.make_sale()
         SaleLine.objects.create(
             sale=sale, product=self.product, quantity=1, unit_price=self.product.price,
         )
         sale.recompute()
+        sale.status = Sale.STATUS_COMPLETED
+        sale.completed_at = timezone.now()
+        sale.save(update_fields=['status', 'completed_at'])
         payment = Payment.objects.create(sale=sale, method='cash', amount=Decimal('10.00'))
         payment.voided = True
         payment.voided_at = timezone.now()
@@ -882,11 +911,14 @@ class SaleApiTests(TestCase):
         self.assertFalse(Refund.objects.filter(sale=sale).exists())
 
     def test_void_refunded_sale_is_409_over_http(self):
-        sale = self.make_sale(status=Sale.STATUS_COMPLETED)
+        sale = self.make_sale()
         SaleLine.objects.create(
             sale=sale, product=self.product, quantity=1, unit_price=self.product.price,
         )
         sale.recompute()
+        sale.status = Sale.STATUS_COMPLETED
+        sale.completed_at = timezone.now()
+        sale.save(update_fields=['status', 'completed_at'])
         Payment.objects.create(sale=sale, method='cash', amount=Decimal('10.00'))
         client = APIClient()
         client.force_authenticate(self.manager)
@@ -905,6 +937,97 @@ class SaleApiTests(TestCase):
         response = anonymous.get('/api/sales/')
 
         self.assertIn(response.status_code, (401, 403))
+
+    def test_cashier_cannot_delete_a_sale(self):
+        sale = self.make_sale_with_line()
+
+        response = self.client.delete(f'/api/sales/{sale.id}/')
+
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(Sale.objects.filter(pk=sale.pk).exists())
+
+    def test_admin_can_delete_an_open_sale(self):
+        admin = User.objects.create_user(
+            username='administrator', password='pw', role='admin'
+        )
+        sale = self.make_sale_with_line()
+        self.client.force_authenticate(admin)
+
+        response = self.client.delete(f'/api/sales/{sale.id}/')
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Sale.objects.filter(pk=sale.pk).exists())
+
+    def test_completed_sale_cannot_be_deleted(self):
+        admin = User.objects.create_user(
+            username='administrator', password='pw', role='admin'
+        )
+        sale = self.make_sale(status=Sale.STATUS_COMPLETED)
+        self.client.force_authenticate(admin)
+
+        response = self.client.delete(f'/api/sales/{sale.id}/')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(Sale.objects.filter(pk=sale.pk).exists())
+
+    def test_customer_immutable_on_completed_sale(self):
+        sale = self.make_sale(status=Sale.STATUS_COMPLETED)
+
+        response = self.client.patch(
+            f'/api/sales/{sale.id}/',
+            {'customer': self.customer.id},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        sale.refresh_from_db()
+        self.assertIsNone(sale.customer)
+
+    def test_customer_immutable_on_voided_sale(self):
+        sale = self.make_sale()
+        sale.transition_to(Sale.STATUS_VOIDED, by=self.manager, reason='test')
+        sale.save(update_fields=['status', 'voided_by', 'voided_at', 'void_reason'])
+        sale.refresh_from_db()
+
+        response = self.client.patch(
+            f'/api/sales/{sale.id}/',
+            {'customer': self.customer.id},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        sale.refresh_from_db()
+        self.assertIsNone(sale.customer)
+
+    def test_refund_records_refunded_by_and_reverses_stock(self):
+        manager = User.objects.create_user(
+            username='refundmgr', password='pw', role='manager'
+        )
+        sale = self.make_sale_with_line(quantity=2)
+        StockMovement.objects.create(
+            product=self.product, movement_type='receive', quantity=10
+        )
+        # Complete the sale to create a sale movement.
+        self.client.force_authenticate(manager)
+        self.client.post(f'/api/sales/{sale.id}/complete/')
+        self.assertEqual(
+            StockMovement.objects.filter(movement_type='sale').count(), 1
+        )
+
+        response = self.client.post(
+            f'/api/sales/{sale.id}/refund/',
+            {'reason': 'customer return'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, Sale.STATUS_REFUNDED)
+        self.assertEqual(sale.refunded_by, manager)
+        # Reverse stock movement written.
+        self.assertEqual(
+            StockMovement.objects.filter(movement_type='adjustment').count(), 1
+        )
 
 
 class CashCountTests(SimpleTestCase):

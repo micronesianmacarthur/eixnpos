@@ -21,7 +21,7 @@ from products.models import Product
 from customers.models import Customer
 from customers.services import LedgerService, LedgerError, can_override_credit
 
-from .models import Sale, SaleLine, Payment, Refund
+from .models import Sale, SaleLine, Payment, Refund, ImmutableSaleError
 from .payments import (
     PaymentMethod,
     PaymentProcessor,
@@ -726,6 +726,7 @@ class TransactionService:
 
             sale.status = Sale.STATUS_COMPLETED
             sale.completed_at = timezone.now()
+            sale.transition_to(Sale.STATUS_COMPLETED)
             sale.save(update_fields=['status', 'completed_at'])
 
             # Record the invoice against the customer's ledger and re-derive the
@@ -753,17 +754,25 @@ class TransactionService:
 
         return sale
 
-    def finalize_sale(self, sale: Sale, generate_receipt: bool = True, receipt_format: str = "text") -> Sale:
-        """
-        Finalize a sale that already has payment recorded.
+    def finalize_sale(self, sale: Sale, generate_receipt: bool = True, receipt_format: str = "text", *, note: Optional[str] = None, needs_review: Optional[bool] = None) -> Sale:
+        """Finalize a sale into the completed state.
 
-        This completes the sale without processing additional payment.
-        Used when payment was recorded separately (e.g., via set_payment endpoint).
+        This is the single service operation used by BOTH the positive-total and
+        the zero-total (documented, zero-value) branches of the ``complete``
+        action, so the two paths cannot drift: identical no-lines rejection,
+        identical stock-movement behaviour, identical atomic status transition.
+
+        Empty-sale rule: a sale must contain at least one line item to complete,
+        regardless of total. A zero-total sale simply carries no payment and is
+        flagged for manager review (``needs_review``).
 
         Args:
-            sale: The sale to finalize.
+            sale: The sale to finalize (open/pending).
             generate_receipt: Whether to generate a receipt.
             receipt_format: "text" or "pdf".
+            note: Optional note to persist on completion (required, set via
+                ``sale.note``, for a zero-total documented sale).
+            needs_review: Explicit review-flag override.
 
         Returns:
             The completed Sale.
@@ -777,80 +786,129 @@ class TransactionService:
         if not sale.lines.exists():
             raise TransactionError('Cannot complete sale with no items')
 
-        if not sale.payments.exists():
-            raise TransactionError('Payment required before completion')
+        if sale.total > 0:
+            if not sale.payments.exists():
+                raise TransactionError('Payment required before completion')
+            # Verify total paid covers sale total
+            total_paid = sum(p.amount for p in sale.payments.all())
+            if total_paid < sale.total:
+                raise TransactionError(
+                    f'Total paid ({total_paid}) is less than sale total ({sale.total})'
+                )
+        elif sale.total == 0:
+            # Zero-total documented sale: payment isn't required, but the sale
+            # must carry a note explaining why (a silent zero-value completion
+            # would be indistinguishable from a bug). It is always marked for
+            # manager review.
+            if not sale.note:
+                raise TransactionError('A sales note is required for zero-value sales')
 
-        # Verify total paid covers sale total
-        total_paid = sum(p.amount for p in sale.payments.all())
-        if total_paid < sale.total:
-            raise TransactionError(
-                f'Total paid ({total_paid}) is less than sale total ({sale.total})'
-            )
+        # The caller may set the note directly on the passed instance (the
+        # ``complete`` view does ``sale.note = ...`` before calling us) rather
+        # than via the ``note`` kwarg. Capture it so it is applied to the
+        # re-read (locked) row below — the locked row is a fresh DB read and
+        # would otherwise miss an in-memory-only note.
+        if note is None and sale.note:
+            note = sale.note
 
         # Complete the sale - validate availability, deduct stock and mark the
         # sale completed inside one atomic block.
         with db_transaction.atomic():
-            complete_sale_stock(sale, reference=f'sale:{sale.number}')
-            sale.status = Sale.STATUS_COMPLETED
-            sale.completed_at = timezone.now()
-            sale.save(update_fields=['status', 'completed_at'])
+            # Re-read + lock the persisted row: the authoritative is_open()
+            # must be against the DB (not the stale caller-supplied instance)
+            # and must be held across the transition + movement writes, so two
+            # concurrent completions cannot both post a stock decrement. An
+            # already-completed sale is refused here (idempotent completion:
+            # never a second ledger post). ``select_for_update`` is a no-op on
+            # SQLite (writers serialize); on PostgreSQL it is a real row lock.
+            locked = Sale.objects.select_for_update().get(pk=sale.pk)
+            if not locked.is_open():
+                raise TransactionError(f'Cannot complete sale with status: {locked.status}')
+            if not locked.lines.exists():
+                raise TransactionError('Cannot complete sale with no items')
+            locked.transition_to(Sale.STATUS_COMPLETED)
+            if locked.total == 0:
+                locked.needs_review = True
+            if note:
+                locked.note = note
+            if needs_review is not None:
+                locked.needs_review = needs_review
+            locked.save(update_fields=['status', 'completed_at', 'note', 'needs_review'])
 
+            # Validate availability and deduct stock for stock products only.
+            complete_sale_stock(locked, reference=f'sale:{locked.number}')
+
+        sale = locked
         # Generate receipt if requested
         if generate_receipt:
             self.receipt_generator.generate_receipt(sale, format=receipt_format)
 
         return sale
 
-    def void_sale(self) -> Sale:
+    def void_sale(
+        self,
+        *,
+        by=None,
+        reason: str = '',
+    ) -> Sale:
         """
         Void the current sale (pending, open, or completed).
 
-        Neutralizes each captured payment (voided flag + reversal of any
-        invoice receivable so the amount stops counting toward the customer's
-        balance) and restores the inventory that a completed sale moved out.
-        A void of an open/pending sale that moved no goods is a pure status
-        change with no stock movement and no balance change.
+        Only open/pending sales may be voided. Any captured payment is
+        neutralized (voided flag; an invoice receivable is reversed so the
+        amount stops counting toward the customer's balance). Only a manager or
+        admin may void (*by* is the operator) and the audit trail (voided_by,
+        voided_at, void_reason) is written in the same atomic update as the
+        status change, so a voided sale always carries a complete,
+        unfabricatable record. A completed sale is corrected with a refund
+        (which reverses tender, receivable and inventory) — never voided.
 
         Returns:
             The voided Sale
 
         Raises:
-            TransactionError: If no sale is in progress.
-            VoidConflictError: If the sale is already voided or refunded (409).
+            TransactionError: If no sale in progress or sale is not voidable.
+            ImmutableSaleError: If the status transition is not permitted.
         """
         if not self._current_sale:
             raise TransactionError('No sale in progress. Call start_sale() first.')
 
         sale = self._current_sale
 
-        if sale.status == Sale.STATUS_REFUNDED:
-            raise VoidConflictError('cannot void a refunded sale')
+        if not sale.is_open():
+            raise TransactionError(
+                f'Only open/pending sales can be voided, current status: {sale.status}'
+            )
 
-        if sale.status == Sale.STATUS_VOIDED:
-            raise VoidConflictError('already voided')
+        # A voided sale is an accounting record: it must carry the operator who
+        # voided it and a non-empty why. Refuse silent/blank voids at the
+        # service so no caller (HTTP or otherwise) can fabricate an incomplete
+        # audit trail.
+        if by is None:
+            raise TransactionError('An operator is required to void a sale')
+        if not reason or not reason.strip():
+            raise TransactionError('A void reason is required')
 
         with db_transaction.atomic():
-            # Re-lock the sale row so a concurrent void/refund cannot race.
-            sale = Sale.objects.select_for_update().get(pk=sale.id)
-            # Re-check state under the lock: the value we read before locking
-            # could be stale under concurrency.
-            if sale.status == Sale.STATUS_VOIDED:
-                raise VoidConflictError('already voided')
-            if sale.status == Sale.STATUS_REFUNDED:
-                raise VoidConflictError('cannot void a refunded sale')
-            payments = list(
-                Payment.objects.select_for_update().filter(sale=sale).order_by('id')
-            )
-            customer = sale.customer
+            # Re-read + lock the persisted row: the authoritative is_open()
+            # must be against the DB (not the stale callback-loaded instance)
+            # and must be held across the transition, so a completion that lands
+            # after the in-memory guard above cannot be overwritten by a void.
+            # ``select_for_update`` is a no-op on SQLite (writers serialize);
+            # on PostgreSQL it takes a real row lock.
+            locked = Sale.objects.select_for_update().get(pk=sale.pk)
+            if not locked.is_open():
+                raise TransactionError(
+                    f'Only open/pending sales can be voided, current status: {locked.status}'
+                )
 
-            for p in payments:
-                # A fully-refunded payment is neutralized by the refund, not by
-                # this void; never reverse it, or we'd double-reverse the
-                # balance. An already-voided payment stays voided (idempotent
-                # per row). A *partially* refunded payment has only its
-                # un-refunded remainder left to reverse: credit the customer by
-                # ``remaining_refundable()`` — the refund already reversed its
-                # portion — never by the full ``p.amount`` (B1).
+            # Neutralize every captured payment on the open sale. A partially
+            # refunded payment has only its un-refunded remainder to reverse
+            # (the refund already reversed its portion). An invoice payment's
+            # receivable is reversed through the ledger so the balance stops
+            # counting it. An open sale moved no goods, so there is no restock.
+            customer = locked.customer
+            for p in Payment.objects.select_for_update().filter(sale=locked).order_by('id'):
                 if p.voided:
                     continue
                 remaining = p.remaining_refundable()
@@ -863,33 +921,22 @@ class TransactionService:
                     LedgerService.append(
                         customer, remaining, direction='debit',
                         entry_type='correction', method='invoice',
-                        operator=sale.cashier, sale=sale,
-                        reference=f'void:sale:{sale.number}',
+                        operator=locked.cashier, sale=locked,
+                        reference=f'void:sale:{locked.number}',
                         notes='Void: reverse invoice receivable',
                     )
 
-            # A completed sale moved goods out at completion; restore them.
-            # A line already returned by a partial refund must not be restocked
-            # again by the void — restock only the not-yet-returned quantity
-            # (B1, parallel to the money reversal above).
-            if sale.status == Sale.STATUS_COMPLETED:
-                for line in sale.lines.all():
-                    returned = sum(r.quantity for r in line.refunds.all())
-                    to_restock = line.quantity - returned
-                    if to_restock <= 0:
-                        continue
-                    self._restock(
-                        sale, line.product, to_restock,
-                        reference=f'void:sale:{sale.number}', note='Void',
-                    )
-
-            sale.status = Sale.STATUS_VOIDED
-            sale.save(update_fields=['status'])
+            locked.transition_to(
+                Sale.STATUS_VOIDED,
+                by=by,
+                reason=reason,
+            )
+            locked.save(update_fields=['status', 'voided_by', 'voided_at', 'void_reason'])
 
         self._current_sale = None
         self._cart = None
 
-        return sale
+        return locked
 
     def _restock(self, sale, product, quantity, reference, note):
         """Restock one product after a refund/void (non-stock excluded).
@@ -942,6 +989,8 @@ class TransactionService:
         manager_approved: bool = False,
         manager_credentials: Optional[Dict[str, str]] = None,
         items: Optional[List[Dict[str, Any]]] = None,
+        *,
+        by=None,
     ) -> Sale:
         """
         Refund a completed sale, reversing tender, receivable and inventory.
@@ -1202,9 +1251,14 @@ class TransactionService:
                 for line in lines
             )
             if all_lines_full and total_refunded >= sale.total:
-                sale.status = Sale.STATUS_REFUNDED
-                sale.refunded_at = timezone.now()
-                sale.save(update_fields=['status', 'refunded_at'])
+                sale.transition_to(
+                    Sale.STATUS_REFUNDED,
+                    by=by,
+                    reason=reason,
+                )
+                sale.save(update_fields=[
+                    'status', 'refunded_at', 'refunded_by', 'refund_reason',
+                ])
 
         return sale
 

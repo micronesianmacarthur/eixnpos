@@ -75,10 +75,9 @@ class TestReceiptGeneratorText:
         """Create a completed sale with payment."""
         sale = Sale.objects.create(
             cashier=cashier_user,
-            status=Sale.STATUS_COMPLETED,
-            completed_at=timezone.now(),
+            status=Sale.STATUS_OPEN,
         )
-        line = SaleLine.objects.create(
+        SaleLine.objects.create(
             sale=sale,
             product=product,
             quantity=2,
@@ -92,6 +91,8 @@ class TestReceiptGeneratorText:
             tendered=sale.total,
             change_due=Decimal('0.00'),
         )
+        sale.transition_to(Sale.STATUS_COMPLETED)
+        sale.save(update_fields=['status', 'completed_at'])
         sale.refresh_from_db()
         return sale
 
@@ -128,13 +129,24 @@ class TestReceiptGeneratorText:
         assert 'Completed:' in receipt
         assert 'Cashier:' in receipt
 
-    def test_receipt_includes_customer_when_present(self, generator, completed_sale, customer):
+    def test_receipt_includes_customer_when_present(self, generator, cashier_user, product, customer):
         """Test receipt includes customer when present."""
-        completed_sale.customer = customer
-        completed_sale.save(update_fields=['customer'])
-        completed_sale.refresh_from_db()
+        # Customer is immutable on a completed sale, so the record must be
+        # built with the customer already attached (via the open -> completed
+        # transition) rather than attached afterward.
+        sale = Sale.objects.create(
+            cashier=cashier_user, customer=customer, status=Sale.STATUS_OPEN
+        )
+        SaleLine.objects.create(
+            sale=sale, product=product, quantity=2, unit_price=product.price
+        )
+        sale.recompute()
+        Payment.objects.create(sale=sale, method='cash', amount=sale.total)
+        sale.transition_to(Sale.STATUS_COMPLETED)
+        sale.save(update_fields=['status', 'completed_at'])
+        sale.refresh_from_db()
 
-        receipt = generator.generate_receipt(completed_sale, format='text')
+        receipt = generator.generate_receipt(sale, format='text')
 
         assert 'Customer:' in receipt
         assert customer.name in receipt
@@ -150,18 +162,28 @@ class TestReceiptGeneratorText:
         assert completed_sale.lines.first().product.name in receipt
         assert '2' in receipt  # quantity
 
-    def test_receipt_includes_discount_line(self, generator, completed_sale, manager_user):
+    def test_receipt_includes_discount_line(self, generator, cashier_user, product, manager_user):
         """Test receipt includes discount line when discount applied."""
-        line = completed_sale.lines.first()
-        line.discount_type = SaleLine.DISCOUNT_PERCENT
-        line.discount_value = Decimal('10')
-        line.discount_amount = Decimal('2.00')
-        line.discount_authorizer = manager_user
-        line.save()
-        completed_sale.recompute()
-        completed_sale.refresh_from_db()
+        # Build a completed sale whose line already carries the discount and
+        # whose totals are settled before the sale becomes immutable.
+        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_OPEN)
+        SaleLine.objects.create(
+            sale=sale,
+            product=product,
+            quantity=2,
+            unit_price=product.price,
+            discount_type=SaleLine.DISCOUNT_PERCENT,
+            discount_value=Decimal('10'),
+            discount_amount=Decimal('2.00'),
+            discount_authorizer=manager_user,
+        )
+        sale.recompute()
+        Payment.objects.create(sale=sale, method='cash', amount=sale.total)
+        sale.transition_to(Sale.STATUS_COMPLETED)
+        sale.save(update_fields=['status', 'completed_at'])
+        sale.refresh_from_db()
 
-        receipt = generator.generate_receipt(completed_sale, format='text')
+        receipt = generator.generate_receipt(sale, format='text')
 
         assert 'Discount' in receipt
         assert 'Pct' in receipt or 'Percent' in receipt
@@ -240,12 +262,14 @@ class TestReceiptGeneratorText:
         """Test receipt with multiple different line items."""
         sale = Sale.objects.create(
             cashier=cashier_user,
-            status=Sale.STATUS_COMPLETED,
+            status=Sale.STATUS_OPEN,
         )
         SaleLine.objects.create(sale=sale, product=product, quantity=1, unit_price=product.price)
         SaleLine.objects.create(sale=sale, product=expensive_product, quantity=2, unit_price=expensive_product.price)
         sale.recompute()
         Payment.objects.create(sale=sale, method='cash', amount=sale.total, tendered=sale.total)
+        sale.transition_to(Sale.STATUS_COMPLETED)
+        sale.save(update_fields=['status', 'completed_at'])
         sale.refresh_from_db()
 
         receipt = generator.generate_receipt(sale, format='text')
@@ -262,11 +286,13 @@ class TestReceiptGeneratorText:
         )
         sale = Sale.objects.create(
             cashier=cashier_user,
-            status=Sale.STATUS_COMPLETED,
+            status=Sale.STATUS_OPEN,
         )
         SaleLine.objects.create(sale=sale, product=long_name_product, quantity=1, unit_price=long_name_product.price)
         sale.recompute()
         Payment.objects.create(sale=sale, method='cash', amount=sale.total, tendered=sale.total)
+        sale.transition_to(Sale.STATUS_COMPLETED)
+        sale.save(update_fields=['status', 'completed_at'])
         sale.refresh_from_db()
 
         receipt = generator.generate_receipt(sale, format='text')
@@ -286,10 +312,12 @@ class TestReceiptGeneratorPaymentTypes:
 
     def test_receipt_card_payment(self, generator, cashier_user, product):
         """Test receipt for card payment."""
-        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_COMPLETED)
+        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_OPEN)
         SaleLine.objects.create(sale=sale, product=product, quantity=1, unit_price=product.price)
         sale.recompute()
         Payment.objects.create(sale=sale, method=Payment.METHOD_CARD, amount=sale.total)
+        sale.transition_to(Sale.STATUS_COMPLETED)
+        sale.save(update_fields=['status', 'completed_at'])
         sale.refresh_from_db()
 
         receipt = generator.generate_receipt(sale, format='text')
@@ -298,10 +326,12 @@ class TestReceiptGeneratorPaymentTypes:
 
     def test_receipt_split_payment(self, generator, cashier_user, product):
         """Test receipt for split payment."""
-        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_COMPLETED)
+        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_OPEN)
         SaleLine.objects.create(sale=sale, product=product, quantity=2, unit_price=product.price)
         sale.recompute()
         Payment.objects.create(sale=sale, method=Payment.METHOD_SPLIT, amount=sale.total)
+        sale.transition_to(Sale.STATUS_COMPLETED)
+        sale.save(update_fields=['status', 'completed_at'])
         sale.refresh_from_db()
 
         receipt = generator.generate_receipt(sale, format='text')
@@ -310,10 +340,12 @@ class TestReceiptGeneratorPaymentTypes:
 
     def test_receipt_invoice_payment(self, generator, cashier_user, customer, product):
         """Test receipt for invoice payment."""
-        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_COMPLETED, customer=customer)
+        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_OPEN, customer=customer)
         SaleLine.objects.create(sale=sale, product=product, quantity=1, unit_price=product.price)
         sale.recompute()
         Payment.objects.create(sale=sale, method=Payment.METHOD_INVOICE, amount=sale.total, manager_approved=True)
+        sale.transition_to(Sale.STATUS_COMPLETED)
+        sale.save(update_fields=['status', 'completed_at'])
         sale.refresh_from_db()
 
         receipt = generator.generate_receipt(sale, format='text')
@@ -322,11 +354,13 @@ class TestReceiptGeneratorPaymentTypes:
 
     def test_receipt_multiple_payments(self, generator, cashier_user, product):
         """Test receipt with multiple payments."""
-        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_COMPLETED)
+        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_OPEN)
         SaleLine.objects.create(sale=sale, product=product, quantity=3, unit_price=product.price)
         sale.recompute()
         Payment.objects.create(sale=sale, method=Payment.METHOD_CASH, amount=Decimal('15.00'), tendered=Decimal('20.00'), change_due=Decimal('5.00'))
         Payment.objects.create(sale=sale, method=Payment.METHOD_CARD, amount=Decimal('15.00'))
+        sale.transition_to(Sale.STATUS_COMPLETED)
+        sale.save(update_fields=['status', 'completed_at'])
         sale.refresh_from_db()
 
         receipt = generator.generate_receipt(sale, format='text')
@@ -347,9 +381,11 @@ class TestReceiptGeneratorVoidRefund:
 
     def test_receipt_voided_sale(self, generator, cashier_user, product):
         """Test receipt for voided sale (should still generate)."""
-        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_VOIDED)
+        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_OPEN)
         SaleLine.objects.create(sale=sale, product=product, quantity=1, unit_price=product.price)
         sale.recompute()
+        sale.transition_to(Sale.STATUS_VOIDED, by=None, reason='')
+        sale.save(update_fields=['status', 'voided_by', 'voided_at', 'void_reason'])
         # No payment for voided sale
 
         receipt = generator.generate_receipt(sale, format='text')
@@ -360,10 +396,14 @@ class TestReceiptGeneratorVoidRefund:
 
     def test_receipt_refunded_sale(self, generator, cashier_user, product):
         """Test receipt for refunded sale."""
-        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_REFUNDED, refunded_at=timezone.now())
+        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_OPEN)
         SaleLine.objects.create(sale=sale, product=product, quantity=2, unit_price=product.price)
         sale.recompute()
         Payment.objects.create(sale=sale, method=Payment.METHOD_CASH, amount=sale.total, tendered=sale.total)
+        sale.transition_to(Sale.STATUS_COMPLETED)
+        sale.save(update_fields=['status', 'completed_at'])
+        sale.transition_to(Sale.STATUS_REFUNDED, by=None)
+        sale.save(update_fields=['status', 'refunded_at', 'refunded_by'])
         sale.refresh_from_db()
 
         receipt = generator.generate_receipt(sale, format='text')
@@ -397,12 +437,13 @@ class TestReceiptGeneratorPDF:
     def completed_sale(self, cashier_user, product):
         sale = Sale.objects.create(
             cashier=cashier_user,
-            status=Sale.STATUS_COMPLETED,
-            completed_at=timezone.now(),
+            status=Sale.STATUS_OPEN,
         )
         SaleLine.objects.create(sale=sale, product=product, quantity=2, unit_price=product.price)
         sale.recompute()
         Payment.objects.create(sale=sale, method=Payment.METHOD_CASH, amount=sale.total, tendered=sale.total)
+        sale.transition_to(Sale.STATUS_COMPLETED)
+        sale.save(update_fields=['status', 'completed_at'])
         sale.refresh_from_db()
         return sale
 
@@ -471,10 +512,12 @@ class TestReceiptGeneratorEdgeCases:
         config = ReceiptConfig(store_name='Test Store', store_address='')
         generator = ReceiptGenerator(config)
 
-        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_COMPLETED)
+        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_OPEN)
         SaleLine.objects.create(sale=sale, product=product, quantity=1, unit_price=product.price)
         sale.recompute()
         Payment.objects.create(sale=sale, method='cash', amount=sale.total, tendered=sale.total)
+        sale.transition_to(Sale.STATUS_COMPLETED)
+        sale.save(update_fields=['status', 'completed_at'])
 
         receipt = generator.generate_receipt(sale, format='text')
 
@@ -486,10 +529,12 @@ class TestReceiptGeneratorEdgeCases:
         config = ReceiptConfig(store_name='Test Støre 🏪')
         generator = ReceiptGenerator(config)
 
-        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_COMPLETED)
+        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_OPEN)
         SaleLine.objects.create(sale=sale, product=product, quantity=1, unit_price=product.price)
         sale.recompute()
         Payment.objects.create(sale=sale, method='cash', amount=sale.total, tendered=sale.total)
+        sale.transition_to(Sale.STATUS_COMPLETED)
+        sale.save(update_fields=['status', 'completed_at'])
 
         receipt = generator.generate_receipt(sale, format='text')
 
@@ -502,10 +547,12 @@ class TestReceiptGeneratorEdgeCases:
             price=Decimal('5.00'),
             supplier=supplier,
         )
-        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_COMPLETED)
+        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_OPEN)
         SaleLine.objects.create(sale=sale, product=unicode_product, quantity=1, unit_price=unicode_product.price)
         sale.recompute()
         Payment.objects.create(sale=sale, method='cash', amount=sale.total, tendered=sale.total)
+        sale.transition_to(Sale.STATUS_COMPLETED)
+        sale.save(update_fields=['status', 'completed_at'])
 
         receipt = generator.generate_receipt(sale, format='text')
 
@@ -516,10 +563,12 @@ class TestReceiptGeneratorEdgeCases:
         config = ReceiptConfig(store_name='Test Store', tax_rate=Decimal('0.00'))
         generator = ReceiptGenerator(config)
 
-        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_COMPLETED)
+        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_OPEN)
         SaleLine.objects.create(sale=sale, product=product, quantity=1, unit_price=product.price)
         sale.recompute()
         Payment.objects.create(sale=sale, method='cash', amount=sale.total, tendered=sale.total)
+        sale.transition_to(Sale.STATUS_COMPLETED)
+        sale.save(update_fields=['status', 'completed_at'])
 
         receipt = generator.generate_receipt(sale, format='text')
 
@@ -533,10 +582,12 @@ class TestReceiptGeneratorEdgeCases:
         config = ReceiptConfig(store_name='Test Store', tax_rate=Decimal('0.25'))  # 25%
         generator = ReceiptGenerator(config)
 
-        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_COMPLETED)
+        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_OPEN)
         SaleLine.objects.create(sale=sale, product=product, quantity=1, unit_price=product.price)
         sale.recompute()
         Payment.objects.create(sale=sale, method='cash', amount=sale.total, tendered=sale.total)
+        sale.transition_to(Sale.STATUS_COMPLETED)
+        sale.save(update_fields=['status', 'completed_at'])
 
         receipt = generator.generate_receipt(sale, format='text')
 
@@ -547,10 +598,12 @@ class TestReceiptGeneratorEdgeCases:
         config = ReceiptConfig(store_name='Test Store', currency_symbol='€', tax_rate=Decimal('0.10'))
         generator = ReceiptGenerator(config)
 
-        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_COMPLETED)
+        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_OPEN)
         SaleLine.objects.create(sale=sale, product=product, quantity=1, unit_price=product.price)
         sale.recompute()
         Payment.objects.create(sale=sale, method='cash', amount=sale.total, tendered=sale.total)
+        sale.transition_to(Sale.STATUS_COMPLETED)
+        sale.save(update_fields=['status', 'completed_at'])
 
         receipt = generator.generate_receipt(sale, format='text')
 
@@ -562,10 +615,12 @@ class TestReceiptGeneratorEdgeCases:
         config = ReceiptConfig(store_name='Test Store', receipt_width=80, tax_rate=Decimal('0.10'))
         generator = ReceiptGenerator(config)
 
-        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_COMPLETED)
+        sale = Sale.objects.create(cashier=cashier_user, status=Sale.STATUS_OPEN)
         SaleLine.objects.create(sale=sale, product=product, quantity=1, unit_price=product.price)
         sale.recompute()
         Payment.objects.create(sale=sale, method='cash', amount=sale.total, tendered=sale.total)
+        sale.transition_to(Sale.STATUS_COMPLETED)
+        sale.save(update_fields=['status', 'completed_at'])
 
         receipt = generator.generate_receipt(sale, format='text')
         lines = receipt.split('\n')
@@ -576,7 +631,6 @@ class TestReceiptGeneratorEdgeCases:
 
 
 # Import required modules
-from django.utils import timezone
 from products.models import Product
 from suppliers.models import Supplier
 from sales.models import SaleLine, Payment
