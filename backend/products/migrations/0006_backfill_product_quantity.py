@@ -31,7 +31,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('products', '0005_alter_product_options_product_quantity_and_more'),
-        ('inventory', '0003_alter_stockmovement_adjusted_by'),
+        ('inventory', '0005_alter_stockmovement_adjusted_by'),
     ]
 
     operations = [

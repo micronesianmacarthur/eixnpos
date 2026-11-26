@@ -8,7 +8,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('inventory', '0002_stockmovement_adjustment_audit'),
+        ('inventory', '0004_stockmovement_adjustment_audit'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
