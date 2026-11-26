@@ -1,3 +1,30 @@
+"""
+Transaction locking invariants for the sales module.
+
+Transactional operations (db_transaction.atomic + select_for_update):
+- Sale.save() — number allocation via SaleNumberCounter
+- TransactionService.complete_sale() — sale-row lock, validate/mutate
+- TransactionService.void_sale() — sale-row lock inside atomic
+- TransactionService.refund_sale() — sale-row lock inside atomic
+
+Lock order: sale row FIRST, then counter/sequence row. Never reverse.
+Prevents double-post (duplicate sale numbers) and duplicate-number races.
+
+Critical: select_for_update is a no-op on SQLite. Concurrency guarantees
+only on PostgreSQL. Run tests against PostgreSQL:
+  python manage.py test sales --test-name-pattern=concurrency
+
+New sale mutation checklist:
+1. open transaction.atomic
+2. re-fetch with select_for_update
+3. validate against the locked instance
+4. keep lock order (sale before counter)
+5. don't do I/O inside the transaction
+
+Ref: Sale.save() (models.py:52-56), TransactionService.complete_sale()
+(services.py:460), TransactionService.void_sale() (services.py:665),
+TransactionService.refund_sale() (services.py:696).
+"""
 from django.db import models
 from django.contrib.auth import get_user_model
 from django.utils import timezone
