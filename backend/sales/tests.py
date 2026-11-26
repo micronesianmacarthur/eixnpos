@@ -2,15 +2,18 @@ from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
+from unittest.mock import patch
 from rest_framework.test import APIClient
 
 from customers.models import Customer
+from customers.services import LedgerService, LedgerError
 from inventory.models import StockMovement
 from products.models import Product
 from suppliers.models import Supplier
 
 from .cash_count import calculate_removal, calculate_totals
 from .models import Payment, Sale, SaleLine
+from .services import TransactionService, TransactionError
 
 User = get_user_model()
 
@@ -589,7 +592,10 @@ class SaleApiTests(TestCase):
         self.assertEqual(self.customer.balance, Decimal('20.00'))
         self.assertTrue(Payment.objects.get(sale=sale).manager_approved)
 
-    def test_manager_can_override_credit_limit(self):
+    def test_manager_approval_does_not_override_credit_limit(self):
+        """Manager approval authorizes the invoice sale itself; breaching the
+        customer's credit ceiling requires a separate account exception
+        (can_override_credit), which a manager does not hold."""
         sale = self.make_sale_with_line(quantity=2)
         self.customer.credit_limit = Decimal('5.00')
         self.customer.save(update_fields=['credit_limit'])
@@ -601,9 +607,30 @@ class SaleApiTests(TestCase):
             format='json',
         )
 
+        self.assertEqual(response.status_code, 400)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.balance, Decimal('0.00'))
+        self.assertEqual(self.customer.ledger_entries.count(), 0)
+
+    def test_admin_account_exception_overrides_credit_limit(self):
+        sale = self.make_sale_with_line(quantity=2)
+        self.customer.credit_limit = Decimal('5.00')
+        self.customer.save(update_fields=['credit_limit'])
+        admin = User.objects.create_user(username='adm-cred', password='pw',
+                                         role='admin', is_superuser=True)
+        self.client.force_authenticate(admin)
+
+        response = self.client.post(
+            f'/api/sales/{sale.id}/set_payment/',
+            {'method': 'invoice', 'amount': '20.00', 'customer': self.customer.id},
+            format='json',
+        )
+
         self.assertEqual(response.status_code, 201)
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.balance, Decimal('20.00'))
+        entry = self.customer.ledger_entries.get()
+        self.assertTrue(entry.approved)
 
     def test_complete_marks_sale_and_moves_stock(self):
         sale = self.make_sale_with_line(quantity=2)
@@ -792,3 +819,45 @@ class ZeroValueSaleTests(TestCase):
         config = get_receipt_config_from_business()
         receipt = ReceiptGenerator(config).generate_receipt(sale, format='text')
         self.assertIn('Repack case into packets', receipt)
+
+class CompleteSaleAtomicTests(TestCase):
+    """S4: the Payment row is created *inside* the same atomic block as the
+    sale completion and the ledger write, so a failed sale rolls everything
+    back together — no orphan Payment is left behind."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            username='atom-admin', password='pw', role='admin'
+        )
+        self.product = Product.objects.create(name='AtomWidget', price=Decimal('10.00'))
+        StockMovement.objects.create(
+            product=self.product, quantity=100, movement_type='receive'
+        )
+        self.customer = Customer.objects.create(
+            name='AtomicCust', balance=Decimal('0.00'), credit_limit=Decimal('50.00')
+        )
+
+    def test_failed_invoice_sale_rolls_back_payment_and_sale(self):
+        # A credit that breaches the ceiling cannot be granted without an
+        # account exception; force the ledger write (inside the atomic block,
+        # after Payment.objects.create) to fail and confirm nothing persists.
+        service = TransactionService(require_payment_tokens=False)
+        sale = service.start_sale(self.admin, customer=self.customer)
+        service.add_item(self.product, quantity=1)  # 10.00, within a 50.00 limit
+
+        with patch.object(
+            LedgerService, 'record_invoice_payment',
+            side_effect=LedgerError('forced ledger failure'),
+        ):
+            with self.assertRaises(TransactionError):
+                service.complete_sale(
+                    'invoice', Decimal('10.00'), manager_approved=True
+                )
+
+        # The 'one atomic block' invariant: the Payment created inside the
+        # block must have been rolled back with the failed ledger write.
+        self.assertEqual(Payment.objects.count(), 0)
+        sale.refresh_from_db()
+        self.assertNotEqual(sale.status, Sale.STATUS_COMPLETED)
+        self.assertEqual(self.customer.ledger_entries.count(), 0)
+        self.assertEqual(self.customer.balance, Decimal('0.00'))
