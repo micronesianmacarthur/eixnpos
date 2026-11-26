@@ -207,7 +207,9 @@ reads are already open to all authenticated users `[sourced]`. Anonymous request
 receive 401.
 
 **R2.4 — Mapping writes.** Setting or changing `unit_product` / `units_per_pack` MUST require
-manager-tier authority at the API layer; a cashier MUST receive 403. (The current
+manager-tier authority at the API layer — explicitly `role in {manager, admin}` or superuser.
+A cashier MUST receive 403 and the write MUST be rejected with no partial update (a payload
+that also touches other, allowed product fields must not partially apply). (The current
 `ProductViewSet` only requires `IsAuthenticated` for writes `[sourced]`; the implementation
 MUST add the manager-tier guard for these two fields at minimum. Leaving the rest of product
 write authorization unchanged is out of scope for this feature.)
