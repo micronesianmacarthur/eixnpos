@@ -636,6 +636,15 @@ class Payment(models.Model):
     tendered = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     change_due = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     manager_approved = models.BooleanField(default=False)
+    # True when this invoice Payment was admitted by the role-based policy
+    # predicate (see sales.policies.can_invoice_on_account) rather than by an
+    # explicit manager/admin approval. Distinct from ``manager_approved``:
+    # a cashier invoice allowed by policy is policy_authorized=True while a
+    # manager/admin-invoice (session or PIN) is manager_approved=True with
+    # policy_authorized left False. Separating the two keeps the audit truthful
+    # so ``manager_approved`` never silently marks a by-policy (unapproved)
+    # invoice as an approved one.
+    policy_authorized = models.BooleanField(default=False)
     # Idempotency: a stable key uniquely ties a Payment row to one logical
     # tender action so a retried/duplicated request cannot double-record. The
     # client supplies this key for a retryable tender; server-derived keys are

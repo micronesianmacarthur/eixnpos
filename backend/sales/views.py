@@ -17,6 +17,7 @@ from customers.models import Customer
 from customers.services import LedgerService, LedgerError, can_override_credit
 from accounts.utils import is_manager
 from accounts.roles import has_admin_role
+from .policies import can_invoice_on_account
 
 
 class PaymentProcessingRejected(Exception):
@@ -90,9 +91,23 @@ class SaleViewSet(viewsets.ModelViewSet):
         dedicated void/refund actions which write the audit trail. Returns an
         error Response to short-circuit, or None to allow.
         """
+        data_keys = set(request.data.keys()) if hasattr(request.data, 'keys') else set()
+
+        # B4: once money is on the sale (any non-voided payment exists), the
+        # customer identity is frozen on every write path, even while the sale
+        # is still open. Swapping the customer after an invoice had been booked
+        # for customer A leaves the receivable on A while the sale/receipt name
+        # B, and a later refund then reverses against B -> uncaught
+        # NegativeBalanceError (HTTP 500). The correct correction is to void or
+        # refund first, then re-ring for the right customer.
+        if 'customer' in data_keys and sale.payments.exclude(voided=True).exists():
+            return Response(
+                {'detail': 'Cannot change the customer once a payment is recorded; void or refund first.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         if sale.is_open():
             return None
-        data_keys = set(request.data.keys()) if hasattr(request.data, 'keys') else set()
         touched = sorted(sale.INVIOLATE_FIELDS.intersection(data_keys))
         if touched:
             return Response(
@@ -276,7 +291,7 @@ class SaleViewSet(viewsets.ModelViewSet):
             raise PaymentProcessingRejected('idempotency_key too long (max 64 characters)')
         return key, key
 
-    def _record_payments(self, sale, method, amount, tendered, manager_approved, customer, splits, idempotency_key, *, operator=None, account_exception=False):
+    def _record_payments(self, sale, method, amount, tendered, manager_approved, customer, splits, idempotency_key, *, operator=None, account_exception=False, policy_authorized=False):
         """Create Payment row(s) through the payments.py processor framework.
 
         All writes happen inside a transaction.atomic() block (the caller
@@ -370,6 +385,7 @@ class SaleViewSet(viewsets.ModelViewSet):
             tendered=tendered,
             change_due=change_due,
             manager_approved=manager_approved,
+            policy_authorized=policy_authorized,
             idempotency_key=idempotency_key,
             source=Payment.SOURCE_UI,
             transaction_id=result.transaction_id,
@@ -453,6 +469,7 @@ class SaleViewSet(viewsets.ModelViewSet):
         # invoice gating (validation only; DB writes happen in the atomic block)
         customer = None
         account_exception = False
+        policy_authorized = False
         if method == Payment.METHOD_INVOICE:
             customer = sale.customer
             if customer is None and request.data.get('customer') is not None:
@@ -462,14 +479,41 @@ class SaleViewSet(viewsets.ModelViewSet):
                     customer = None
             if customer is None:
                 return Response({'detail': 'customer required'}, status=400)
-            if not manager_approved:
-                return Response({'detail': 'manager required'}, status=403)
+            # B1: the invoice no longer needs a manager/admin PIN. A registered
+            # customer may be invoiced on account by any authorized role
+            # (cashier/manager/admin). Walk-in stays blocked above (400); an
+            # unauthorized/ineligible actor gets a 403 here.
+            if not can_invoice_on_account(request.user, customer):
+                return Response(
+                    {'detail': 'Your account may not invoice to an account.'},
+                    status=403,
+                )
+            # B5: an invoice cannot exceed the outstanding balance on the sale
+            # (already-settled payments are not re-invoiced). Without this a
+            # cashier could book an invoice larger than the sale total, which
+            # would inflate dashboard/Z invoice totals against the sale
+            # revenue. Reuses the same settled/remaining arithmetic as the cash
+            # change computation.
+            settled = sum(
+                (p.amount for p in sale.payments.exclude(voided=True)),
+                Decimal('0'),
+            )
+            outstanding = max(Decimal('0'), sale.total - settled)
+            if amount > outstanding:
+                return Response(
+                    {'detail': 'Invoice amount exceeds the outstanding sale balance.'},
+                    status=400,
+                )
+            # B6: this Payment is admitted by policy, not by an explicit
+            # manager approval — record it so the audit trail can tell the two
+            # apart. Manager/admin sessions still set manager_approved=True.
+            policy_authorized = not manager_approved
             sale.customer = customer
             sale.save(update_fields=['customer'])
-            # Credit-limit semantics: manager approval authorizes the invoice
+            # Credit-limit semantics: policy authorization stamps the invoice
             # sale itself; the credit ceiling is a separate, hard policy on the
-            # running ledger balance and is enforced even for manager-approved
-            # invoices. Breaching it needs an account exception, which only an
+            # running ledger balance and is enforced even for policy-invoiced
+            # customers. Breaching it needs an account exception, which only an
             # operator with ``can_override_credit`` authority may grant.
             account_exception = can_override_credit(request.user)
             try:
@@ -540,6 +584,7 @@ class SaleViewSet(viewsets.ModelViewSet):
                     sale, method, amount, tendered,
                     manager_approved, customer, splits, effective_key,
                     operator=request.user, account_exception=account_exception,
+                    policy_authorized=policy_authorized,
                 )
                 if method == Payment.METHOD_SPLIT:
                     payload = PaymentSerializer(created, many=True).data

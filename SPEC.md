@@ -18,7 +18,7 @@ A single-shop POS web app: a Django (Python) backend exposing a REST API and ser
 6. As a cashier, I want to choose a payment method (cash, card, split, invoice), so that I can match how the customer pays.
 7. As a cashier, I want card payments recorded (not charged via terminal), so that the flow stays simple in v1.
 8. As a cashier, I want to enter cash tendered and see change due, so that I can make correct change.
-9. As a cashier, I want to charge a sale to a customer's account (invoice), gated by manager approval and credit limit, so that trusted customers can buy on credit.
+9. As a cashier, I want to charge a sale to a registered customer's account (invoice), role-authorized with credit limit enforced, so that trusted customers can buy on credit. (Manager approval no longer required for registered-customer invoices; walk-in/unregistered stays blocked; the credit ceiling still applies.)
 10. As a cashier, I want to complete a sale and see a display-only receipt, so that I can hand the device to the customer.
 11. As a cashier, I want to void an in-progress cart before completion, so that I can abandon a sale without side effects.
 12. As a cashier, I want to view my own sales, so that I can review what I've rung up.
@@ -59,7 +59,7 @@ A single-shop POS web app: a Django (Python) backend exposing a REST API and ser
 - **Domain modules to build:** Users/Roles, Products (flat), StockMovements, Customers (with balance/credit_limit), Suppliers (contact), Sales + SaleLines, Payments, Sessions (shifts), ZReports, Backups, Settings.
 - **Stock model:** Movement ledger; current quantity = sum of movements. Types: sale (negative), receive (positive), damage/loss, adjustment.
 - **Discount model:** Line-level only, percent or fixed amount, manager-gated (requires manager PIN/approval); amount and authorizer recorded on sale.
-- **Payment model:** cash, card (recorded, not charged), split tender, invoice (charge to customer account). Invoice gated by manager and credit limit.
+- **Payment model:** cash, card (recorded, not charged), split tender, invoice (charge to a registered customer's account). Invoice is role-authorized (cashier/manager/admin) for registered customers with the credit limit enforced; manager approval is no longer required for registered-customer invoicing.
 - **Customer account:** dedicated `PayOnAccount` transaction to settle debt; `credit_limit` field; charging blocked if it would exceed limit (manager override).
 - **Sale numbering:** global sequential counter.
 - **Tax:** none in v1 (tax-inclusive flat pricing). Per-product `tax_rate` deferred.

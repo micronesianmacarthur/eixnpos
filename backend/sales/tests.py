@@ -690,7 +690,10 @@ class SaleApiTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertFalse(Payment.objects.filter(sale=sale).exists())
 
-    def test_invoice_payment_requires_manager(self):
+    def test_cashier_can_invoice_registered_customer_without_approval(self):
+        # B1: a cashier invoices a registered customer on account by policy,
+        # with no manager/admin PIN. The invoice is flagged policy_authorized
+        # (not manager_approved) so the audit trail records the approval bypass.
         sale = self.make_sale_with_line(quantity=2)
 
         response = self.client.post(
@@ -699,9 +702,91 @@ class SaleApiTests(TestCase):
             format='json',
         )
 
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 201)
+        payment = Payment.objects.get(sale=sale)
+        self.assertTrue(payment.policy_authorized)
+        self.assertFalse(payment.manager_approved)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.balance, Decimal('20.00'))
+        entry = self.customer.ledger_entries.get()
+        self.assertEqual(entry.operator, self.cashier)
+
+    def test_cashier_cannot_invoice_walk_in_customer(self):
+        # Walk-in / unregistered (customer=None) still 400s; nothing is written.
+        sale = self.make_sale_with_line(quantity=2)
+
+        response = self.client.post(
+            f'/api/sales/{sale.id}/set_payment/',
+            {'method': 'invoice', 'amount': '20.00'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(Payment.objects.filter(sale=sale).exists())
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.balance, Decimal('0.00'))
+
+    def test_unauthenticated_user_cannot_invoice(self):
+        # An unauthenticated/ineligible actor is still blocked even though the
+        # manager gate is gone.
+        sale = self.make_sale_with_line(quantity=2)
+        self.client.force_authenticate(
+            User.objects.create_user(username='inactive', password='pw',
+                                     role='cashier', is_active=False)
+        )
+
+        response = self.client.post(
+            f'/api/sales/{sale.id}/set_payment/',
+            {'method': 'invoice', 'amount': '20.00', 'customer': self.customer.id},
+            format='json',
+        )
+
+        # The request never reaches the policy predicate for an inactive actor
+        # (IsAuthenticated already rejects via login); nothing is written.
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.balance, Decimal('0.00'))
+
+    def test_invoice_exceeding_outstanding_balance_is_rejected(self):
+        # B5: an invoice cannot exceed the outstanding balance on the sale.
+        sale = self.make_sale_with_line(quantity=2)  # total 20.00
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post(
+            f'/api/sales/{sale.id}/set_payment/',
+            {'method': 'invoice', 'amount': '25.00', 'customer': self.customer.id},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(Payment.objects.filter(sale=sale).exists())
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.balance, Decimal('0.00'))
+        self.assertEqual(self.customer.ledger_entries.count(), 0)
+
+    def test_customer_swap_after_invoice_is_rejected(self):
+        # B4: once a payment exists, the customer is frozen even on an open
+        # sale — swapping would split the receivable from the sale/ledger.
+        sale = self.make_sale_with_line(quantity=2)
+        resp = self.client.post(
+            f'/api/sales/{sale.id}/set_payment/',
+            {'method': 'invoice', 'amount': '20.00', 'customer': self.customer.id},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 201)
+        other = Customer.objects.create(name='Other', balance=Decimal('0.00'),
+                                        credit_limit=Decimal('25.00'))
+
+        resp2 = self.client.patch(
+            f'/api/sales/{sale.id}/',
+            {'customer': other.id},
+            format='json',
+        )
+
+        self.assertEqual(resp2.status_code, 400)
+        sale.refresh_from_db()
+        self.assertEqual(sale.customer, self.customer)
+        other.refresh_from_db()
+        self.assertEqual(other.balance, Decimal('0.00'))
 
     def test_invoice_payment_with_manager_credentials_charges_customer(self):
         sale = self.make_sale_with_line(quantity=2)

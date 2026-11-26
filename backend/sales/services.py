@@ -20,6 +20,7 @@ from inventory.models import StockMovement
 from products.models import Product
 from customers.models import Customer
 from customers.services import LedgerService, LedgerError, can_override_credit
+from .policies import can_invoice_on_account
 
 from .models import Sale, SaleLine, Payment, Refund, ImmutableSaleError
 from .payments import (
@@ -611,23 +612,34 @@ class TransactionService:
 
         # Validate invoice payment
         account_exception = False
+        policy_authorized = False
         if method == PaymentMethod.INVOICE:
             target_customer = customer or sale.customer
             if not target_customer:
                 raise TransactionError('Customer required for invoice payment')
 
-            if not effective_manager_approved:
-                raise TransactionError('Manager approval required for invoice payment')
+            # B1 mirror: the invoice no longer needs a manager/admin PIN. The
+            # policy predicate (sales.policies.can_invoice_on_account) admits a
+            # registered customer on account for any authorized role
+            # (cashier/manager/admin). Walk-in is rejected above; an
+            # unauthorized/ineligible actor is rejected here. The operator is
+            # the sale's recorded cashier on this service path.
+            if not can_invoice_on_account(sale.cashier, target_customer):
+                raise TransactionError(
+                    'Your account may not invoice to an account.'
+                )
 
-            # Credit-limit semantics: the customer's running ledger balance may
-            # not exceed their credit_limit. Manager approval authorizes
-            # *creating the invoice sale* only; it does NOT grant a credit-limit
-            # pass, because every invoice is manager-approved and the ceiling
-            # would otherwise be dead code. Breaching the ceiling requires a
-            # separate account exception (`approved` on the ledger entry), which
-            # only an operator with ``can_override_credit`` authority may grant.
-            # Debits generally (pay-downs) lower the balance and never trip the
-            # ceiling, so the ceiling is a hard policy on the running balance.
+            # B6 mirror: policy-invoiced (no explicit manager approval).
+            policy_authorized = not effective_manager_approved
+
+            # Credit-limit semantics: policy authorization stamps the invoice
+            # sale itself; the credit ceiling is a separate, hard policy on the
+            # running ledger balance and is enforced even for policy-invoiced
+            # customers. Breaching it requires a separate account exception
+            # (`approved` on the ledger entry), which only an operator with
+            # ``can_override_credit`` authority may grant. Debits generally
+            # (pay-downs) lower the balance and never trip the ceiling, so the
+            # ceiling is a hard policy on the running balance.
             account_exception = can_override_credit(sale.cashier)
             try:
                 LedgerService.preflight(
@@ -670,6 +682,7 @@ class TransactionService:
             "method": method.value,
             "amount": result.amount_processed,
             "manager_approved": effective_manager_approved,
+            "policy_authorized": policy_authorized,
         }
 
         if method == PaymentMethod.CASH:
