@@ -87,7 +87,14 @@ run_supervised() {
 serve() {
   local which="${1:-}" dir cmd
   case "$which" in
-    backend)  dir="$ROOT";          cmd=(uv run backend/manage.py runserver) ;;
+    backend)
+      dir="$ROOT"
+      # settings.py defaults DEBUG to off (deployment-safe). The dev launcher is
+      # explicitly for development, so opt back in unless the caller overrides;
+      # without it tracebacks are opaque and admin static files are not served.
+      export DJANGO_DEBUG="${DJANGO_DEBUG:-1}"
+      cmd=(uv run backend/manage.py runserver)
+      ;;
     frontend) dir="$ROOT/frontend"; cmd=(npm run dev) ;;
     *) echo "dev.sh: unknown server '$which'" >&2; return 2 ;;
   esac
