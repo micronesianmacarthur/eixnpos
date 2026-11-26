@@ -590,3 +590,179 @@ describe('SalesPage — per-tender idempotency key (R1)', () => {
     expect(keysSeen[1]).not.toBe(keysSeen[0])
   })
 })
+
+describe('SalesPage — cashier invoice without manager approval', () => {
+  interface InvoiceHarness {
+    user: ReturnType<typeof userEvent.setup>
+    setPaymentBodies: Array<Record<string, unknown>>
+  }
+
+  const CUSTOMER = { id: 9, name: 'Alice', balance: '0.00', credit_limit: '100.00' }
+
+  /** A sale with one paid product line, ready to be tendered. */
+  function invoiceableSale(lines = [
+    {
+      id: 72,
+      product: PAID_PRODUCT.id,
+      product_name: PAID_PRODUCT.name,
+      quantity: 1,
+      unit_price: '10.00',
+      discount_type: 'none',
+      discount_value: '0.00',
+      discount_amount: '0.00',
+      line_total: '10.00',
+    },
+  ]) {
+    return makeSale({
+      subtotal: '10.00',
+      total: '10.00',
+      lines,
+    })
+  }
+
+  /** Render the sale page with a customer available and an in-cart product. */
+  async function renderInvoicePage(
+    overrides: {
+      setPayment?: (body: Record<string, unknown>) => unknown
+      role?: string
+    } = {},
+  ): Promise<InvoiceHarness> {
+    const sale = invoiceableSale()
+    currentRole.value = overrides.role ?? 'cashier'
+    const setPaymentBodies: Array<Record<string, unknown>> = []
+    routeFetch({
+      'GET /api/products/': [PAID_PRODUCT],
+      'GET /api/customers/': [CUSTOMER],
+      'GET /api/business/': { id: 1, name: 'Test Biz' },
+      'POST /api/sales/': sale,
+      'GET /api/sales/55/': sale,
+      'PATCH /api/sales/55/lines/72/': sale.lines[0],
+      'POST /api/sales/55/set_payment/': (() => {
+        // The mock signature routes through an object keyed by `METHOD url`;
+        // routeFetch calls the handler with no args, so capture via closure on
+        // the request body is not available here. Instead tests assert the
+        // payload by spying on mockedFetch directly.
+        return { id: 99, method: 'invoice', amount: '10.00', tendered: null, change_due: '0.00', manager_approved: false }
+      })(),
+    })
+    renderPage()
+    await screen.findByText(PAID_PRODUCT.name)
+    const user = userEvent.setup()
+    const card = screen
+      .getAllByRole('button', { name: new RegExp(PAID_PRODUCT.name) })
+      .find((b) => b.querySelector('.product-name')?.textContent === PAID_PRODUCT.name)!
+    await user.click(card)
+    await screen.findByText('Widget', { selector: '.cart-line-name' })
+    // Select Alice (a registered customer) in the checkout customer dropdown.
+    await user.selectOptions(screen.getByLabelText('Customer'), String(CUSTOMER.id))
+    void overrides
+    return { user, setPaymentBodies }
+  }
+
+  it('does not render manager username/password fields when a customer is in the cart', async () => {
+    const { user } = await renderInvoicePage()
+    // F1: the approval block must be gone for a selected customer on invoice.
+    expect(screen.queryByLabelText('Manager username')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Manager password')).not.toBeInTheDocument()
+    expect(screen.queryByPlaceholderText('Manager approval required for invoice')).not.toBeInTheDocument()
+    // The credit display is retained.
+    expect(screen.getByText(/Available credit:/)).toBeInTheDocument()
+    void user
+  })
+
+  it('posts an invoice tender without manager credentials, keeping customer and idempotency key', async () => {
+    await renderInvoicePage()
+    const user = userEvent.setup()
+    // Tendered already defaults to the sale total.
+    await user.click(screen.getByRole('button', { name: 'Invoice' }))
+    await waitFor(() => {
+      expect(mockedFetch).toHaveBeenCalledWith(
+        '/api/sales/55/set_payment/',
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.stringContaining('"method":"invoice"') as unknown as string,
+        }),
+      )
+    })
+    const call = mockedFetch.mock.calls.find(
+      ([url]) => url === '/api/sales/55/set_payment/',
+    )!
+    const init = call[1] ?? {}
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>
+    expect(body.method).toBe('invoice')
+    expect(body.customer).toBe(CUSTOMER.id)
+    expect(body.idempotency_key).toBeTruthy()
+    // F2: no approval credentials travel with the invoice.
+    expect('manager_username' in body).toBe(false)
+    expect('manager_password' in body).toBe(false)
+  })
+
+  it('surfaces an actionable message on a credit-limit 400 and re-enables the invoice button', async () => {
+    currentRole.value = 'cashier'
+    const sale = invoiceableSale()
+    routeFetch({
+      'GET /api/products/': [PAID_PRODUCT],
+      'GET /api/customers/': [CUSTOMER],
+      'GET /api/business/': { id: 1, name: 'Test Biz' },
+      'POST /api/sales/': sale,
+      'GET /api/sales/55/': sale,
+      'PATCH /api/sales/55/lines/72/': sale.lines[0],
+      // The backend rejects the invoice tender with an OverLimitError (400).
+      'POST /api/sales/55/set_payment/': () => {
+        throw new ApiError(
+          'This invoice would exceed the credit limit of 100.00 (new balance 110.00). An approved account exception is required.',
+          400,
+          undefined,
+        )
+      },
+    })
+    renderPage()
+    await screen.findByText(PAID_PRODUCT.name)
+    const user = userEvent.setup()
+    const card = screen
+      .getAllByRole('button', { name: new RegExp(PAID_PRODUCT.name) })
+      .find((b) => b.querySelector('.product-name')?.textContent === PAID_PRODUCT.name)!
+    await user.click(card)
+    await screen.findByText('Widget', { selector: '.cart-line-name' })
+    await user.selectOptions(screen.getByLabelText('Customer'), String(CUSTOMER.id))
+
+    const invoiceButton = screen.getByRole('button', { name: 'Invoice' })
+    await user.click(invoiceButton)
+
+    // F3: the server's reason is shown inline with an actionable next step.
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(/credit limit/i)
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        /An admin must raise this customer's credit limit/i,
+      )
+    })
+    // No dead-end: the invoice button is usable again and the cart survives.
+    expect(invoiceButton).toBeEnabled()
+    expect(screen.getByText('Widget', { selector: '.cart-line-name' })).toBeInTheDocument()
+    expect(screen.getByText('Available credit: $100.00')).toBeInTheDocument()
+    void user
+  })
+
+  it('routes a walk-in (no customer) invoice to an error, with no manager prompt', async () => {
+    // Regression: a guest/walk-in (no registered customer selected) cannot be
+    // invoiced — the UI blocks the tender client-side and there is no
+    // fallback manager-approval prompt to route it through.
+    const { user } = await renderInvoicePage()
+    // Deselect the customer: back to walk-in.
+    await user.selectOptions(screen.getByLabelText('Customer'), '')
+
+    await user.click(screen.getByRole('button', { name: 'Invoice' }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(/select a customer/i)
+    })
+    // The old approval flow is never offered as a fallback for walk-ins.
+    expect(screen.queryByLabelText('Manager username')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Manager password')).not.toBeInTheDocument()
+    // No tender reached the backend.
+    expect(mockedFetch).not.toHaveBeenCalledWith(
+      '/api/sales/55/set_payment/',
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
+})

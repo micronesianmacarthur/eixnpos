@@ -359,42 +359,35 @@ class TestTransactionServiceCompleteSale:
         assert customer.balance == Decimal('10.00')
 
     def test_complete_sale_invoice_rejects_credit_limit(self, cashier_user, customer_low_credit_limit, product):
-        """Test that invoice payment requires manager approval (credit limit not checked without it)."""
+        """A cashier may policy-invoice a registered customer, but the credit
+        ceiling is a separate hard guard and is still enforced without a
+        manager — an over-limit invoice is refused (no ledger write)."""
         service = TransactionService()
         service.start_sale(cashier_user, customer=customer_low_credit_limit)
-        service.add_item(product, quantity=1)  # 10.00, but limit is 10.00
+        service.add_item(product, quantity=1)  # 10.00 line
 
-        # Without manager approval, it fails with "Manager approval required" before credit limit check
-        with pytest.raises(TransactionError, match='Manager approval required for invoice payment'):
-            service.complete_sale('invoice', Decimal('10.00'), manager_approved=False)
-
-    def test_complete_sale_invoice_manager_override_bypasses_credit_limit(self, cashier_user, customer_low_credit_limit, product):
-        """Test that manager approval bypasses credit limit check."""
-        service = TransactionService()
-        service.start_sale(cashier_user, customer=customer_low_credit_limit)
-        service.add_item(product, quantity=1)  # 10.00, but limit is 10.00
-        StockMovement.objects.create(product=product, quantity=10, movement_type='receive')
-
-        # With manager_approved=True, sale succeeds even though credit limit would be exceeded
-        sale = service.complete_sale('invoice', Decimal('10.00'), manager_approved=True)
-        assert sale.status == Sale.STATUS_COMPLETED
+        # Policy authorizes the invoice itself; the credit ceiling still
+        # rejects the over-limit amount with a TransactionError.
+        with pytest.raises(TransactionError, match='credit limit'):
+            service.complete_sale('invoice', Decimal('20.00'))
         customer_low_credit_limit.refresh_from_db()
-        assert customer_low_credit_limit.balance == Decimal('10.00')
+        assert customer_low_credit_limit.balance == Decimal('0.00')
 
     def test_complete_sale_invoice_allows_manager_override(self, cashier_user, customer_low_credit_limit, product):
-        """Test that manager can override credit limit for invoice."""
+        """A cashier can policy-invoice a registered customer within their
+        credit limit with no manager approval recorded."""
         service = TransactionService()
         service.start_sale(cashier_user, customer=customer_low_credit_limit)
-        service.add_item(product, quantity=1)
+        service.add_item(product, quantity=1)  # 10.00, limit 10.00 -> at ceiling, allowed
         StockMovement.objects.create(product=product, quantity=10, movement_type='receive')
 
-        # This should fail without manager approval
-        with pytest.raises(TransactionError, match='Manager approval required'):
-            service.complete_sale('invoice', Decimal('10.00'), manager_approved=False)
-
-        # But succeed with manager_approved=True (simulating manager auth)
-        sale = service.complete_sale('invoice', Decimal('10.00'), manager_approved=True)
+        # No manager_approved and no manager credentials: policy admits the
+        # cashier for a registered customer (B1) and the ceiling is not breached.
+        sale = service.complete_sale('invoice', Decimal('10.00'))
         assert sale.status == Sale.STATUS_COMPLETED
+        payment = Payment.objects.get(sale=sale)
+        assert payment.policy_authorized is True
+        assert payment.manager_approved is False
 
     def test_complete_sale_generates_receipt(self, cashier_user, product):
         """Test that completing sale generates receipt by default."""

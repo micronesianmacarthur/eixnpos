@@ -34,6 +34,12 @@ These actions remain manager/admin-only and are not shown to cashiers:
   voiding, refunding, or deleting sales, customer changes and credit limits,
   and the Django admin site (`/admin/`).
 
+Invoicing a **registered** customer on account is no longer manager-gated: a
+cashier may invoice a known customer directly, bounded by that customer's
+`credit_limit` (which only an admin can set). Walk-in/unregistered customers
+cannot be invoiced, and credit over the ceiling still needs an admin account
+exception.
+
 ### I can't open the dashboard
 
 1. **Not logged in?** Sign in at `/login` with your account; the app returns you

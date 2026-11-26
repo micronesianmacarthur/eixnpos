@@ -148,13 +148,13 @@ class InvoicePaymentTests(TestCase):
 
         response = self.client.post(
             f'/api/sales/{sale.id}/set_payment/',
-            {'method': 'invoice', 'amount': '15.00'},
+            {'method': 'invoice', 'amount': '10.00'},
             format='json',
         )
 
         self.assertEqual(response.status_code, 201)
         self.customer.refresh_from_db()
-        self.assertEqual(self.customer.balance, Decimal('15.00'))
+        self.assertEqual(self.customer.balance, Decimal('10.00'))
         self.assertTrue(Payment.objects.get(sale=sale).manager_approved)
 
     def test_invoice_adds_to_an_existing_balance(self):
@@ -165,13 +165,13 @@ class InvoicePaymentTests(TestCase):
 
         response = self.client.post(
             f'/api/sales/{sale.id}/set_payment/',
-            {'method': 'invoice', 'amount': '15.00'},
+            {'method': 'invoice', 'amount': '10.00'},
             format='json',
         )
 
         self.assertEqual(response.status_code, 201)
         self.customer.refresh_from_db()
-        self.assertEqual(self.customer.balance, Decimal('25.00'))
+        self.assertEqual(self.customer.balance, Decimal('20.00'))
 
     def test_invoice_with_unknown_customer_is_rejected(self):
         sale = self.make_sale()
@@ -199,18 +199,24 @@ class InvoicePaymentTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertFalse(Payment.objects.filter(sale=sale).exists())
 
-    def test_invoice_still_requires_manager_approval(self):
+    def test_cashier_can_invoice_registered_customer_without_approval(self):
+        # B1: a cashier invoices a registered customer on account by policy.
+        # The invoice is policy_authorized (approval bypass) and still books
+        # the receivable.
         sale = self.make_sale(customer=self.customer)
 
         response = self.client.post(
             f'/api/sales/{sale.id}/set_payment/',
-            {'method': 'invoice', 'amount': '15.00'},
+            {'method': 'invoice', 'amount': '10.00'},
             format='json',
         )
 
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 201)
+        payment = Payment.objects.get(sale=sale)
+        self.assertTrue(payment.policy_authorized)
+        self.assertFalse(payment.manager_approved)
         self.customer.refresh_from_db()
-        self.assertEqual(self.customer.balance, Decimal('0.00'))
+        self.assertEqual(self.customer.balance, Decimal('10.00'))
 
 
 class CashPaymentTests(TestCase):
