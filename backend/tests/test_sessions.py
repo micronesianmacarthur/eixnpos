@@ -539,9 +539,12 @@ class ZReportSnapshotTests(TestCase):
         first = self.client.get(f'/api/sessions/{session.id}/zreport/')
         self.assertEqual(first.status_code, 200)
 
-        # The live data changes after close: the sole sale is entirely removed,
-        # so any live recomputation would now report zero revenue.
-        Sale.objects.filter(session=session).delete()
+        # The live data changes after close: the sole sale is voided, so any
+        # live recomputation reports zero completed revenue. (Hard-deleting a
+        # completed sale is refused by the immutability guard.)
+        Sale.objects.filter(session=session).update(
+            status=Sale.STATUS_VOIDED, voided_at=timezone.now(),
+        )
         self.assertEqual(
             Decimal(compute_session_summary(session.id)['summary']['revenue']),
             Decimal('0.00'),

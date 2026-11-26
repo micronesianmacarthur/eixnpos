@@ -17,6 +17,7 @@ Run with the Django test runner:
 """
 from datetime import date
 from decimal import Decimal
+from django.utils import timezone
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -73,8 +74,12 @@ class RefundSplitRegressionTests(TestCase):
         sale's cash payment as cash-in (10.00), and the surfaces disagreed.
         """
         sale = self.make_sale(Decimal('10.00'))
-        sale.status = Sale.STATUS_REFUNDED
-        sale.save()
+        # Fixture: flip to refunded without the (now guarded) model save;
+        # queryset updates are the documented out-of-scope raw path (ADR-003)
+        # and keep the audit CHECK satisfied.
+        Sale.objects.filter(pk=sale.pk).update(
+            status=Sale.STATUS_REFUNDED, refunded_at=timezone.now(),
+        )
 
         # Shift close: expected_cash equals starting cash (nothing retained).
         response = self.close()
@@ -135,8 +140,12 @@ class RefundSplitRegressionTests(TestCase):
             Decimal('10.00'),
             payments=(('cash', Decimal('4.00')), ('card', Decimal('6.00'))),
         )
-        sale.status = Sale.STATUS_REFUNDED
-        sale.save()
+        # Fixture: flip to refunded without the (now guarded) model save;
+        # queryset updates are the documented out-of-scope raw path (ADR-003)
+        # and keep the audit CHECK satisfied.
+        Sale.objects.filter(pk=sale.pk).update(
+            status=Sale.STATUS_REFUNDED, refunded_at=timezone.now(),
+        )
 
         response = self.close()
         self.assertEqual(response.status_code, 200)

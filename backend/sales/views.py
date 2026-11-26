@@ -332,8 +332,11 @@ class SaleViewSet(viewsets.ModelViewSet):
             processor_kwargs['require_token'] = False
         processor = get_processor(method_enum, **processor_kwargs)
         metadata = {}
-        if method == Payment.METHOD_CASH and tendered is not None:
-            metadata['tendered'] = tendered
+        if method == Payment.METHOD_CASH:
+            # Backward compatibility: a bare amount on a cash tender means an
+            # exact tender (no change). The processor needs an explicit value,
+            # but the stored Payment keeps tendered=None for legacy clients.
+            metadata['tendered'] = tendered if tendered is not None else amount
         elif method == Payment.METHOD_INVOICE:
             metadata['customer_id'] = (customer or sale.customer).id
         result = processor.process_payment(amount, method_enum, metadata)

@@ -11,6 +11,7 @@ Run with the Django test runner:
 """
 from datetime import date
 from decimal import Decimal
+from django.utils import timezone
 import time
 
 from django.contrib.auth import get_user_model
@@ -76,9 +77,11 @@ class ZReportSnapshotRegressionTests(TestCase):
         snapshot = ZReportSnapshot.objects.get(session=self.session)
         summary_before = snapshot.summary_data
 
-        # Apply a later refund to a sale inside the closed shift.
-        self.sale.status = Sale.STATUS_REFUNDED
-        self.sale.save()
+        # Apply a later refund to a sale inside the closed shift. Queryset
+        # updates are the raw path outside the immutability guard (ADR-003).
+        Sale.objects.filter(pk=self.sale.pk).update(
+            status=Sale.STATUS_REFUNDED, refunded_at=timezone.now(),
+        )
 
         # Sleep across a wall-clock second boundary: the re-download must be
         # byte-identical to the first download (both pin /CreationDate to the
@@ -99,8 +102,7 @@ class ZReportSnapshotRegressionTests(TestCase):
         self.assertEqual(first.status_code, 200)
         first_bytes = first.content
 
-        self.sale.total = Decimal('99.99')
-        self.sale.save()
+        Sale.objects.filter(pk=self.sale.pk).update(total=Decimal('99.99'))
 
         # Sleep across a wall-clock second boundary: the re-download must be
         # byte-identical to the first download (both pin /CreationDate to the
