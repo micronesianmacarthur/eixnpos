@@ -3,8 +3,9 @@
 **Decision (one line).** Repack converts stock between two existing flat SKUs linked by a
 stored integer `units_per_pack` ratio, records one immutable `Repack` row plus a balanced
 pair of stock-ledger movements atomically, supports both split (pack → units) and merge-back
-(units → pack), and is available to manager/admin with **no feature flag, plan, or paid-tier
-gate**.
+(units → pack), and is available to **cashier, manager, and admin** with **no feature flag,
+plan, or paid-tier gate**. Cashiers perform repacks because the owner/manager is not reliably
+on site during trading hours; the recorded conversion must match the physical stock movement.
 
 **Task:** t_2c7af2e8 — v1 Inventory Repack requirements
 **Status:** requirements for implementation and QE; no production code was changed by this task.
@@ -22,7 +23,8 @@ A requirement statement is prescriptive even when it has no grade.
   `Product.quantity = F('quantity') + delta` in the same transaction as the movement row.
   `[sourced]` (`backend/inventory/models.py:7,9-55`)
 - Adjustment writes are manager/admin-only; movement reads are open to any authenticated
-  user. `[sourced]` (`backend/inventory/views.py:82-92`)
+  user. `[sourced]` (`backend/inventory/views.py:82-92`) Repack deliberately diverges from
+  adjustment authority: the cashier on the floor performs it (§2.2).
 - Roles are `cashier|manager|admin`; `has_manager_role()` covers manager, admin, and
   superuser. `[sourced]` (`backend/accounts/roles.py:18-48`)
 - There is no feature-flag, plan, entitlement, subscription, or location table/field
@@ -156,8 +158,12 @@ with the Repack id, reference, direction, location, operator, both SKU quantitie
 resulting on-hand values. Validation failures return 400, unauthenticated 401, forbidden 403,
 and concurrent-stock conflicts 409; no error response may expose a negative on-hand.
 
-**R1.10 — UI.** On the manager/admin product detail page, a product that participates in a
-mapping MUST expose a **Repack** action. The dialog MUST preset the viewed product as source,
+**R1.10 — UI.** The Repack action MUST be reachable by every role authorized to perform it —
+cashier, manager, and admin — from the inventory UI. Where the product detail page is
+manager/admin-only today (`frontend/src/AppRouter.tsx`), the implementation MUST either expose
+the action on the inventory list for cashiers or open the product detail page read-only to
+cashiers; editing prices/costs and the pack mapping stays manager-only. The dialog MUST preset
+the viewed product as source,
 derive the target and direction, accept an integer quantity and optional note, preview the
 computed other quantity plus resulting on-hand for both SKUs, and require explicit confirm.
 On success it MUST refresh the product and its movement list and show the Repack reference.
@@ -175,18 +181,25 @@ variable, license, subscription, plan, entitlement, or paid tier. Per the origin
 *"Do not gate this feature behind …"* — v1 ships it to every deployment. There MUST be no
 conditional in the request path that consults a plan/flag/entitlement; the only authorization
 is the user role. QE verifies on a fresh database with default settings and the seeded admin:
-manager can repack with no enablement step, and no settings row or build flag exists to turn
-the feature on or off.
+a cashier (and a manager) can repack with no enablement step, and no settings row or build flag
+exists to turn the feature on or off.
 
 > Baseline note: no feature-flag/plan/entitlement mechanism exists in the repo today
 > `[sourced]`, so this requirement also forbids introducing one for Repack.
 
 ### 2.2 Roles
 
-**R2.2 — Perform.** Only users with manager-tier authority (`role in {manager, admin}`, or
-superuser) MAY create a repack. A cashier MUST receive 403 on `POST /api/inventory/repack/`
-and the server MUST write nothing. No PIN or second-person approval is required beyond the
-role check. `[assumed]`
+**R2.2 — Perform.** Any authenticated, active user with `role in {cashier, manager, admin}`
+(or superuser) MAY create a repack for a linked pair. Authorization MUST be a role check only;
+no PIN, second-person approval, or manager credential is required. An unauthorized or inactive
+user MUST receive 403 and the server MUST write nothing.
+
+Owner decision (2026-11-27): **cashiers are authorized.** The owner and manager have full-time
+commitments elsewhere and are often absent while the shop is trading; if a cashier opens a case
+into units the conversion must be recorded in the same shift, or the stock ledger and the
+physical shelf diverge. A cashier MUST therefore receive 201 on a valid
+`POST /api/inventory/repack/`, not 403. Setting or changing the pack mapping is a different
+authority and stays manager/admin-only (R2.4).
 
 **R2.3 — View history.** Any authenticated user, including a cashier, MAY read
 `GET /api/inventory/repacks/` and the per-product movement history, because stock movement
@@ -199,18 +212,19 @@ manager-tier authority at the API layer; a cashier MUST receive 403. (The curren
 MUST add the manager-tier guard for these two fields at minimum. Leaving the rest of product
 write authorization unchanged is out of scope for this feature.)
 
-**R2.5 — UI visibility.** The Repack action MUST be rendered only on manager/admin screens.
-The role guard is defense in depth: the backend 403 in R2.2 is the enforcement point.
+**R2.5 — UI visibility.** The Repack action MUST be rendered for cashier, manager, admin, and
+superuser. The backend role check in R2.2 is the enforcement point; the UI mirrors it and MUST
+NOT hide the action from a cashier.
 
 ### 2.3 Permission matrix
 
 | Action | Cashier | Manager | Admin | Superuser |
 |---|---|---|---|---|
-| Perform repack (`POST /api/inventory/repack/`) | 403 | 201 | 201 | 201 |
+| Perform repack (`POST /api/inventory/repack/`) | 201 | 201 | 201 | 201 |
 | View repack history / stock movements | 200 | 200 | 200 | 200 |
 | Set/change pack mapping | 403 | 200 | 200 | 200 |
 | Delete or edit a Repack record | 405 | 405 | 405 | 405 (no endpoint) |
-| Use Repack without any flag/tier config | 403 (role only) | 201 | 201 | 201 |
+| Use Repack without any flag/tier config | 201 (role only) | 201 | 201 | 201 |
 
 ---
 
@@ -355,11 +369,14 @@ is the last-resort guard and QE concurrency tests must accept either 400 or 409 
 
 ## 6. Open questions
 
-These are the only unresolved decisions; everything above is specified.
+These are the remaining open decisions. Item 1 was resolved by the owner on 2026-11-27 and is
+retained for traceability.
 
-1. **May a cashier perform a repack?** Recommendation: no, manager/admin only in v1, matching
-   damage/adjustment authority. Confirm with the owner; if cashiers must open packs during a
-   shift, the change is a one-line predicate swap and a permission-matrix update.
+1. **RESOLVED — May a cashier perform a repack?** Yes. Owner decision, 2026-11-27: cashiers,
+   managers, and admins may perform repacks (R2.2). The owner/manager is not reliably present
+   during trading hours, and a repack the cashier cannot record leaves the stock ledger out of
+   step with the shelf. Mapping configuration (R2.4) stays manager/admin-only; performing a
+   repack and redefining a conversion are different authorities.
 2. **One pack parent per child, or several?** v1 permits several pack parents for the same
    child (e.g. a 6-pack and a 12-pack of the same single), which requires the dialog to ask
    for the target pack. Confirm this is wanted; if not, add a uniqueness constraint on
