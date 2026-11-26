@@ -742,4 +742,27 @@ describe('SalesPage — cashier invoice without manager approval', () => {
     expect(screen.getByText('Available credit: $100.00')).toBeInTheDocument()
     void user
   })
+
+  it('routes a walk-in (no customer) invoice to an error, with no manager prompt', async () => {
+    // Regression: a guest/walk-in (no registered customer selected) cannot be
+    // invoiced — the UI blocks the tender client-side and there is no
+    // fallback manager-approval prompt to route it through.
+    const { user } = await renderInvoicePage()
+    // Deselect the customer: back to walk-in.
+    await user.selectOptions(screen.getByLabelText('Customer'), '')
+
+    await user.click(screen.getByRole('button', { name: 'Invoice' }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(/select a customer/i)
+    })
+    // The old approval flow is never offered as a fallback for walk-ins.
+    expect(screen.queryByLabelText('Manager username')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Manager password')).not.toBeInTheDocument()
+    // No tender reached the backend.
+    expect(mockedFetch).not.toHaveBeenCalledWith(
+      '/api/sales/55/set_payment/',
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
 })
