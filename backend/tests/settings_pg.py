@@ -1,19 +1,21 @@
 """
 Test-only settings: same as config.settings but pointed at PostgreSQL.
 
-Used exclusively to run the row-locking concurrency tests
-(tests/sales/test_concurrency_locking.py) against a backend that actually
-enforces SELECT ... FOR UPDATE. SQLite (the dev default) silently ignores
-row locks, so the race under test is invisible there.
+Used exclusively to run the real-thread concurrency race tests
+(``tests/sales/test_concurrency_races.py`` and
+``tests/sales/test_concurrency_locking.py``, plus any other test that needs a
+backend which enforces ``SELECT ... FOR UPDATE``). SQLite (the dev
+default) silently ignores row locks, so those races are invisible there.
 
-Usage:
+CI command::
+
     cd backend
-    python manage.py test tests.sales.test_concurrency_locking \
-        --settings=tests.settings_pg
+    python manage.py test tests.sales.test_concurrency_races \\
+        --settings=tests.settings_pg --noinput -v 2
 
 The Django test runner creates and destroys a scratch database
 (``test_eixn_pos``); the developer database itself is never touched.
-Adjust NAME/USER/HOST/PORT to your local PostgreSQL instance.
+Adjust NAME/USER/HOST/PORT to the local PostgreSQL instance.
 """
 from config.settings import *  # noqa: F401,F403
 
