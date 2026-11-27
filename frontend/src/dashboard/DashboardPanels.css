@@ -143,45 +143,29 @@
   font-size: 11px;
 }
 
-.performance-chart-bar {
+.performance-chart-area {
   fill: var(--mm-primary);
+  fill-opacity: 0.16;
+  stroke: none;
 }
 
-.performance-chart-bar--dim {
-  opacity: 0.35;
+.performance-chart-line {
+  fill: none;
+  stroke: var(--mm-primary);
+  stroke-width: 2.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
 }
 
-.performance-chart-bar.is-zero {
-  fill: var(--mm-border);
-}
-
-.performance-chart-bar-label {
-  fill: var(--mm-text-muted);
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
+.performance-chart-point {
+  fill: var(--mm-primary);
+  stroke: var(--mm-surface);
+  stroke-width: 1.5;
 }
 
 .performance-chart-xlabel {
   fill: var(--mm-text-muted);
   font-size: 11px;
-}
-
-.performance-mom--up {
-  color: var(--mm-success-foreground);
-  font-weight: 600;
-}
-
-.performance-mom--down {
-  color: var(--mm-error-foreground);
-  font-weight: 600;
-}
-
-.performance-mom--flat {
-  color: var(--mm-text-muted);
-}
-
-.performance-table .mm-muted {
-  font-weight: 400;
 }
 
 /* --- Backup status panel (contract §4.7 / §5.8) --- */
