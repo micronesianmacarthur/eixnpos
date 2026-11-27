@@ -89,7 +89,7 @@ const EMPTY_FORM: ProductForm = {
   non_stock: false,
   initial_stock: '0',
   unit_product: '',
-  units_per_pack: '1',
+  units_per_pack: '',
 };
 
 function toNumber(value: string | number | null | undefined): number {
@@ -203,7 +203,7 @@ export default function ProductPage() {
         non_stock: product.non_stock,
         initial_stock: '0',
         unit_product: product.unit_product ? String(product.unit_product) : '',
-        units_per_pack: product.units_per_pack ? String(product.units_per_pack) : '1',
+        units_per_pack: product.units_per_pack ? String(product.units_per_pack) : '',
       });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to load product');
@@ -343,15 +343,20 @@ export default function ProductPage() {
     if (toNumber(form.cost) < 0) return 'Cost cannot be negative.';
     if (toNumber(form.min_stock) < 0) return 'Min stock cannot be negative.';
     if (!isEdit && toNumber(form.initial_stock) < 0) return 'Initial stock cannot be negative.';
-    const hasUnit = form.unit_product.trim() !== '';
-    const hasUnits = form.units_per_pack.trim() !== '';
-    if (hasUnit !== hasUnits) {
-      return 'Pack mapping requires both a unit product and units per pack (or neither).';
-    }
-    if (hasUnit) {
-      const units = parseInt(form.units_per_pack, 10);
-      if (!Number.isInteger(units) || units < 2 || units > 1_000_000) {
-        return 'Units per pack must be a whole number between 2 and 1,000,000.';
+    // Pack mapping is optional: both fields empty means a standard product.
+    // Only the manager/admin form renders the mapping fields, so only those
+    // users are held to the both-or-neither rule when they do set one.
+    if (isManagerOrAdmin) {
+      const hasUnit = form.unit_product.trim() !== '';
+      const hasUnits = form.units_per_pack.trim() !== '';
+      if (hasUnit !== hasUnits) {
+        return 'Pack mapping requires both a unit product and units per pack (or neither).';
+      }
+      if (hasUnit) {
+        const units = parseInt(form.units_per_pack, 10);
+        if (!Number.isInteger(units) || units < 2 || units > 1_000_000) {
+          return 'Units per pack must be a whole number between 2 and 1,000,000.';
+        }
       }
     }
     return null;
@@ -623,11 +628,11 @@ export default function ProductPage() {
         <section className="form-section">
           <h2 className="mm-card-title">Pack mapping</h2>
           <p className="mm-muted small">
-            Define this product as a pack that converts into a unit product.
-            Both fields must be set together (or left unset to make this a plain
-            product). A value of <em>units per pack</em> between 2 and 1,000,000
-            is required. This mapping is manager/admin-only and may be frozen
-            once repacks reference it.
+            Optional. Set both fields to define this product as a pack that
+            converts into a unit product, or leave both blank to create a
+            standard product. When set, <em>units per pack</em> must be a whole
+            number between 2 and 1,000,000. This mapping is manager/admin-only
+            and may be frozen once repacks reference it.
           </p>
 
           <label className="mm-field">

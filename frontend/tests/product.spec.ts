@@ -573,6 +573,10 @@ test('creates a product and posts initial stock before returning to inventory', 
     supplier: 1,
     active: false,
     non_stock: false,
+    // Pack mapping is optional; a standard product is submitted with explicit
+    // nulls so PATCH-style clears stay unambiguous (S3 / R1.1).
+    unit_product: null,
+    units_per_pack: null,
   });
 
   const received = await receiveRequest;
