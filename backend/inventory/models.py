@@ -4,7 +4,18 @@ from django.db.models import F
 from django.utils import timezone
 from products.models import Product
 
-MOVEMENT_TYPES = [('sale','sale'),('receive','receive'),('damage','damage'),('adjustment','adjustment')]
+MOVEMENT_TYPES = [
+    ('sale', 'sale'),
+    ('receive', 'receive'),
+    ('damage', 'damage'),
+    ('adjustment', 'adjustment'),
+    ('repack_out', 'repack_out'),
+    ('repack_in', 'repack_in'),
+]
+
+#: Single inventory location in v1. There is no Location model yet; a repack
+#: always records the constant below (client-supplied locations are ignored).
+REPACK_LOCATION = 'main'
 
 class StockMovement(models.Model):
     # PRODUCT IS PROTECTed: receiving (and all) history must never be
@@ -136,3 +147,77 @@ class ReceiptLine(models.Model):
 
     def __str__(self):
         return f"{self.product} x{self.quantity} @ {self.unit_cost}"
+
+
+class Repack(models.Model):
+    """An inventory repack (conversion between two linked flat Products).
+
+    One row per successful conversion, written by ``inventory.services.perform_repack``
+    atomically together with its two StockMovement rows (``repack_out`` on the source,
+    ``repack_in`` on the target). The record is immutable audit history:
+
+    * ``source_sku`` / ``target_sku`` / ``units_per_pack`` are snapshots taken at
+      execution time, so later product renames or SKU edits never rewrite history.
+    * All product FKs and both movement FKs are ``PROTECT``: a product that appears
+      in a repack (or a movement a repack links) cannot be hard-deleted, so the
+      ledger stays reproducible forever.
+    * There is no API or admin path to update, delete, or reverse a row. Reversal is a
+      new, compensating ``merge`` repack; never an edit of this row.
+
+    The ``OneToOneField``s to the two movements (each with ``unique=True`` implied) are
+    the DB form of "FK, unique" linking exactly one pair of movements per repack.
+    """
+
+    class Direction(models.TextChoices):
+        SPLIT = 'split', 'split'
+        MERGE = 'merge', 'merge'
+
+    reference = models.CharField(max_length=16, unique=True)
+    location = models.CharField(max_length=32, default=REPACK_LOCATION)
+    direction = models.CharField(max_length=8, choices=Direction.choices)
+    source_product = models.ForeignKey(
+        Product, on_delete=models.PROTECT, related_name='repacks_as_source'
+    )
+    source_sku = models.CharField(max_length=64)
+    source_quantity = models.PositiveIntegerField()
+    target_product = models.ForeignKey(
+        Product, on_delete=models.PROTECT, related_name='repacks_as_target'
+    )
+    target_sku = models.CharField(max_length=64)
+    target_quantity = models.PositiveIntegerField()
+    units_per_pack = models.PositiveIntegerField()
+    performed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='repacks_performed'
+    )
+    note = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    source_movement = models.OneToOneField(
+        StockMovement, on_delete=models.PROTECT, related_name='repack_source_for'
+    )
+    target_movement = models.OneToOneField(
+        StockMovement, on_delete=models.PROTECT, related_name='repack_target_for'
+    )
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        constraints = [
+            # A repack always moves stock between two distinct products.
+            models.CheckConstraint(
+                condition=~models.Q(source_product_id=models.F('target_product_id')),
+                name='repack_products_differ',
+            ),
+            # Both quantities are positive whole units; zero- or negative-quantity
+            # repacks are rejected at the serializer before any ORM write, and the
+            # DB deserves a last-resort guard too.
+            models.CheckConstraint(
+                condition=models.Q(source_quantity__gte=1),
+                name='repack_source_qty_positive',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(target_quantity__gte=1),
+                name='repack_target_qty_positive',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.reference} {self.direction} {self.source_sku}x{self.source_quantity} -> {self.target_sku}x{self.target_quantity}"

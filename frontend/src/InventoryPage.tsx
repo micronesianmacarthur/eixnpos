@@ -9,6 +9,7 @@ import { useNavigate } from 'react-router-dom';
 import { apiFetch, ApiError } from './api';
 import { useAuth } from './authContext';
 import { Icon } from './Icon';
+import RepackDialog from './RepackDialog';
 import './InventoryPage.css';
 
 interface Product {
@@ -28,6 +29,29 @@ interface Product {
   is_low_stock: boolean;
   non_stock: boolean;
   category_name: string | null;
+  unit_product: number | null;
+  units_per_pack: number | null;
+  unit_product_sku: string | null;
+  unit_product_name: string | null;
+  pack_parents: {
+    id: number;
+    sku: string | null;
+    name: string;
+    units_per_pack: number | null;
+  }[];
+}
+
+interface RepackRecord {
+  id: number;
+  reference: string;
+  direction: 'split' | 'merge';
+  location: string;
+  source_sku: string | null;
+  source_quantity: number;
+  target_sku: string | null;
+  target_quantity: number;
+  performed_by_name: string | null;
+  created_at: string;
 }
 
 interface ReceiveForm {
@@ -52,6 +76,11 @@ function normalizeList<T>(data: T[] | { results: T[] }): T[] {
   return Array.isArray(data) ? data : data.results;
 }
 
+function formatDate(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(undefined, { hour12: false });
+}
+
 export default function InventoryPage() {
   const navigate = useNavigate();
   const { me } = useAuth();
@@ -69,6 +98,32 @@ export default function InventoryPage() {
   const [receiveForm, setReceiveForm] = useState<ReceiveForm>(EMPTY_RECEIVE);
   const [receiveError, setReceiveError] = useState('');
   const [receiveSaving, setReceiveSaving] = useState(false);
+
+  const [repackOpen, setRepackOpen] = useState(false);
+  const [repackProduct, setRepackProduct] = useState<Product | null>(null);
+  const [repackHistory, setRepackHistory] = useState<RepackRecord[]>([]);
+  const [repackHistoryError, setRepackHistoryError] = useState('');
+  const [repackNotice, setRepackNotice] = useState('');
+
+  const productsById = useMemo(() => {
+    const map = new Map<number, Product>();
+    for (const p of products) map.set(p.id, p);
+    return map;
+  }, [products]);
+
+  const loadRepackHistory = useCallback(async () => {
+    try {
+      const data = await apiFetch<RepackRecord[]>('/api/inventory/repacks/');
+      setRepackHistory(Array.isArray(data) ? data : (data as { results: RepackRecord[] }).results);
+      setRepackHistoryError('');
+    } catch (err) {
+      setRepackHistoryError(err instanceof ApiError ? err.message : 'Failed to load repack history');
+    }
+  }, []);
+
+  useEffect(() => {
+    loadRepackHistory();
+  }, [loadRepackHistory]);
 
   const loadProducts = useCallback(async () => {
     try {
@@ -137,6 +192,22 @@ export default function InventoryPage() {
     setReceiveForm(EMPTY_RECEIVE);
     setReceiveError('');
     setReceiveOpen(true);
+  };
+
+  const openRepack = (product: Product) => {
+    setRepackProduct(product);
+    setRepackNotice('');
+    setRepackOpen(true);
+  };
+
+  const closeRepack = () => setRepackOpen(false);
+
+  const handleRepackSuccess = async (reference: string) => {
+    setRepackOpen(false);
+    setRepackProduct(null);
+    setRepackNotice(reference);
+    await loadProducts();
+    await loadRepackHistory();
   };
 
   const closeReceive = () => {
@@ -328,6 +399,19 @@ export default function InventoryPage() {
                       </td>
                       <td className="col-supplier">{supplierName}</td>
                       <td className="col-actions">
+                        <button
+                          type="button"
+                          className="mm-btn mm-btn--outline mm-btn--sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openRepack(product);
+                          }}
+                          aria-label={`Repack ${product.name}`}
+                          title="Repack"
+                          disabled={product.non_stock}
+                        >
+                          Repack
+                        </button>
                         {isManagerOrAdmin && (
                           <button
                             type="button"
@@ -352,6 +436,91 @@ export default function InventoryPage() {
           </div>
         )}
       </section>
+
+      {/* Repack history (read-only, no edit/delete controls) */}
+      <section className="mm-card inventory-panel" aria-label="Repack history">
+        <header className="mm-card-header">
+          <div>
+            <h2 className="mm-card-title">Repack history</h2>
+            <p className="mm-card-subtitle">
+              Conversions between a pack and its unit product.
+            </p>
+          </div>
+          {!repackHistoryError && repackHistory.length > 0 && (
+            <span className="mm-badge">{repackHistory.length}{repackHistory.length === 1 ? ' conversion' : ' conversions'}</span>
+          )}
+        </header>
+
+        {repackHistoryError && (
+          <div className="mm-alert mm-alert--danger" role="alert">
+            {repackHistoryError}
+          </div>
+        )}
+
+        {!repackHistoryError && repackHistory.length === 0 && (
+          <div className="mm-empty movements-empty">
+            <h3 className="mm-empty-title">No repacks recorded</h3>
+            <p className="mm-empty-text">
+              A repack converts units between a pack and its unit product. Record one
+              with the Repack action on a product row.
+            </p>
+          </div>
+        )}
+
+        {repackHistory.length > 0 && (
+          <div className="mm-table-wrap">
+            <table className="mm-table repack-history-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Reference</th>
+                  <th>Direction</th>
+                  <th>From (SKU × qty)</th>
+                  <th>To (SKU × qty)</th>
+                  <th>Operator</th>
+                  <th>Location</th>
+                </tr>
+              </thead>
+              <tbody>
+                {repackHistory.map((repack) => (
+                  <tr key={repack.id}>
+                    <td>{formatDate(repack.created_at)}</td>
+                    <td>{repack.reference}</td>
+                    <td>
+                      <span className={`mm-badge ${repack.direction === 'split' ? 'mm-badge--warning' : 'mm-badge--success'}`}>
+                        {repack.direction === 'split' ? 'Split' : 'Merge'}
+                      </span>
+                    </td>
+                    <td>{repack.source_sku || '—'} × {repack.source_quantity}</td>
+                    <td>{repack.target_sku || '—'} × {repack.target_quantity}</td>
+                    <td>{repack.performed_by_name || '—'}</td>
+                    <td>{repack.location}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {repackNotice && (
+        <div className="mm-alert mm-alert--success repack-notice" role="status">
+          Repack recorded — reference <strong>{repackNotice}</strong>.
+          <button type="button" className="mm-btn mm-btn--ghost mm-btn--sm" onClick={() => setRepackNotice('')} aria-label="Dismiss">
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* Repack stock modal */}
+      {repackOpen && repackProduct && (
+        <RepackDialog
+          product={repackProduct}
+          productsById={productsById}
+          onClose={closeRepack}
+          onSuccess={handleRepackSuccess}
+        />
+      )}
 
       {/* Receive stock modal */}
       {receiveOpen && receiveProduct && (

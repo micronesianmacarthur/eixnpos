@@ -143,6 +143,20 @@
   }
 }
 
+/* Repack history list + success notice */
+
+.repack-history-table {
+  min-width: 720px;
+}
+
+.repack-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+}
+
 @media (max-width: 520px) {
   .inventory-page > .mm-page-header {
     flex-direction: column;

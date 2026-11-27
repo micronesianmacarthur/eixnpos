@@ -1,11 +1,20 @@
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from rest_framework import serializers, viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from accounts.permissions import IsManagerOrAdmin
 from products.models import Product
-from .models import StockMovement
+from .models import Repack, StockMovement
+from .permissions import CanPerformRepack
+from .services import (
+    REPACK_QTY_MIN,
+    REPACK_QTY_MAX,
+    RepackError,
+    perform_repack,
+)
 
 # Serializer-level bounds are the first line of defense for B1: they reject
 # absurd or non-integral quantities before any ORM work, and the Product
@@ -186,3 +195,174 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
             },
             status=status.HTTP_201_CREATED,
         )
+
+
+class StrictIntegerField(serializers.IntegerField):
+    """Whole JSON integers only: no strings, floats, or booleans (R1.5/R4.3).
+
+    DRF's ``IntegerField`` would coerce ``"3"``, ``3.0`` and ``" 3 "`` into an int
+    in this version, which silently relaxes the "no rounding / no coercion" rule.
+    Any non-int input (including booleans, which are ``bool`` subclasses) is
+    rejected as a field error before any ORM work.
+    """
+
+    def to_internal_value(self, data):
+        if isinstance(data, bool) or not isinstance(data, int):
+            raise serializers.ValidationError(
+                'A whole-number integer is required.'
+            )
+        return super().to_internal_value(data)
+
+
+class RepackCreateSerializer(serializers.Serializer):
+    """The create payload: only the four fields the client may supply (R1.2).
+
+    ``source_product``/``target_product`` must exist (FK resolution) and
+    ``source_quantity`` must be a whole JSON integer in 1..1,000,000. Direction,
+    ratio, computed target quantity, location, operator, and SKUs are all derived
+    server-side from the stored pair; any client-supplied audit fields are simply
+    ignored because they are not declared here.
+    """
+    source_product = serializers.PrimaryKeyRelatedField(queryset=Product.objects.all())
+    target_product = serializers.PrimaryKeyRelatedField(queryset=Product.objects.all())
+    source_quantity = StrictIntegerField(
+        min_value=REPACK_QTY_MIN, max_value=REPACK_QTY_MAX
+    )
+    note = serializers.CharField(
+        required=False, allow_blank=True, allow_null=True, max_length=500
+    )
+
+
+class RepackSerializer(serializers.ModelSerializer):
+    """Read view of a Repack for create responses and history."""
+
+    performed_by_name = serializers.CharField(
+        source='performed_by.username', read_only=True
+    )
+    source_on_hand = serializers.SerializerMethodField()
+    target_on_hand = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Repack
+        fields = [
+            'id', 'reference', 'direction', 'location', 'performed_by',
+            'performed_by_name', 'created_at', 'note', 'units_per_pack',
+            'source_product', 'source_sku', 'source_quantity', 'source_on_hand',
+            'target_product', 'target_sku', 'target_quantity', 'target_on_hand',
+        ]
+
+    def get_source_on_hand(self, obj):
+        # The resulting on-hand for the source after this repack is recorded on its
+        # ``repack_out`` movement.
+        return obj.source_movement.new_on_hand
+
+    def get_target_on_hand(self, obj):
+        return obj.target_movement.new_on_hand
+
+
+class RepackCreateView(APIView):
+    """Create one repack: ``POST /api/inventory/repack/``.
+
+    Authenticated cashiers/managers/admins/superusers may repack (R2.2); a rejected
+    request writes nothing partial. A domain failure is a 400 carrying a stable
+    machine ``code`` alongside the human ``detail``; a concurrent stock conflict is
+    a 409. The full transaction lives in ``inventory.services.perform_repack`` so
+    the view only interprets the outcome.
+    """
+
+    permission_classes = [CanPerformRepack]
+
+    def post(self, request):
+        serializer = RepackCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        try:
+            repack = perform_repack(
+                source_product=data['source_product'],
+                target_product=data['target_product'],
+                source_quantity=data['source_quantity'],
+                note=data.get('note') or '',
+                user=request.user,
+            )
+        except RepackError as exc:
+            return self._error_response(exc)
+        except IntegrityError:
+            return Response(
+                {'detail': 'Stock changed concurrently; please retry.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        out = RepackSerializer(repack)
+        return Response(out.data, status=status.HTTP_201_CREATED)
+
+    @staticmethod
+    def _error_response(exc):
+        # Field-scoped errors (e.g. sku_required) get a DRF-style field dict, but
+        # the machine ``code`` is always included so consumers can branch on it.
+        body = {'detail': exc.message, 'code': exc.code}
+        if exc.field:
+            body = {exc.field: [exc.message], 'code': exc.code}
+        return Response(body, status=status.HTTP_400_BAD_REQUEST)
+
+
+class RepackListView(APIView):
+    """Read-only history: ``GET /api/inventory/repacks/``.
+
+    Any authenticated user may list repacks (R2.3). Returns newest first as an
+    unpaginated array (matching the existing inventory list). ``?product=<id>``
+    matches a record when the id is either side of the pair; ``?direction=split|merge``
+    filters. Invalid filter values return 400 (``invalid_direction``/``invalid_product``)
+    rather than a silent empty list.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        queryset = Repack.objects.select_related(
+            'source_product', 'target_product', 'performed_by',
+            'source_movement', 'target_movement',
+        ).all()
+
+        product = request.query_params.get('product')
+        if product is not None:
+            try:
+                product_id = int(product)
+            except (TypeError, ValueError):
+                return Response(
+                    {'detail': 'product must be an integer product id.',
+                     'code': 'invalid_product'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            queryset = queryset.filter(
+                Q(source_product_id=product_id) | Q(target_product_id=product_id)
+            )
+
+        direction = request.query_params.get('direction')
+        if direction is not None:
+            if direction not in Repack.Direction.values:
+                return Response(
+                    {'detail': 'direction must be one of split or merge.',
+                     'code': 'invalid_direction'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            queryset = queryset.filter(direction=direction)
+
+        # Meta.ordering is '-created_at', '-id' -> newest first already.
+        data = RepackSerializer(queryset, many=True)
+        return Response(data.data)
+
+
+class RepackDetailView(APIView):
+    """Explicit no-mutation detail route so PUT/PATCH/DELETE return 405.
+
+    The plan (AC-32 / R1.8) requires ``PUT``/``PATCH``/``DELETE`` on an individual
+    repack to return 405, but there is deliberately no mutation route. The router's
+    catch-all detail regex (``^(?P<pk>[^/.]+)/$``) does not match the two-segment
+    ``repacks/5/`` path, so without an explicit entry a detail request would fall
+    through to a bare 404 instead of the documented 405. This view defines no
+    method handler, so every verb returns 405 Method Not Allowed. History remains
+    list-only (``GET /api/inventory/repacks/``), matching the spec.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]

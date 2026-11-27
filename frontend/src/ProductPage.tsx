@@ -28,6 +28,10 @@ interface Product {
   quantity: number;
   is_low_stock: boolean;
   non_stock: boolean;
+  unit_product: number | null;
+  units_per_pack: number | null;
+  unit_product_sku: string | null;
+  unit_product_name: string | null;
 }
 
 interface Supplier {
@@ -46,7 +50,7 @@ interface StockMovement {
   id: number;
   product: number;
   product_name: string;
-  movement_type: 'sale' | 'receive' | 'damage' | 'adjustment';
+  movement_type: 'sale' | 'receive' | 'damage' | 'adjustment' | 'repack_out' | 'repack_in';
   quantity: number;
   reference: string;
   note: string;
@@ -66,6 +70,8 @@ interface ProductForm {
   active: boolean;
   non_stock: boolean;
   initial_stock: string;
+  unit_product: string;
+  units_per_pack: string;
 }
 
 const EMPTY_FORM: ProductForm = {
@@ -81,6 +87,8 @@ const EMPTY_FORM: ProductForm = {
   active: true,
   non_stock: false,
   initial_stock: '0',
+  unit_product: '',
+  units_per_pack: '1',
 };
 
 function toNumber(value: string | number | null | undefined): number {
@@ -93,6 +101,8 @@ const TYPE_LABELS: Record<StockMovement['movement_type'], string> = {
   receive: 'Receive',
   damage: 'Damage',
   adjustment: 'Adjustment',
+  repack_out: 'Repack out',
+  repack_in: 'Repack in',
 };
 
 const TYPE_BADGES: Record<StockMovement['movement_type'], string> = {
@@ -100,6 +110,8 @@ const TYPE_BADGES: Record<StockMovement['movement_type'], string> = {
   receive: 'mm-badge--success',
   damage: 'mm-badge--danger',
   adjustment: 'mm-badge--warning',
+  repack_out: 'mm-badge--danger',
+  repack_in: 'mm-badge--success',
 };
 
 function formatDate(value: string): string {
@@ -122,6 +134,7 @@ export default function ProductPage() {
 
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [categories, setCategories] = useState<{ id: number; name: string; active?: boolean }[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
 
   const [categoryModalOpen, setCategoryModalOpen] = useState(false);
   const [categoryName, setCategoryName] = useState('');
@@ -161,6 +174,16 @@ export default function ProductPage() {
     }
   }, []);
 
+  const loadProducts = useCallback(async () => {
+    try {
+      const data = await apiFetch<Product[] | { results: Product[] }>('/api/products/');
+      const list = Array.isArray(data) ? data : data.results;
+      setProducts(list);
+    } catch {
+      // non-fatal
+    }
+  }, []);
+
   const loadProduct = useCallback(async () => {
     if (!isEdit || !productId) return;
     try {
@@ -178,6 +201,8 @@ export default function ProductPage() {
         active: product.active,
         non_stock: product.non_stock,
         initial_stock: '0',
+        unit_product: product.unit_product ? String(product.unit_product) : '',
+        units_per_pack: product.units_per_pack ? String(product.units_per_pack) : '1',
       });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to load product');
@@ -205,6 +230,12 @@ export default function ProductPage() {
   useEffect(() => {
     Promise.all([loadSuppliers(), loadCategories(), loadProduct()]);
   }, [loadSuppliers, loadCategories, loadProduct]);
+
+  useEffect(() => {
+    if (isManagerOrAdmin) {
+      void loadProducts();
+    }
+  }, [isManagerOrAdmin, loadProducts]);
 
   useEffect(() => {
     if (!isEdit) {
@@ -311,6 +342,17 @@ export default function ProductPage() {
     if (toNumber(form.cost) < 0) return 'Cost cannot be negative.';
     if (toNumber(form.min_stock) < 0) return 'Min stock cannot be negative.';
     if (!isEdit && toNumber(form.initial_stock) < 0) return 'Initial stock cannot be negative.';
+    const hasUnit = form.unit_product.trim() !== '';
+    const hasUnits = form.units_per_pack.trim() !== '';
+    if (hasUnit !== hasUnits) {
+      return 'Pack mapping requires both a unit product and units per pack (or neither).';
+    }
+    if (hasUnit) {
+      const units = parseInt(form.units_per_pack, 10);
+      if (!Number.isInteger(units) || units < 2 || units > 1_000_000) {
+        return 'Units per pack must be a whole number between 2 and 1,000,000.';
+      }
+    }
     return null;
   };
 
@@ -326,7 +368,7 @@ export default function ProductPage() {
     setSaving(true);
     setError('');
 
-    const payload = {
+    const payload: Record<string, unknown> = {
       name: form.name.trim(),
       category: form.category ? parseInt(form.category, 10) : null,
       description: form.description.trim(),
@@ -338,6 +380,12 @@ export default function ProductPage() {
       active: form.active,
       non_stock: form.non_stock,
     };
+    // Pack mapping is manager/admin-only in the UI; send it only when the
+    // current user is allowed to set it (the API still enforces this).
+    if (isManagerOrAdmin && form.unit_product.trim() !== '') {
+      payload.unit_product = parseInt(form.unit_product, 10);
+      payload.units_per_pack = parseInt(form.units_per_pack, 10);
+    }
 
     try {
       if (isEdit && productId) {
@@ -570,6 +618,54 @@ export default function ProductPage() {
         </div>
       </section>
 
+      {isManagerOrAdmin && (
+        <section className="form-section">
+          <h2 className="mm-card-title">Pack mapping</h2>
+          <p className="mm-muted small">
+            Define this product as a pack that converts into a unit product.
+            Both fields must be set together (or left unset to make this a plain
+            product). A value of <em>units per pack</em> between 2 and 1,000,000
+            is required. This mapping is manager/admin-only and may be frozen
+            once repacks reference it.
+          </p>
+
+          <label className="mm-field">
+            <span className="mm-label">Unit product</span>
+            <select
+              className="mm-select"
+              value={form.unit_product}
+              onChange={(e) => handleChange('unit_product', e.target.value)}
+              aria-label="Unit product"
+            >
+              <option value="">— Not a pack —</option>
+              {products
+                .filter((p) => p.id !== productId)
+                .filter((p) => p.active !== false)
+                .map((p) => (
+                  <option key={p.id} value={String(p.id)}>
+                    {p.sku ? `${p.sku} — ` : ''}{p.name}
+                  </option>
+                ))}
+            </select>
+          </label>
+
+          <label className="mm-field">
+            <span className="mm-label">Units per pack</span>
+            <input
+              type="number"
+              className="mm-input"
+              step="1"
+              min="2"
+              max="1000000"
+              value={form.units_per_pack}
+              onChange={(e) => handleChange('units_per_pack', e.target.value)}
+              aria-label="Units per pack"
+              disabled={form.unit_product.trim() === ''}
+            />
+          </label>
+        </section>
+      )}
+
       <section className="form-section">
         <h2 className="mm-card-title">Status</h2>
 
@@ -679,7 +775,8 @@ export default function ProductPage() {
               <div className="mm-empty movements-empty">
                 <h3 className="mm-empty-title">No stock movements yet</h3>
                 <p className="mm-empty-text">
-                  Sales, received stock, damage, and adjustments will appear here.
+                  Sales, received stock, damage, adjustments, and repacks
+                  (pack ↔ unit conversions) will appear here.
                 </p>
               </div>
             )}
