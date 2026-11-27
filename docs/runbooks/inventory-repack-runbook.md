@@ -67,7 +67,8 @@ conversion cannot be undone or edited.
 | `not_a_repack_pair` | The products are not directly linked. Repack one linked pair at a time; carton → pack → single in one step is not supported. |
 | `sku_required` | Ask a manager/admin to give both products an SKU. |
 | HTTP 409 "Stock changed concurrently; please retry." | Someone changed the stock since you opened the dialog. Recheck on-hand and retry. |
-| HTTP 403 | You are not signed in, or your account is inactive or has the wrong role. Sign in, then ask an admin to check your account and role. |
+| HTTP 401 | You are not signed in. Sign in and retry. |
+| HTTP 403 | Your account is inactive or has the wrong role. Ask an admin to check your account and role. |
 | `mapping_in_use` (a manager editing a used mapping) | Leave the used mapping alone; create new SKUs for a new pack size. |
 
 If the dialog rejects the quantity, nothing is recorded and no stock moves.
