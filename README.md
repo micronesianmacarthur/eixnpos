@@ -61,7 +61,8 @@ especially §7.
 - [Store-staff runbook: invoice a registered customer](docs/runbooks/cashier-invoice-runbook.md)
   — steps and error messages for the sales screen.
 - [Inventory repack](docs/inventory-repack.md) — converting a pack into its unit
-  product (and back), pack mapping setup, roles, API, and limitations.
+  product (and back). Pack mapping is optional when you add a product; the guide
+  covers when to set it, roles, API, and limitations.
 - [Store-staff runbook: repack stock](docs/runbooks/inventory-repack-runbook.md)
   — worked split and merge examples, plus error messages for the inventory
   screen.

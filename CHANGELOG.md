@@ -18,6 +18,11 @@ Changes are listed under `Unreleased` until a release is cut.
 
 ### Changed
 
+- **Pack mapping is optional when you add a product.** The **New product** form
+  saves a standard product with both pack-mapping fields left blank; you only
+  set a unit product and units per pack for a pack SKU you intend to repack. A
+  pack can be created before its unit product exists and mapped later. See
+  [the feature guide](docs/inventory-repack.md).
 - **Invoicing a registered customer no longer needs manager approval.** A
   cashier, manager, or admin can invoice a customer already in the customer
   list directly from the sales screen; the manager username/password prompt was

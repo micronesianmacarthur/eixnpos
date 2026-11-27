@@ -11,9 +11,11 @@ a manager to approve it.
 ## Before you start
 
 - Log in with an active account whose role is `cashier`, `manager`, or `admin`.
-- The pack mapping must already be configured. If the repack dialog says the
-  product "is not configured as a pack or a pack child", stop and ask a manager
-  to set it up — you cannot change the mapping yourself.
+- Pack mapping is optional when a product is added: a standard product needs
+  none. To repack, however, the mapping for the pair must already be configured.
+  If the repack dialog says the product "is not configured as a pack or a pack
+  child", stop and ask a manager to set it up — you cannot change the mapping
+  yourself.
 - The product you are converting **from** must have enough units on hand, and
   both products must be active stock products with SKUs.
 - Decide whether you are **splitting** (pack → units) or **merging** (units →
