@@ -5,7 +5,7 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from inventory.models import StockMovement
-from products.models import Product
+from products.models import Category, Product
 from suppliers.models import Supplier
 from sales.models import Payment, Sale, SaleLine
 
@@ -44,11 +44,15 @@ class ProductApiTests(TestCase):
         self.user = User.objects.create_user(username='owner', password='pw', role='admin')
         self.client = APIClient()
         self.client.force_authenticate(self.user)
+        # ``category`` is required by the product serializer; these tests are
+        # about plain-product creation, so give them a real category.
+        self.category = Category.objects.create(name='General')
 
     def test_create_read_update_and_delete(self):
         create = self.client.post(
             '/api/products/',
-            {'name': 'Blue Mug', 'price': '12.34', 'cost': '5.00', 'min_stock': 2},
+            {'name': 'Blue Mug', 'category': self.category.id,
+             'price': '12.34', 'cost': '5.00', 'min_stock': 2},
             format='json',
         )
 
@@ -72,7 +76,8 @@ class ProductApiTests(TestCase):
     def test_create_ignores_computed_and_read_only_fields(self):
         response = self.client.post(
             '/api/products/',
-            {'name': 'Widget', 'quantity': 99, 'is_low_stock': False},
+            {'name': 'Widget', 'category': self.category.id,
+             'quantity': 99, 'is_low_stock': False},
             format='json',
         )
 
