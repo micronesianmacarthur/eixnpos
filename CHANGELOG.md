@@ -4,6 +4,18 @@ Changes are listed under `Unreleased` until a release is cut.
 
 ## Unreleased
 
+### Added
+
+- **Inventory repack.** Cashiers, managers, and admins can convert stock
+  between a pack product and its unit product from the **Inventory** screen —
+  split packs into units or merge whole units back into packs. Each conversion
+  records one immutable repack and a balanced pair of stock-ledger movements
+  atomically, so on-hand stays reconciled. A manager or admin first configures
+  the pack mapping on the pack product; there is no feature flag or paid tier.
+  Applying the update adds migrations `products.0007` and `inventory.0008`.
+  See [the feature guide](docs/inventory-repack.md) and
+  [the store-staff runbook](docs/runbooks/inventory-repack-runbook.md).
+
 ### Changed
 
 - **Invoicing a registered customer no longer needs manager approval.** A

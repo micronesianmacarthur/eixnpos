@@ -60,5 +60,10 @@ especially §7.
   and troubleshooting.
 - [Store-staff runbook: invoice a registered customer](docs/runbooks/cashier-invoice-runbook.md)
   — steps and error messages for the sales screen.
+- [Inventory repack](docs/inventory-repack.md) — converting a pack into its unit
+  product (and back), pack mapping setup, roles, API, and limitations.
+- [Store-staff runbook: repack stock](docs/runbooks/inventory-repack-runbook.md)
+  — worked split and merge examples, plus error messages for the inventory
+  screen.
 - [Changelog](CHANGELOG.md) — release notes, including the cashier invoicing
-  permission change.
+  permission change and the inventory repack feature.
