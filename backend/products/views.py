@@ -1,5 +1,6 @@
 from decimal import Decimal
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 from rest_framework import serializers, viewsets, permissions, decorators, response, status
@@ -132,17 +133,13 @@ class ProductViewSet(viewsets.ModelViewSet):
 
     def update(self, request, *args, **kwargs):
         self._assert_mapping_allowed(request)
+        self._assert_mapping_not_frozen(request)
         return super().update(request, *args, **kwargs)
 
     def partial_update(self, request, *args, **kwargs):
         self._assert_mapping_allowed(request)
+        self._assert_mapping_not_frozen(request)
         return super().partial_update(request, *args, **kwargs)
-
-    def perform_update(self, serializer):
-        # Runs after serializer.is_valid() (so field-shape errors take precedence
-        # over the policy error) and immediately before the row is saved.
-        self._assert_mapping_not_frozen(serializer)
-        super().perform_update(serializer)
 
     def _assert_mapping_allowed(self, request):
         """R2.4: setting/changing the pack mapping is manager/admin-only.
@@ -157,48 +154,29 @@ class ProductViewSet(viewsets.ModelViewSet):
                     'Only managers and admins can configure pack mappings.'
                 )
 
-    def _assert_mapping_not_frozen(self, serializer):
-        """R4.18: freeze the mapping for a pair once any Repack exists for it.
+    def _assert_mapping_not_frozen(self, request):
+        """R4.18: freeze the mapping for a used pair once any Repack exists.
 
-        Called from ``perform_update``, so the serializer has already validated
-        shape and field errors take precedence. Only a *change* to the stored
-        mapping of the pair with history is blocked; unrelated products stay
-        editable (OQ-10). Re-saving identical values is allowed.
+        AC-07 (and its QE encoding) treats a mapping write on EITHER member of a
+        pair with history as ``mapping_in_use`` — including the child side, whose
+        ``unit_product``/``units_per_pack`` are usually null. So the guard runs
+        *before* serializer validation (so it takes precedence over a half-pair
+        or range field-dict error) and freezes any product that participates in
+        a Repack as source or target. Unrelated products stay editable (OQ-10).
         """
-        data = serializer.validated_data
-        mapping_delta = {
-            key: data[key] for key in MAPPING_FIELDS if key in data
-        }
-        if not mapping_delta:
-            return
-
-        instance = serializer.instance
-        stored_child_id = instance.unit_product_id
-        # A *change* is only blocked. Compare the submitted, validated values
-        # against the stored ones; same value -> no change -> allowed.
-        proposed_child = mapping_delta.get('unit_product')
-        proposed_child_id = proposed_child.pk if proposed_child is not None else None
-        proposed_units = mapping_delta.get('units_per_pack')
-        child_changed = proposed_child_id != stored_child_id
-        units_changed = proposed_units is not None and (
-            instance.units_per_pack is None or proposed_units != instance.units_per_pack
-        )
-        if not (child_changed or units_changed):
+        mapping_present = any(key in request.data for key in MAPPING_FIELDS)
+        if not mapping_present:
             return
 
         from inventory.models import Repack
-        pair_has_history = (
-            Repack.objects.filter(
-                source_product=instance, target_product_id=stored_child_id
-            ).exists()
-            or Repack.objects.filter(
-                target_product=instance, source_product_id=stored_child_id
-            ).exists()
-        )
-        if pair_has_history:
+        used = Repack.objects.filter(
+            Q(source_product_id=self.get_object().pk)
+            | Q(target_product_id=self.get_object().pk)
+        ).exists()
+        if used:
             raise serializers.ValidationError({
-                'detail': 'This pack mapping cannot be changed because it is used '
-                          'by existing repack history.',
+                'detail': 'This product participates in existing repack history '
+                          'and its pack mapping cannot be changed.',
                 'code': 'mapping_in_use',
             })
 
