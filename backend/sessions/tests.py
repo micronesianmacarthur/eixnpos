@@ -4,8 +4,9 @@ import tempfile
 from datetime import date, timedelta
 from decimal import Decimal
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from business.models import BusinessInfo
@@ -16,6 +17,11 @@ from suppliers.models import Supplier
 from .models import Register, Session
 
 User = get_user_model()
+
+
+def _backup_root():
+    """Return an absolute, resolved directory to use as the backup root."""
+    return os.path.realpath(tempfile.mkdtemp(prefix='eixnpos-sessions-backup-test-'))
 
 
 class SessionApiTests(TestCase):
@@ -175,9 +181,10 @@ class SessionApiTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
 
+    @override_settings(BACKUP_ROOT=_backup_root())
     def test_close_triggers_backup_when_path_is_configured(self):
         session = self.make_session()
-        with tempfile.TemporaryDirectory() as destination:
+        with tempfile.TemporaryDirectory(dir=settings.BACKUP_ROOT) as destination:
             business = BusinessInfo.get()
             business.backup_path = destination
             business.save(update_fields=['backup_path'])
