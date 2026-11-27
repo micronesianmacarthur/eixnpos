@@ -175,16 +175,18 @@ describe('PerformancePanel — data fetching states', () => {
     expect(mockedFetch).toHaveBeenCalledWith('/api/dashboard/sales/monthly/?months=12')
   })
 
-  it('renders the accessible chart and data table after resolve', async () => {
+  it('renders the accessible area chart (and no sales table) after resolve', async () => {
     mockedFetch.mockResolvedValue(MONTHLY_PAYLOAD)
-    render(<PerformancePanel />)
-    const table = await screen.findByRole('table')
-    expect(within(table).getByText('Jul 2026')).toBeInTheDocument()
-    const chart = screen.getByRole('img')
-    expect(chart).toHaveAccessibleName()
-    // data table shows month-over-month change
-    expect(within(table).getByText('+13.16%')).toBeInTheDocument()
-    expect(within(table).getByText('-25.58%')).toBeInTheDocument()
+    const { container } = render(<PerformancePanel />)
+    const chart = await screen.findByRole('img')
+    expect(chart).toHaveAccessibleName(/Area chart/)
+    expect(container.querySelector('path.performance-chart-area')).not.toBeNull()
+    expect(container.querySelector('path.performance-chart-line')).not.toBeNull()
+    expect(container.querySelectorAll('circle.performance-chart-point')).toHaveLength(
+      MONTHLY_PAYLOAD.periods.length,
+    )
+    // The old calendar sales table is gone.
+    expect(screen.queryByRole('table')).not.toBeInTheDocument()
   })
 
   it('shows a retry banner on error', async () => {
@@ -195,27 +197,36 @@ describe('PerformancePanel — data fetching states', () => {
 })
 
 describe('PerformancePanel — rendered states (seeded)', () => {
-  it('renders monthly revenue and mom deltas in the table', () => {
-    render(<PerformancePanel initialData={MONTHLY_PAYLOAD} />)
-    const table = screen.getByRole('table')
-    expect(within(table).getByText('$3,800.00')).toBeInTheDocument()
-    expect(within(table).getByText('$4,300.00')).toBeInTheDocument()
-    const rows = within(table).getAllByRole('row')
-    const julRow = rows.find((r) => within(r).queryByText('Jul 2026'))!
-    expect(julRow.textContent).toContain('+13.16%')
-    expect(julRow.textContent).toContain('+$500.00')
-    const augRow = rows.find((r) => within(r).queryByText('Aug 2026'))!
-    expect(augRow.textContent).toContain('-25.58%')
-    expect(augRow.textContent).toContain('-$1,100.00')
+  it('plots one point per month with a formatted-revenue tooltip', () => {
+    const { container } = render(<PerformancePanel initialData={MONTHLY_PAYLOAD} />)
+    const titles = Array.from(
+      container.querySelectorAll('circle.performance-chart-point title'),
+    ).map((node) => node.textContent)
+    expect(titles).toHaveLength(MONTHLY_PAYLOAD.periods.length)
+    expect(titles).toContain('Jul: $4,300.00')
+    expect(titles).toContain('Jun: $3,800.00')
   })
 
-  it('renders an em-dash for months with no mom comparison', () => {
-    render(<PerformancePanel initialData={MONTHLY_PAYLOAD} />)
-    const rows = screen.getAllByRole('row')
-    const junRow = rows.find((r) => within(r).queryByText('Jun 2026'))!
-    expect(junRow.textContent).toContain('—')
-    const sepRow = rows.find((r) => within(r).queryByText('Sep 2026'))!
-    expect(sepRow.textContent).toContain('—')
+  it('labels the x axis with month names only (no year)', () => {
+    const { container } = render(<PerformancePanel initialData={MONTHLY_PAYLOAD} />)
+    const labels = Array.from(
+      container.querySelectorAll('text.performance-chart-xlabel'),
+    ).map((node) => node.textContent)
+    expect(labels).toEqual(['Jun', 'Jul', 'Aug', 'Sep'])
+    for (const label of labels) expect(label).not.toMatch(/\d{4}/)
+  })
+
+  it('formats y-axis ticks in base-10 compact money, never scientific notation', () => {
+    const { container } = render(<PerformancePanel initialData={MONTHLY_PAYLOAD} />)
+    const ticks = Array.from(
+      container.querySelectorAll('text.performance-chart-tick'),
+    ).map((node) => node.textContent)
+    // Peak revenue 4300 → $4.3K, $3.2K, $2.2K, $1.1K, $0.
+    expect(ticks).toEqual(['$4.3K', '$3.2K', '$2.2K', '$1.1K', '$0'])
+    for (const tick of ticks) {
+      expect(tick).toMatch(/^\$[\d,]+(\.\d)?[KM]?$/)
+      expect(tick).not.toMatch(/e\+/i)
+    }
   })
 
   it('shows the empty state when no periods exist', () => {

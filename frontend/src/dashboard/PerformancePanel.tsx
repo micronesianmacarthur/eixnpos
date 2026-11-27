@@ -1,12 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  fetchMonthly,
-  formatMomDelta,
-  formatMomPct,
-  formatMoney,
-  momTone,
-  type MonthlyPayload,
-} from './data';
+import { fetchMonthly, formatMoney, type MonthlyPayload } from './data';
 
 const MONTHS_SHOWN = 12;
 
@@ -24,14 +17,55 @@ const PAD_T = 16;
 const PAD_B = 40;
 const PLOT_W = CHART_W - PAD_L - PAD_R;
 const PLOT_H = CHART_H - PAD_T - PAD_B;
-const BAR_MAX = 0.72; // fraction of plot height a full bar may occupy
 const TICKS = 4;
+
+const MONTH_ABBR = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+];
+
+/**
+ * X-axis tick label for a `YYYY-MM` period: the month abbreviation only.
+ * The year is deliberately dropped — the panel already states its trailing
+ * window in the subtitle, and 12 short labels stay legible where
+ * "Mon YYYY" would collide.
+ */
+function monthTickLabel(period: string, fallback: string): string {
+  const match = /^\d{4}-(\d{2})$/.exec(period);
+  const monthIndex = match ? Number(match[1]) - 1 : NaN;
+  if (monthIndex >= 0 && monthIndex < MONTH_ABBR.length) {
+    return MONTH_ABBR[monthIndex];
+  }
+  return fallback.replace(/\s+\d{4}$/, '');
+}
+
+/** Base-10 compact money for axis ticks: $950, $4.3K, $1.2M (never 1e+06). */
+function formatAxisMoney(value: number): string {
+  const abs = Math.abs(value);
+  const compact = (scaled: number) => {
+    const rounded = Math.round(scaled * 10) / 10;
+    return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+  };
+  if (abs >= 1_000_000) return `$${compact(value / 1_000_000)}M`;
+  if (abs >= 1_000) return `$${compact(value / 1_000)}K`;
+  return `$${Math.round(value).toLocaleString('en-US')}`;
+}
 
 /**
  * Monthly shop-performance comparison — revenue per trailing calendar month
  * (month-over-month). The sibling run builds the headline KPI cards; this
- * panel answers "how are we doing vs last month?" with an accessible bar
- * chart plus a data table. Money is formatted (never computed) client-side.
+ * panel answers "how are we doing vs last month?" with an accessible area
+ * chart. Money is formatted (never computed) client-side.
  */
 export default function PerformancePanel({ initialData }: PerformancePanelProps) {
   const [data, setData] = useState<MonthlyPayload | null>(initialData ?? null);
@@ -55,18 +89,15 @@ export default function PerformancePanel({ initialData }: PerformancePanelProps)
     if (!initialData) void load();
   }, [initialData, load]);
 
-  // Scale the bars to the max revenue so the tallest bar fills BAR_MAX.
-  const { bars, maxRevenue } = useMemo(() => {
+  // Scale the area to the max revenue so the peak sits on the top gridline.
+  const { months, maxRevenue } = useMemo(() => {
     const periods = data?.periods ?? [];
-    const max = Math.max(
-      0,
-      ...periods.map((p) => Number(p.revenue) || 0),
-    );
+    const max = Math.max(0, ...periods.map((p) => Number(p.revenue) || 0));
     const scaled = periods.map((p) => ({
       ...p,
-      barPct: max > 0 ? ((Number(p.revenue) || 0) / max) * 100 : 0,
+      tickLabel: monthTickLabel(p.period, p.label),
     }));
-    return { bars: scaled, maxRevenue: max };
+    return { months: scaled, maxRevenue: max };
   }, [data]);
 
   const yTicks = useMemo(() => {
@@ -102,7 +133,7 @@ export default function PerformancePanel({ initialData }: PerformancePanelProps)
         </span>
       </div>
     );
-  } else if (bars.every((b) => Number(b.revenue) === 0)) {
+  } else if (months.every((b) => Number(b.revenue) === 0)) {
     content = (
       <div className="mm-empty dashboard-panel-empty">
         <span className="mm-empty-title">No revenue recorded</span>
@@ -112,148 +143,97 @@ export default function PerformancePanel({ initialData }: PerformancePanelProps)
       </div>
     );
   } else {
-    const barGap = PLOT_W / bars.length;
-    const barWidth = Math.max(barGap * 0.55, 8);
+    const baseY = PAD_T + PLOT_H;
+    const stepX = months.length > 1 ? PLOT_W / (months.length - 1) : 0;
+    const points = months.map((p, idx) => {
+      const revenue = Number(p.revenue) || 0;
+      const ratio = maxRevenue > 0 ? Math.min(Math.max(revenue / maxRevenue, 0), 1) : 0;
+      return {
+        ...p,
+        x: months.length > 1 ? PAD_L + idx * stepX : PAD_L + PLOT_W / 2,
+        y: baseY - ratio * PLOT_H,
+      };
+    });
+    const linePath = points
+      .map((p, idx) => `${idx === 0 ? 'M' : 'L'}${p.x.toFixed(2)} ${p.y.toFixed(2)}`)
+      .join(' ');
+    const areaPath = `${linePath} L${points[points.length - 1].x.toFixed(2)} ${baseY.toFixed(
+      2,
+    )} L${points[0].x.toFixed(2)} ${baseY.toFixed(2)} Z`;
     const chartSummary =
-      'Bar chart of monthly revenue across the last ' +
-      `${bars.length} month${bars.length === 1 ? '' : 's'}, comparing ` +
+      'Area chart of monthly revenue across the last ' +
+      `${months.length} month${months.length === 1 ? '' : 's'}, comparing ` +
       'current shop performance to the previous month.';
     content = (
-      <>
-        <div className="performance-chart" role="img" aria-label={chartSummary}>
-          <svg
-            viewBox={`0 0 ${CHART_W} ${CHART_H}`}
-            className="performance-chart-svg"
-            aria-hidden="true"
-            focusable="false"
-          >
-            {/* Y-axis gridlines + tick labels */}
-            {yTicks.map((tick, i) => {
-              const y = PAD_T + (PLOT_H * i) / TICKS;
-              return (
-                <g key={tick}>
-                  {i > 0 && (
-                    <line
-                      x1={PAD_L}
-                      y1={y}
-                      x2={CHART_W - PAD_R}
-                      y2={y}
-                      className="performance-chart-grid"
-                    />
-                  )}
-                  <text
-                    x={PAD_L - 8}
-                    y={y + 4}
-                    textAnchor="end"
-                    className="performance-chart-tick"
-                  >
-                    {maxRevenue >= 1000 ? `$${(tick / 1000).toFixed(1)}k` : `$${Math.round(tick)}`}
-                  </text>
-                </g>
-              );
-            })}
-            {/* Bars */}
-            {bars.map((p, idx) => {
-              const x = PAD_L + idx * barGap + (barGap - barWidth) / 2;
-              const zero = Number(p.revenue) === 0;
-              // A zero month still renders a visible baseline "0" tick (never
-              // a missing bar). Bars are capped at BAR_MAX, matching the axis.
-              const barH = zero ? 0 : (Math.max(Math.min(p.barPct, 100), 0) / 100) * (PLOT_H * BAR_MAX);
-              const y = PAD_T + PLOT_H - barH;
-              return (
-                <g key={p.period}>
-                  <rect
-                    x={x}
-                    y={y}
-                    width={barWidth}
-                    height={barH}
-                    rx={3}
-                    className={
-                      zero
-                        ? 'performance-chart-bar is-zero'
-                        : 'performance-chart-bar'
-                    }
+      <div className="performance-chart" role="img" aria-label={chartSummary}>
+        <svg
+          viewBox={`0 0 ${CHART_W} ${CHART_H}`}
+          className="performance-chart-svg"
+          aria-hidden="true"
+          focusable="false"
+        >
+          {/* Y-axis gridlines + tick labels */}
+          {yTicks.map((tick, i) => {
+            const y = PAD_T + (PLOT_H * i) / TICKS;
+            return (
+              <g key={tick}>
+                {i > 0 && (
+                  <line
+                    x1={PAD_L}
+                    y1={y}
+                    x2={CHART_W - PAD_R}
+                    y2={y}
+                    className="performance-chart-grid"
                   />
-                  <text
-                    x={x + barWidth / 2}
-                    y={y - 6}
-                    textAnchor="middle"
-                    className="performance-chart-bar-label"
-                  >
-                    {zero ? '0' : formatMoney(p.revenue)}
-                  </text>
-                  <text
-                    x={x + barWidth / 2}
-                    y={CHART_H - PAD_B + 18}
-                    textAnchor="middle"
-                    className="performance-chart-xlabel"
-                  >
-                    {p.label}
-                  </text>
-                </g>
-              );
-            })}
-            {/* Y axis line */}
-            <line
-              x1={PAD_L}
-              y1={PAD_T}
-              x2={PAD_L}
-              y2={PAD_T + PLOT_H}
-              className="performance-chart-axis"
-            />
-          </svg>
-        </div>
-
-        {/* Accessible data-table alternative for the same series. */}
-        <div className="mm-table-wrap dashboard-table-wrap">
-          <table className="mm-table performance-table">
-            <caption className="mm-visually-hidden">
-              Monthly revenue comparison, including change vs the previous month
-            </caption>
-            <thead>
-              <tr>
-                <th scope="col">Month</th>
-                <th scope="col" className="num">Sales</th>
-                <th scope="col" className="num">Revenue</th>
-                <th scope="col" className="num">Avg basket</th>
-                <th scope="col" className="num">Vs last month</th>
-              </tr>
-            </thead>
-            <tbody>
-              {bars.map((p) => (
-                <tr key={p.period}>
-                  <td>{p.label}</td>
-                  <td className="num">{p.sale_count}</td>
-                  <td className="num">{formatMoney(p.revenue)}</td>
-                  <td className="num">{formatMoney(p.avg_basket)}</td>
-                  <td className="num">
-                    {p.mom_revenue_pct === null ? (
-                      '—'
-                    ) : (
-                      <span
-                        className={`performance-mom performance-mom--${momTone(
-                          p.mom_revenue_pct,
-                        )}`}
-                      >
-                        {formatMomPct(p.mom_revenue_pct)}
-                        <span className="mm-muted">
-                          {' '}
-                          ({formatMomDelta(p.mom_revenue)})
-                        </span>
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <p className="dashboard-panel-note">
-          Revenue from completed sales, per calendar{' '}
-          {bars.length === 1 ? 'month' : 'months'}; “Vs last month” compares
-          each settled month to the one before it.
-        </p>
-      </>
+                )}
+                <text
+                  x={PAD_L - 8}
+                  y={y + 4}
+                  textAnchor="end"
+                  className="performance-chart-tick"
+                >
+                  {formatAxisMoney(tick)}
+                </text>
+              </g>
+            );
+          })}
+          {/* Revenue area + line */}
+          <path d={areaPath} className="performance-chart-area" />
+          <path d={linePath} className="performance-chart-line" />
+          {/* Point markers carry the per-month value tooltip. */}
+          {points.map((p) => (
+            <circle
+              key={p.period}
+              cx={p.x}
+              cy={p.y}
+              r={3.5}
+              className="performance-chart-point"
+            >
+              <title>{`${p.tickLabel}: ${formatMoney(p.revenue)}`}</title>
+            </circle>
+          ))}
+          {/* X-axis month labels (no year) */}
+          {points.map((p) => (
+            <text
+              key={p.period}
+              x={p.x}
+              y={CHART_H - PAD_B + 18}
+              textAnchor="middle"
+              className="performance-chart-xlabel"
+            >
+              {p.tickLabel}
+            </text>
+          ))}
+          {/* Y axis line */}
+          <line
+            x1={PAD_L}
+            y1={PAD_T}
+            x2={PAD_L}
+            y2={baseY}
+            className="performance-chart-axis"
+          />
+        </svg>
+      </div>
     );
   }
 
