@@ -30,9 +30,35 @@ immutable `Repack` audit record. Total stock is preserved in unit-equivalents:
 Only whole units are supported. There is no half-pack, rounding, or fractional
 quantity in either direction.
 
+## Pack mapping is optional when you add a product
+
+Adding a product does not require a pack mapping. On the **New product** screen,
+leave **Unit product** blank and **Units per pack** blank — both fields stay
+empty — and the product saves as a standard product. You do not need to choose
+a unit product or enter a ratio just to add a SKU to the catalog.
+
+Use pack mapping only when the SKU is a **pack** you intend to repack into (or
+merge back from) an individual unit product:
+
+- **A pack or bulk SKU** — for example a case of 12 singles. Set **Unit product**
+  to the single SKU and **Units per pack** to `12`.
+- **A standard product** — a single you sell on its own, a non-stock item, or
+  anything you do not plan to repack. Leave both fields empty.
+
+You can add the pack **before** its unit product exists: create it now with the
+mapping blank, add the unit product later, then use **Edit product** to set the
+mapping. Both products must exist, be active stock products, and have SKUs
+before you can repack between them.
+
+Both fields are set together or left empty together; setting only one is
+rejected. The mapping fields appear only for managers and admins, and a mapping
+that already has repack history cannot be changed. See
+[Before the first repack](#before-the-first-repack) for the setup steps.
+
 ## Before the first repack
 
-A manager or admin sets up the **pack mapping** on the pack product:
+Only products you will repack need a mapping. A manager or admin sets up the
+**pack mapping** on the pack product:
 
 1. Open **Products**, edit the pack (bulk) product.
 2. In **Pack mapping**, select a **Unit product** and enter **Units per pack**.
@@ -146,6 +172,57 @@ second movement, or a stock constraint fails, nothing is written and neither
 on-hand value changes.
 
 ## API reference
+
+### Pack mapping on product create and update — `POST /api/products/` and `PATCH /api/products/<id>/`
+
+A pack mapping is optional. The API accepts a plain product with the mapping
+keys omitted or with both sent as `null`; either form returns HTTP 201 and
+leaves `unit_product` and `units_per_pack` null. A minimal create body for a
+standard product is:
+
+```json
+{
+  "name": "Plain Widget",
+  "category": 1,
+  "price": "10.00",
+  "cost": "4.00",
+  "min_stock": 2,
+  "unit_product": null,
+  "units_per_pack": null
+}
+```
+
+`category` is the ID of an active category. Omitting the two mapping keys has
+the same effect as sending explicit nulls. The UI sends explicit nulls when the
+chooser reads "— Not a pack —", so that editing a product can clear an existing
+mapping.
+
+To create a pack, set both fields:
+
+```json
+{
+  "name": "Case Of Widgets",
+  "category": 1,
+  "price": "10.00",
+  "cost": "4.00",
+  "min_stock": 2,
+  "unit_product": 9,
+  "units_per_pack": 12
+}
+```
+
+`unit_product` is the ID of the unit product; `units_per_pack` must be a whole
+number from `2` to `1,000,000`. The same rules apply when adding a mapping later
+with `PATCH /api/products/<id>/`.
+
+| Status | Meaning |
+| --- | --- |
+| 403 | The request includes a mapping field and the caller is not a manager or admin. The whole request is rejected — other fields in the same body are not applied. |
+| 400 | Only one mapping field is set, `units_per_pack` is outside `2..1,000,000`, the product points at itself, or the mapping would form a cycle. |
+| 400 `mapping_in_use` | On update, the product already appears in repack history; its mapping is frozen. |
+
+A caller without a manager/admin role may still create a product with no
+mapping fields.
 
 ### Create a repack — `POST /api/inventory/repack/`
 
