@@ -81,10 +81,9 @@ process, apply these two migration names in order.
 | Set or change the pack mapping | No | Yes | Yes | Yes |
 | Edit, delete, or "undo" a recorded repack | No | No | No | No |
 
-You need an active account. As with the rest of this API, a request without an
-authenticated session is rejected with HTTP 403 (`Authentication credentials
-were not provided.`); a signed-in but inactive user, or a role outside the
-table, also gets HTTP 403.
+You need an active account. A request without an authenticated session gets
+HTTP 401 (`Authentication credentials were not provided.`); a signed-in but
+inactive user, or a role that may not repack, still gets HTTP 403.
 Cashiers can perform repacks because the manager is not always on site while the
 shop is trading, and an unrecorded conversion leaves the ledger wrong. Defining
 or redefining a conversion is a separate, manager-only authority.
@@ -202,13 +201,15 @@ Errors:
 | Status | Body `code` | Meaning |
 | --- | --- | --- |
 | 400 | `same_product` | Source and target are the same product. |
-| 400 | `not_a_repack_pair` | The products are not directly linked as a pack and its unit, or the computed target would exceed 1,000,000. |
+| 400 | `not_a_repack_pair` | The products are not directly linked as a pack and its unit. |
+| 400 | `target_quantity_too_large` | On a split, the computed target quantity exceeds 1,000,000; reduce the source quantity. |
 | 400 | `remainder_not_allowed` | A merge quantity is not an exact multiple of the ratio; the message gives the remainder. |
 | 400 | `insufficient_stock` | The source has fewer units on hand than requested; the message states the current on-hand. |
 | 400 | `sku_required` | One of the products has no SKU; the error is attached to `source_product` or `target_product`. |
 | 400 | `invalid_repack` | One of the products is inactive or marked non-stock. |
 | 400 | (field error) | A quantity is missing, out of bounds, or not a whole integer; a product ID does not exist. |
-| 403 | — | No authenticated session, an inactive account, or a role that is not cashier, manager, or admin (or superuser). |
+| 401 | — | No authenticated session (`Authentication credentials were not provided.`). |
+| 403 | — | An inactive account, or a role that is not cashier, manager, or admin (or superuser), when performing a repack. |
 | 409 | — | Stock changed concurrently; retry the request. |
 
 Every 400 response leaves stock, the ledger, and the repack table unchanged.
@@ -237,11 +238,12 @@ movement endpoint, for example
 | The dialog says the product "is not configured as a pack or a pack child" | No pack mapping involves this product | Ask a manager/admin to set the mapping on the pack product. |
 | `Only N units on hand` / `insufficient_stock` | The requested source quantity exceeds on-hand | Lower the quantity. The message states what is available. |
 | `is not a multiple of … (remainder …)` | A merge was requested for part of a pack | Enter a whole multiple of the units-per-pack ratio. Leftover units stay on hand. |
-| `Computed target exceeds 1,000,000` | The split would produce more units than a single movement can record | Reduce the source quantity and repeat the conversion. |
+| `target_quantity_too_large` — computed target exceeds 1,000,000 | The split would produce more units than a single movement can record | Reduce the source quantity and repeat the conversion. |
 | `not_a_repack_pair` | The two products are not directly linked — for example a carton and a single with a pack in between | Repack one linked pair at a time; multi-level conversion is not supported. |
 | `sku_required` | A product in the pair has a blank SKU | Have a manager/admin give both products an SKU, then retry. |
 | HTTP 409 `Stock changed concurrently; please retry.` | Another user changed the same stock between preview and submit | Check the current on-hand and submit again. |
-| HTTP 403 on a repack or a mapping change | Not signed in, inactive account, or the wrong role for the action | Sign in, then ask an admin to check the account role and active status. |
+| HTTP 401 on a repack or history request | Not signed in | Sign in and retry. |
+| HTTP 403 on a repack or a mapping change | Inactive account or the wrong role for the action | Ask an admin to check the account role and active status. |
 | `mapping_in_use` when a manager edits a product | The product already appears in repack history; its mapping is frozen | Do not change a used mapping. Create new SKUs for the new pack size. |
 | HTTP 409 when deleting a product | The product appears in a repack or movement | Deactivate it instead of deleting it. |
 | Two repacks appear for one physical action | The request was submitted twice | There is no idempotency key; check history before resubmitting. |
