@@ -415,3 +415,120 @@ describe('ProductPage stock movements table (AC-45)', () => {
     ).toBeInTheDocument()
   })
 })
+
+describe('ProductPage pack mapping is optional on create', () => {
+  function renderNewProductPage() {
+    return render(
+      <MemoryRouter initialEntries={['/inventory/new']}>
+        <Routes>
+          <Route path="/inventory/new" element={<ProductPage />} />
+          <Route path="/inventory" element={<div>Inventory list</div>} />
+        </Routes>
+      </MemoryRouter>,
+    )
+  }
+
+  function createHandlers(onPost: Handler = () => ({ ...UNIT, id: 42 })) {
+    return {
+      '/api/products/': (url: string, init?: RequestInit) => {
+        if (init?.method === 'POST') return onPost(url, init)
+        return [STOCK, UNIT]
+      },
+      '/api/suppliers/': () => [],
+      '/api/categories/': () => [{ id: 1, name: 'Drinks', active: true }],
+    }
+  }
+
+  async function fillRequiredFields(user: ReturnType<typeof userEvent.setup>) {
+    await user.type(
+      screen.getByRole('textbox', { name: 'Name' }),
+      'House Blend',
+    )
+    await user.selectOptions(screen.getByLabelText('Category'), '1')
+  }
+
+  it('creates a standard product when the pack mapping is left untouched', async () => {
+    currentRole.value = 'manager'
+    const user = userEvent.setup()
+    let postedBody: Record<string, unknown> | undefined
+    routeApi(
+      createHandlers((_url, init) => {
+        postedBody = JSON.parse(String(init?.body))
+        return { ...UNIT, id: 42 }
+      }),
+    )
+    renderNewProductPage()
+
+    await screen.findByRole('heading', { name: 'New product' })
+    // The section is explicitly optional: leaving both fields blank is valid.
+    expect(
+      screen.getByText(/leave both blank to create a standard product/i),
+    ).toBeInTheDocument()
+    const perPack = screen.getByLabelText('Units per pack')
+    expect(perPack).toBeDisabled()
+    expect(perPack).toHaveValue(null)
+
+    await fillRequiredFields(user)
+    await user.click(screen.getByRole('button', { name: 'Create product' }))
+
+    await waitFor(() => expect(postedBody).toBeDefined())
+    expect(postedBody).toMatchObject({
+      name: 'House Blend',
+      category: 1,
+      unit_product: null,
+      units_per_pack: null,
+    })
+    // No client-side pack-mapping validation error blocked the submit.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(await screen.findByText('Inventory list')).toBeInTheDocument()
+  })
+
+  it('still rejects a half-set mapping (unit product without units per pack)', async () => {
+    currentRole.value = 'manager'
+    const user = userEvent.setup()
+    let posted = false
+    routeApi(
+      createHandlers(() => {
+        posted = true
+        return { ...UNIT, id: 42 }
+      }),
+    )
+    renderNewProductPage()
+
+    await screen.findByRole('heading', { name: 'New product' })
+    await fillRequiredFields(user)
+    await user.selectOptions(screen.getByLabelText('Unit product'), '9')
+    await user.click(screen.getByRole('button', { name: 'Create product' }))
+
+    expect(
+      await screen.findByRole('alert'),
+    ).toHaveTextContent(
+      'Pack mapping requires both a unit product and units per pack (or neither).',
+    )
+    expect(posted).toBe(false)
+  })
+
+  it('sends the mapping when both pack fields are set', async () => {
+    currentRole.value = 'manager'
+    const user = userEvent.setup()
+    let postedBody: Record<string, unknown> | undefined
+    routeApi(
+      createHandlers((_url, init) => {
+        postedBody = JSON.parse(String(init?.body))
+        return { ...UNIT, id: 42 }
+      }),
+    )
+    renderNewProductPage()
+
+    await screen.findByRole('heading', { name: 'New product' })
+    await fillRequiredFields(user)
+    await user.selectOptions(screen.getByLabelText('Unit product'), '9')
+    const perPack = screen.getByLabelText('Units per pack')
+    expect(perPack).toBeEnabled()
+    await user.type(perPack, '6')
+    await user.click(screen.getByRole('button', { name: 'Create product' }))
+
+    await waitFor(() => expect(postedBody).toBeDefined())
+    expect(postedBody).toMatchObject({ unit_product: 9, units_per_pack: 6 })
+  })
+})
