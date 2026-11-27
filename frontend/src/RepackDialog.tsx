@@ -31,9 +31,9 @@ export default function RepackDialog({
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
 
-  const selectedCandidate: PackCandidate | undefined =
-    candidates.find((c) => String(c.targetId) === candidateId) ||
-    candidates[0];
+  const selectedCandidate: PackCandidate | undefined = candidates.find(
+    (c) => String(c.targetId) === candidateId,
+  );
 
   const qty = quantity.trim() === '' ? 0 : Number(quantity);
 

@@ -2,20 +2,20 @@ from django.db import IntegrityError, transaction
 from django.db.models import Q
 from rest_framework import serializers, viewsets, permissions, status
 from rest_framework.decorators import action
+from rest_framework.exceptions import NotAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import IsManagerOrAdmin
 from products.models import Product
 from .models import Repack, StockMovement
-from .permissions import CanPerformRepack
+from .permissions import CanPerformRepack, RepackSessionAuthentication
 from .services import (
     REPACK_QTY_MIN,
     REPACK_QTY_MAX,
     RepackError,
     perform_repack,
 )
-
 # Serializer-level bounds are the first line of defense for B1: they reject
 # absurd or non-integral quantities before any ORM work, and the Product
 # ``quantity >= 0`` CHECK constraint is the DB-level guarantee (B2).
@@ -271,6 +271,20 @@ class RepackCreateView(APIView):
     """
 
     permission_classes = [CanPerformRepack]
+    # Primarily for the 401 contract: see RepackSessionAuthentication.
+    authentication_classes = [RepackSessionAuthentication]
+
+    def permission_denied(self, request, message=None, code=None):
+        # Spec R2.2/R1.9 mandates a 401 for an anonymous request. With only
+        # Session auth configured, ``authenticate_header()`` returns None, so
+        # DRF's ``handle_exception`` coerces the NotAuthenticated this method
+        # raises back down to 403. The per-view ``RepackSessionAuthentication``
+        # supplies a real WWW-Authenticate challenge so the 401 survives; this
+        # override also makes the intent explicit. An authenticated-but-denied
+        # user (e.g. inactive) still gets 403 via ``super()``.
+        if not request.user.is_authenticated:
+            raise NotAuthenticated()
+        return super().permission_denied(request, message, code)
 
     def post(self, request):
         serializer = RepackCreateSerializer(data=request.data)
@@ -317,6 +331,19 @@ class RepackListView(APIView):
     """
 
     permission_classes = [permissions.IsAuthenticated]
+    # Keep the anonymous->401 contract (see RepackSessionAuthentication) while
+    # the rest of the site's Session auth stays untouched.
+    authentication_classes = [RepackSessionAuthentication]
+
+    def permission_denied(self, request, message=None, code=None):
+        # Spec R2.3/AC-36 mandates a 401 for an anonymous read of repack
+        # history. With only Session auth configured, ``authenticate_header()``
+        # returns None and DRF's ``handle_exception`` would coerce a
+        # NotAuthenticated back to 403; the per-view ``RepackSessionAuthentication``
+        # keeps the 401, and this override makes the intent explicit.
+        if not request.user.is_authenticated:
+            raise NotAuthenticated()
+        return super().permission_denied(request, message, code)
 
     def get(self, request):
         queryset = Repack.objects.select_related(

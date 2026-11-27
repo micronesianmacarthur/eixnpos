@@ -1112,7 +1112,8 @@ class RepackCreateApiTests(RepackTestBase):
                 format='json',
             )
             self.assertEqual(res.status_code, 400, f'qty={bad}')
-        # computed target > 1M for split at ratio 12
+        # computed target > 1M for split at ratio 12: dedicated error code (N1),
+        # not the misleading not_a_repack_pair.
         res = admin.post(
             '/api/inventory/repack/',
             {'source_product': parent.id, 'target_product': child.id,
@@ -1120,6 +1121,7 @@ class RepackCreateApiTests(RepackTestBase):
             format='json',
         )
         self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data.get('code'), 'target_quantity_too_large')
 
     def test_insufficient_stock_ac23(self):
         admin, _ = self._client('admin')
@@ -1179,7 +1181,10 @@ class RepackCreateApiTests(RepackTestBase):
         r = anon.post('/api/inventory/repack/', {
             'source_product': parent.id, 'target_product': child.id,
             'source_quantity': 5}, format='json')
-        self.assertIn(r.status_code, (401, 403))
+        # Spec R1.9 / AC-25: an anonymous write must be rejected with exactly 401
+        # (the views override ``permission_denied`` to raise NotAuthenticated);
+        # no data may be written.
+        self.assertEqual(r.status_code, 401)
         self.assertEqual(Repack.objects.count(), 0)
 
     def test_exactly_one_repack_and_two_movements_linked_ac26(self):
@@ -1308,9 +1313,8 @@ class RepackHistoryApiTests(RepackTestBase):
             res = client.get('/api/inventory/repacks/')
             self.assertEqual(res.status_code, 200, role)
         anon = APIClient()
-        # This site returns 403 for anonymous reads (session-auth AnonymousUser);
-        # assert an unauthenticated read is rejected with 401 or 403.
-        self.assertIn(anon.get('/api/inventory/repacks/').status_code, (401, 403))
+        # Spec R2.3 / AC-36: an anonymous history read must be exactly 401.
+        self.assertEqual(anon.get('/api/inventory/repacks/').status_code, 401)
 
 
 class RepackPermissionApiTests(RepackTestBase):
@@ -1451,5 +1455,61 @@ class RepackAtomicityTests(TransactionTestCase):
 # Note: _real_create needed by the atomicity test above.
 def _real_create(**kw):
     return StockMovement.objects.create(**kw)
+
+
+class RepackRetryGuardTests(TestCase):
+    """N2: retry is confined to the ``Repack.reference`` unique violation.
+
+    A stock CHECK violation (concurrent stock race) or any other integrity
+    error must not trigger the reference-collision retry loop — that would do
+    four doomed writes before surfacing 409.
+    """
+
+    def test_reference_unique_sqlite_message_is_retryable(self):
+        from .services import _is_reference_unique_violation
+        exc = IntegrityError(
+            'UNIQUE constraint failed: inventory_repack.reference'
+        )
+        self.assertTrue(_is_reference_unique_violation(exc))
+
+    def test_stock_check_violation_is_not_retryable(self):
+        from .services import _is_reference_unique_violation
+        exc = IntegrityError('CHECK constraint failed: quantity >= 0')
+        self.assertFalse(_is_reference_unique_violation(exc))
+
+    def test_other_sqlite_message_is_not_retryable(self):
+        from .services import _is_reference_unique_violation
+        exc = IntegrityError(
+            'UNIQUE constraint failed: inventory_repack.source_movement_id'
+        )
+        self.assertFalse(_is_reference_unique_violation(exc))
+
+    def test_postgres_reference_constraint_name_is_retryable(self):
+        from .services import _is_reference_unique_violation
+        base = IntegrityError('some pg message')
+        # A real psycopg2 error is the ``__cause__``; its ``.diag`` exposes the
+        # constraint name. Model both here as BaseException-derived types.
+        cause = type(
+            '_PgError', (Exception,),
+            {'diag': type('_Diag', (object,),
+                          {'constraint_name': 'inventory_repack_reference_key'})()},
+        )()
+        base.__cause__ = cause
+        self.assertTrue(_is_reference_unique_violation(base))
+
+    def test_postgres_stock_constraint_name_is_not_retryable(self):
+        from .services import _is_reference_unique_violation
+        base = IntegrityError('some pg message')
+        cause = type(
+            '_PgError', (Exception,),
+            {'diag': type('_Diag', (object,),
+                          {'constraint_name': 'product_quantity_non_negative'})()},
+        )()
+        base.__cause__ = cause
+        self.assertFalse(_is_reference_unique_violation(base))
+
+    def test_no_cause_or_message_is_not_retryable(self):
+        from .services import _is_reference_unique_violation
+        self.assertFalse(_is_reference_unique_violation(IntegrityError()))
 
 

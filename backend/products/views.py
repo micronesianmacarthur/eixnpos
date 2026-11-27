@@ -132,14 +132,33 @@ class ProductViewSet(viewsets.ModelViewSet):
         return super().create(request, *args, **kwargs)
 
     def update(self, request, *args, **kwargs):
-        self._assert_mapping_allowed(request)
-        self._assert_mapping_not_frozen(request)
-        return super().update(request, *args, **kwargs)
+        return self._guarded_mapping_update(request, super().update, *args, **kwargs)
 
     def partial_update(self, request, *args, **kwargs):
-        self._assert_mapping_allowed(request)
-        self._assert_mapping_not_frozen(request)
-        return super().partial_update(request, *args, **kwargs)
+        return self._guarded_mapping_update(request, super().partial_update, *args, **kwargs)
+
+    def _guarded_mapping_update(self, request, super_fn, *args, **kwargs):
+        """Run a mapping-changing update atomically and under a row lock (S2/R4.18).
+
+        ``_assert_mapping_not_frozen`` re-reads the product and consults repack
+        history; if that happened on an unlocked read, a repack committing
+        between the check and the save would change the mapping after the pair
+        has history. Wrapping the check and the save in one ``transaction.atomic``
+        and taking ``SELECT ... FOR UPDATE`` on the managed row closes the
+        window, mirroring ``perform_repack``'s lock discipline. Updates that do
+        not touch the mapping pass straight through.
+        """
+        if not any(key in request.data for key in MAPPING_FIELDS):
+            return super_fn(request, *args, **kwargs)
+
+        with transaction.atomic():
+            self._assert_mapping_allowed(request)
+            # Lock the row being edited before the history check, so no repack
+            # (which takes FOR UPDATE on both members) can commit in between.
+            instance = self.get_object()
+            Product.objects.select_for_update().get(pk=instance.pk)
+            self._assert_mapping_not_frozen(request)
+            return super_fn(request, *args, **kwargs)
 
     def _assert_mapping_allowed(self, request):
         """R2.4: setting/changing the pack mapping is manager/admin-only.

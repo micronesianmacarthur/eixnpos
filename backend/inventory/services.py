@@ -144,7 +144,7 @@ def perform_repack(*, source_product, target_product, source_quantity, note, use
                 raise RepackError(
                     f'Computed target quantity {target_quantity} exceeds the '
                     f'allowed maximum of {REPACK_QTY_MAX}.',
-                    code='not_a_repack_pair',
+                    code='target_quantity_too_large',
                 )
         else:  # merge
             remainder = source_quantity % ratio
@@ -189,6 +189,11 @@ def _insert_with_reference_retry(
     failure rolls back that attempt's partial rows and on-hand updates before the
     next attempt re-reads fresh on-hand (OQ-14). At most 3 retries, then the
     ``IntegrityError`` propagates to the view's 409 handler.
+
+    Retries are confined to the ``Repack.reference`` unique violation (N2). A
+    stock CHECK violation (concurrent stock race) or any other integrity error
+    is *not* a reference collision, so it is not masked by retrying doomed
+    writes — it surfaces immediately as the 409 the view reports.
     """
     for attempt in range(4):
         reference = generate_reference()
@@ -201,9 +206,31 @@ def _insert_with_reference_retry(
                     ratio, note, user, reference,
                 )
                 return reference
-        except IntegrityError:
-            if attempt == 3:
+        except IntegrityError as exc:
+            if attempt == 3 or not _is_reference_unique_violation(exc):
                 raise
+
+
+def _is_reference_unique_violation(exc):
+    """True only when ``exc`` is a unique-constraint failure on Repack.reference.
+
+    ``Repack.reference`` is the sole retryable collision. On PostgreSQL the
+    constraint name is exposed via ``exc.__cause__.diag.constraint_name``; on
+    SQLite the message names the column. Everything else (e.g. the ``stock``
+    quantity CHECK violation) returns False so the caller stops retrying.
+    """
+
+    # PostgreSQL: the psycopg error carries the diagnostic constraint name.
+    cause = getattr(exc, '__cause__', None)
+    diag = getattr(cause, 'diag', None)
+    constraint = getattr(diag, 'constraint_name', None)
+    if constraint:
+        return constraint == 'inventory_repack_reference_key'
+
+    # SQLite backend: integrity messages read ``UNIQUE constraint failed:
+    # inventory_repack.reference``.
+    message = exc.args[0] if exc.args else ''
+    return 'UNIQUE constraint failed: inventory_repack.reference' in message
 
 
 def _write_rows(

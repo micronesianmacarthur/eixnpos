@@ -7,6 +7,7 @@ import {
 import { useNavigate, useParams } from 'react-router-dom';
 import { apiFetch, ApiError } from './api';
 import { useAuth } from './authContext';
+import { resolveMappingPayload } from './productMappingPayload';
 import './ProductPage.css';
 
 interface Product {
@@ -381,11 +382,11 @@ export default function ProductPage() {
       non_stock: form.non_stock,
     };
     // Pack mapping is manager/admin-only in the UI; send it only when the
-    // current user is allowed to set it (the API still enforces this).
-    if (isManagerOrAdmin && form.unit_product.trim() !== '') {
-      payload.unit_product = parseInt(form.unit_product, 10);
-      payload.units_per_pack = parseInt(form.units_per_pack, 10);
-    }
+    // current user is allowed to set it (the API still enforces this). When an
+    // existing pack mapping is cleared ("— Not a pack —"), PATCH semantics
+    // would keep the old value unless we send an explicit null, so send
+    // nulls for a cleared mapping instead of omitting the keys (S3 / R1.1).
+    resolveMappingPayload(payload, form, isManagerOrAdmin);
 
     try {
       if (isEdit && productId) {
