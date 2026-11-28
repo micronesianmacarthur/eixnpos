@@ -23,6 +23,8 @@ interface NetworkMonitor {
 interface MockOptions {
   movements?: 'data' | 'empty' | 'error';
   movementsGate?: Promise<void>;
+  /** Configured default target margin; `null` makes the endpoint unavailable. */
+  pricingMargin?: number | null;
 }
 
 const AUTH_ME = {
@@ -184,6 +186,17 @@ async function installApiMocks(
 
     if (path === '/api/auth/me/') {
       await route.fulfill(json(AUTH_ME));
+      return;
+    }
+
+    if (path === '/api/settings/pricing/') {
+      if (options.pricingMargin === null) {
+        await route.fulfill(json({ detail: 'Not found' }, 404));
+        return;
+      }
+      await route.fulfill(
+        json({ default_target_margin_percent: options.pricingMargin ?? 15 }),
+      );
       return;
     }
 
@@ -587,5 +600,48 @@ test('creates a product and posts initial stock before returning to inventory', 
   });
 
   await expect(page).toHaveURL(`${BASE_URL}/inventory`);
+  expectNoNetworkIssues(monitor);
+});
+
+test('calculates the suggested price from the configured target margin', async ({
+  page,
+}) => {
+  const monitor = await openApp(page, '/inventory/new', { pricingMargin: 20 });
+
+  const cost = page.getByRole('spinbutton', { name: 'Cost', exact: true });
+  const suggested = page.getByRole('textbox', { name: 'Suggested price' });
+
+  // The create form starts at a cost of 0.00, so the suggestion is 0.00.
+  await expect(suggested).toHaveValue('0.00');
+
+  await cost.fill('100');
+  await expect(suggested).toHaveValue('120.00');
+
+  // Changing the cost recalculates immediately.
+  await cost.fill('9.25');
+  await expect(suggested).toHaveValue('11.10');
+
+  // No cost means no suggestion.
+  await cost.fill('');
+  await expect(suggested).toHaveValue('');
+
+  expectNoNetworkIssues(monitor);
+});
+
+test('falls back to a 15% margin when pricing settings are unavailable', async ({
+  page,
+}) => {
+  const monitor = await openApp(page, '/inventory/new', {
+    pricingMargin: null,
+  });
+
+  await page
+    .getByRole('spinbutton', { name: 'Cost', exact: true })
+    .fill('100');
+
+  await expect(
+    page.getByRole('textbox', { name: 'Suggested price' }),
+  ).toHaveValue('115.00');
+
   expectNoNetworkIssues(monitor);
 });
