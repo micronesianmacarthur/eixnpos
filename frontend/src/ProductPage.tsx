@@ -8,6 +8,11 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { apiFetch, ApiError } from './api';
 import { useAuth } from './authContext';
 import { resolveMappingPayload } from './productMappingPayload';
+import {
+  DEFAULT_TARGET_MARGIN_PERCENT,
+  computeSuggestedPrice,
+  resolveTargetMarginPercent,
+} from './suggestedPrice';
 import './ProductPage.css';
 
 interface Product {
@@ -154,6 +159,26 @@ export default function ProductPage() {
   const [error, setError] = useState('');
 
   const [form, setForm] = useState<ProductForm>(EMPTY_FORM);
+  /** Configured default target margin, in percent; falls back to 15. */
+  const [targetMarginPercent, setTargetMarginPercent] = useState(
+    DEFAULT_TARGET_MARGIN_PERCENT,
+  );
+
+  const loadPricingSettings = useCallback(async () => {
+    try {
+      const data = await apiFetch<{ default_target_margin_percent?: unknown }>(
+        '/api/settings/pricing/',
+      );
+      setTargetMarginPercent(
+        resolveTargetMarginPercent(data?.default_target_margin_percent),
+      );
+    } catch {
+      // Pricing settings are advisory. If the request fails (or the backend
+      // predates the endpoint) keep the documented 15% fallback rather than
+      // blocking the product form.
+      setTargetMarginPercent(DEFAULT_TARGET_MARGIN_PERCENT);
+    }
+  }, []);
 
   const loadSuppliers = useCallback(async () => {
     try {
@@ -229,8 +254,13 @@ export default function ProductPage() {
   }, [isEdit, productId]);
 
   useEffect(() => {
-    Promise.all([loadSuppliers(), loadCategories(), loadProduct()]);
-  }, [loadSuppliers, loadCategories, loadProduct]);
+    Promise.all([
+      loadSuppliers(),
+      loadCategories(),
+      loadProduct(),
+      loadPricingSettings(),
+    ]);
+  }, [loadSuppliers, loadCategories, loadProduct, loadPricingSettings]);
 
   useEffect(() => {
     if (isManagerOrAdmin) {
@@ -459,6 +489,11 @@ export default function ProductPage() {
     );
   }
 
+  // Derived on every render so editing the cost input — or a settings load
+  // that changes the margin — updates the suggestion immediately. An empty
+  // cost yields an empty suggestion instead of "0.00".
+  const suggestedPrice = computeSuggestedPrice(form.cost, targetMarginPercent);
+
   const formFields = (
     <>
       <section className="form-section">
@@ -557,6 +592,21 @@ export default function ProductPage() {
           </label>
 
           <label className="mm-field">
+            <span className="mm-label">Suggested price</span>
+            <input
+              type="text"
+              className="mm-input"
+              value={suggestedPrice}
+              readOnly
+              aria-label="Suggested price"
+              aria-describedby="suggested-price-hint"
+            />
+            <span className="mm-muted small" id="suggested-price-hint">
+              Unit cost + {targetMarginPercent}% default target margin
+            </span>
+          </label>
+
+          <label className="mm-field">
             <span className="mm-label">Markup margin (%)</span>
             <input
               type="number"
@@ -583,11 +633,6 @@ export default function ProductPage() {
               aria-label="Retail price"
               required
             />
-            <span className="mm-muted small">
-              Suggested retail price: {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(
-                (Number(form.cost) || 0) * (1 + (Number(form.markup_margin) || 0) / 100),
-              )}
-            </span>
           </label>
 
           <label className="mm-field">
