@@ -602,7 +602,7 @@ export default function ProductPage() {
               aria-describedby="suggested-price-hint"
             />
             <span className="mm-muted small" id="suggested-price-hint">
-              Unit cost + {targetMarginPercent}% default target margin
+              Price for a {targetMarginPercent}% gross margin
             </span>
           </label>
 
