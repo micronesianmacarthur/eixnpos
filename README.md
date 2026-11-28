@@ -66,5 +66,8 @@ especially §7.
 - [Store-staff runbook: repack stock](docs/runbooks/inventory-repack-runbook.md)
   — worked split and merge examples, plus error messages for the inventory
   screen.
+- [Pricing settings and suggested price](docs/pricing-settings.md) — where to
+  set the store's default target margin (15 by default), how it is saved, and
+  how the product form derives the read-only Suggested price from unit cost.
 - [Changelog](CHANGELOG.md) — release notes, including the cashier invoicing
   permission change and the inventory repack feature.

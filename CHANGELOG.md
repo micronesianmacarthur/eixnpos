@@ -6,6 +6,14 @@ Changes are listed under `Unreleased` until a release is cut.
 
 ### Added
 
+- **Default target margin and suggested price.** Managers and admins can set a
+  store-wide **Default target margin (%)** in the new **Pricing** tab of
+  Settings; fresh installs start at 15 and valid values are 0–100 with up to 2
+  decimal places. The product form reads that setting and shows a read-only
+  **Suggested price** of `unit_cost * (1 + margin / 100)` rounded to cents,
+  falling back to 15 when the setting is unavailable. The suggestion is
+  advisory and does not change the retail price. Applying the update adds
+  migration `business.0004`. See [the guide](docs/pricing-settings.md).
 - **Inventory repack.** Cashiers, managers, and admins can convert stock
   between a pack product and its unit product from the **Inventory** screen —
   split packs into units or merge whole units back into packs. Each conversion
