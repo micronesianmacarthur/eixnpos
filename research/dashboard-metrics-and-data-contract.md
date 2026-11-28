@@ -114,6 +114,12 @@ If there is none open, `open` is false and `sessions` is empty. When open, the e
 | `business_day` | `"YYYY-MM-DD"` (business-local day shared by all returned sessions) |
 | `sessions` | array of open-session objects (below) |
 | `session` | backward-compatible accessor: the first open-session object (same shape as the pre-B2 single response) or `{open: false}` |
+| `previous_day_sessions` | open-session objects (same shape) whose `business_day` is **before** today — i.e. shifts left open on an earlier day. Nothing closes a session automatically, so these remain open until a user closes them. Scoped by caller tier exactly like `sessions`. |
+| `previous_day_count` | `len(previous_day_sessions)` |
+
+`previous_day_sessions` exists so the dashboard can show an unclosed previous-day
+shift (with a link into `POST /api/sessions/{id}/close/`) instead of reporting
+"No open shift" while an earlier drawer is still open.
 
 Each item in `sessions`:
 
@@ -244,7 +250,7 @@ All paths are under `/api/dashboard/`. All return `Content-Type: application/jso
 
 **Request:** none.
 
-**Success (200):** the §4.5 envelope — `{open, count, business_day, sessions:[...], session}`. `sessions` holds every open shift for the business day scoped by caller tier (see §4.5); when no shift is open, `open:false`, `count:0`, and `sessions:[]`. **Auth failure:** 401/403 per the access rules.
+**Success (200):** the §4.5 envelope — `{open, count, business_day, sessions:[...], session, previous_day_sessions:[...], previous_day_count}`. `sessions` holds every open shift for the business day scoped by caller tier (see §4.5); when no shift is open, `open:false`, `count:0`, and `sessions:[]`. `previous_day_sessions` holds open shifts from earlier business days (never auto-closed), also caller-tier scoped. **Auth failure:** 401/403 per the access rules.
 
 ### 5.6 `GET /api/dashboard/inventory/low-stock/`
 

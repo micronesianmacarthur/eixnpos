@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { Outlet, useNavigate } from 'react-router-dom';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from './authContext';
 import { apiFetch, ApiError } from './api';
 import { currentSession } from './session';
@@ -82,6 +82,16 @@ function startingCashError(value: string): string | null {
 export function RequireOpenSession() {
   const { me, loading } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  // `/close?session=<id>` explicitly targets one session — often a shift left
+  // open on an earlier business day. That flow must not be intercepted by the
+  // "start your shift" modal (there may be no open shift for today) and must
+  // not be evicted when today's session state changes; ClosePage resolves and
+  // reports the target session itself. Scoped to the close route so no other
+  // guarded screen can skip the start-shift gate with a stray query param.
+  const explicitSessionClose =
+    location.pathname === '/close' &&
+    new URLSearchParams(location.search).has('session');
 
   const [phase, setPhase] = useState<Phase>('loading');
   const [checkWarning, setCheckWarning] = useState('');
@@ -133,6 +143,14 @@ export function RequireOpenSession() {
       entered.current = true;
       return;
     }
+    if (explicitSessionClose) {
+      // The caller asked to close one specific (possibly previous-day) shift.
+      // Render the close flow; it fetches that session by id and reports a
+      // closed/forbidden session itself instead of bouncing to the dashboard.
+      setPhase('ready');
+      entered.current = true;
+      return;
+    }
     // No open shift.
     if (entered.current) {
       // The cashier had already passed the gate with an open shift that was
@@ -146,7 +164,7 @@ export function RequireOpenSession() {
       // cashier straight to the dashboard.
       setPhase('needs-session');
     }
-  }, [check, navigate]);
+  }, [check, navigate, explicitSessionClose]);
 
   // Initial check: run once guarded screen first mounts and whenever the
   // signed-in user changes.
@@ -267,8 +285,11 @@ export function RequireOpenSession() {
             noValidate
           >
             <p className="mm-muted">
-              There is no open session. Enter the cash you are placing in the
-              drawer to begin the shift.
+              There is no open session for today. Enter the cash you are placing
+              in the drawer to begin the shift. A shift stays open — even
+              overnight — until a cashier, manager, or admin closes it; if an
+              earlier shift is still open, close and reconcile it from the
+              dashboard first.
             </p>
             {startError && (
               <div className="mm-alert mm-alert--danger" role="alert">

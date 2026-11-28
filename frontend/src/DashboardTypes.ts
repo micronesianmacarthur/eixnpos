@@ -61,6 +61,10 @@ export interface DashboardOpenSession {
  * no open shifts; ``sessions`` is empty then. ``session`` is a backward-
  * compatible single-session accessor (the first open shift, same shape as the
  * pre-B2 response) or ``{open: false}``.
+ *
+ * ``previous_day_sessions`` lists open shifts from an EARLIER business day.
+ * Sessions never close automatically, so a shift left open at midnight is
+ * still open (and still needs manual reconciliation) the next day.
  */
 export interface DashboardSession {
   open: boolean;
@@ -68,6 +72,9 @@ export interface DashboardSession {
   business_day: string;
   sessions: DashboardOpenSession[];
   session?: DashboardOpenSession | { open: boolean };
+  /** Open shifts opened on a business day before `business_day`. */
+  previous_day_sessions?: DashboardOpenSession[];
+  previous_day_count?: number;
 }
 
 /**

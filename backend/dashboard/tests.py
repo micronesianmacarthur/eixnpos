@@ -468,6 +468,99 @@ class SessionCurrentTests(DashboardBase):
         self.assertEqual(data['count'], 1)
         self.assertEqual(data['sessions'][0]['register']['id'], self.register.id)
 
+    # ------------------------------------------------------------------ #
+    # Previous-day (cross-day) open sessions. Nothing closes a session at
+    # midnight, so a shift left open yesterday must still be visible and
+    # actionable today instead of the dashboard reporting "No open shift".
+    # ------------------------------------------------------------------ #
+    def test_previous_day_open_session_is_reported_separately(self):
+        yesterday = self.today - timedelta(days=1)
+        stale = Session.objects.create(
+            cashier=self.cashier, starting_cash=Decimal('30.00'),
+            register=self.register, business_day=yesterday,
+        )
+        self.client.force_authenticate(self.manager)
+        data = self.client.get('/api/dashboard/sessions/current/').json()
+
+        # Today still has no open shift; the stale session is not counted as
+        # today's.
+        self.assertFalse(data['open'])
+        self.assertEqual(data['count'], 0)
+        self.assertEqual(data['sessions'], [])
+        self.assertEqual(data['session'], {'open': False})
+
+        # ...but it IS surfaced in the previous-day list with its own day.
+        self.assertEqual(data['previous_day_count'], 1)
+        self.assertEqual(len(data['previous_day_sessions']), 1)
+        item = data['previous_day_sessions'][0]
+        self.assertEqual(item['session_id'], stale.id)
+        self.assertEqual(item['business_day'], yesterday.isoformat())
+        self.assertEqual(item['register']['id'], self.register.id)
+        self.assertEqual(item['opened_by']['username'], 'cashier')
+        self.assertEqual(item['starting_cash'], '30.00')
+
+    def test_today_and_previous_day_lists_do_not_mix(self):
+        yesterday = self.today - timedelta(days=1)
+        today_session = Session.objects.create(
+            cashier=self.cashier, register=self.register,
+            business_day=self.today,
+        )
+        stale = Session.objects.create(
+            cashier=self.cashier, register=self.register,
+            business_day=yesterday,
+        )
+        data = services.current_session_payload(self.manager)
+
+        self.assertTrue(data['open'])
+        self.assertEqual(
+            [s['session_id'] for s in data['sessions']], [today_session.id],
+        )
+        self.assertEqual(
+            [s['session_id'] for s in data['previous_day_sessions']], [stale.id],
+        )
+        self.assertEqual(data['previous_day_count'], 1)
+
+    def test_closed_previous_day_session_is_not_reported(self):
+        yesterday = self.today - timedelta(days=1)
+        Session.objects.create(
+            cashier=self.cashier, register=self.register,
+            business_day=yesterday, status=Session.STATUS_CLOSED,
+            closed_at=timezone.now(),
+        )
+        data = services.current_session_payload(self.manager)
+        self.assertEqual(data['previous_day_sessions'], [])
+        self.assertEqual(data['previous_day_count'], 0)
+
+    def test_previous_day_sessions_respect_cashier_register_scope(self):
+        """A cashier sees previous-day shifts only on registers they may
+        operate; a manager sees them on every register."""
+        yesterday = self.today - timedelta(days=1)
+        other = Register.objects.create(name='Other')
+        other.cashiers.set([self.manager])
+        self.register.cashiers.set([self.cashier])
+        Session.objects.create(
+            cashier=self.cashier, register=self.register,
+            business_day=yesterday,
+        )
+        Session.objects.create(
+            cashier=self.manager, register=other,
+            business_day=yesterday,
+        )
+
+        cashier_data = services.current_session_payload(self.cashier)
+        self.assertEqual(cashier_data['previous_day_count'], 1)
+        self.assertEqual(
+            cashier_data['previous_day_sessions'][0]['register']['id'],
+            self.register.id,
+        )
+
+        manager_data = services.current_session_payload(self.manager)
+        self.assertEqual(manager_data['previous_day_count'], 2)
+        self.assertEqual(
+            {s['register']['id'] for s in manager_data['previous_day_sessions']},
+            {self.register.id, other.id},
+        )
+
 
 class LowStockTests(DashboardBase):
     def test_low_stock_threshold_and_exclusions(self):
@@ -533,6 +626,22 @@ class CompositeTests(DashboardBase):
         self.assertEqual(data['count'], 2)
         names = {s['register_name'] for s in data['sessions']}
         self.assertEqual(names, {'Back', self.register.name})
+
+    def test_composite_reports_previous_day_open_shift(self):
+        """The first-paint payload carries the previous-day list too, so the
+        landing page can remind staff to close an unclosed shift."""
+        Session.objects.create(
+            cashier=self.cashier, register=self.register,
+            business_day=self.today - timedelta(days=2),
+        )
+        self.client.force_authenticate(self.manager)
+        data = self.client.get('/api/dashboard/').json()['session']
+        self.assertFalse(data['open'])
+        self.assertEqual(data['previous_day_count'], 1)
+        self.assertEqual(
+            data['previous_day_sessions'][0]['business_day'],
+            (self.today - timedelta(days=2)).isoformat(),
+        )
 
 
 class TimezoneTests(DashboardBase):

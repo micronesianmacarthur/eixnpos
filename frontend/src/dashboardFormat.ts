@@ -47,6 +47,25 @@ const DEFAULT_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
 });
 
 /**
+ * Whole-day distance between two `YYYY-MM-DD` business-day strings
+ * (`to - from`). Both are calendar dates with no time/timezone component, so
+ * the comparison is anchored at UTC midnight to stay DST-independent.
+ * Returns 0 when either value is missing or unparseable.
+ */
+export function businessDayDifference(from: string, to: string): number {
+  const fromMs = Date.parse(`${from}T00:00:00Z`);
+  const toMs = Date.parse(`${to}T00:00:00Z`);
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return 0;
+  return Math.round((toMs - fromMs) / 86_400_000);
+}
+
+/** Human label for a non-negative day count: 1 → "1 day", 3 → "3 days". */
+export function daysLabel(days: number): string {
+  const safe = Number.isFinite(days) ? Math.max(0, Math.trunc(days)) : 0;
+  return `${safe} ${safe === 1 ? 'day' : 'days'}`;
+}
+
+/**
  * Format an ISO datetime string into a readable wall-clock display.
  *
  * The server sends datetimes already expressed in the store's business-local

@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { apiFetch, ApiError } from './api';
+import { formatDateTime } from './dashboardFormat';
 import { currentSession } from './session';
 import './ClosePage.css';
 
@@ -41,6 +43,7 @@ interface Session {
   status: string;
   opened_at: string;
   closed_at: string | null;
+  business_day?: string | null;
   cash_counts: Record<string, number>;
   cash_removed: string;
   expected_cash: string;
@@ -105,6 +108,13 @@ function countedTotal(counts: Record<string, number>): number {
 }
 
 export default function ClosePage() {
+  const [searchParams] = useSearchParams();
+  // `/close?session=<id>` targets a specific session (used by the dashboard's
+  // "Close & reconcile" link for a shift left open on an earlier business
+  // day). Without the param the page keeps its historical behaviour: resolve
+  // today's open session for the caller's register/day.
+  const requestedSessionId = searchParams.get('session');
+
   const [session, setSession] = useState<Session | null>(null);
   const [summary, setSummary] = useState<SummaryData | null>(null);
   const [summarySessionId, setSummarySessionId] = useState<number | null>(null);
@@ -173,7 +183,9 @@ export default function ClosePage() {
   const summaryLoading =
     !!session && summarySessionId !== session?.id && !summaryError;
 
-  // Resolve the session to close from GET /api/sessions/current/ — the same
+  // Resolve the session to close. When `?session=<id>` is present the caller
+  // explicitly targeted one (the dashboard's previous-day reminder); otherwise
+  // resolve today's session from GET /api/sessions/current/ — the same
   // register/day scope the route guard validated. We never scan the session
   // list for "an open one": with multiple accessible registers that could
   // pick a sibling register's shift, the exact failure ADR-001 forbids. If no
@@ -181,10 +193,20 @@ export default function ClosePage() {
   useEffect(() => {
     const load = async () => {
       try {
+        if (requestedSessionId !== null) {
+          const numericId = Number(requestedSessionId);
+          if (!Number.isInteger(numericId) || numericId <= 0) {
+            setError('That close link is not valid. Open Close from the dashboard.');
+            return;
+          }
+          const detail = await apiFetch<Session>(`/api/sessions/${numericId}/`);
+          setSession(detail);
+          setCounts({ ...emptyCounts(), ...(detail.cash_counts ?? {}) });
+          return;
+        }
         const current = await currentSession();
         if (!current.open || !current.sessionId) {
           setSession(null);
-          setLoading(false);
           return;
         }
         const detail = await apiFetch<Session>(`/api/sessions/${current.sessionId}/`);
@@ -197,7 +219,7 @@ export default function ClosePage() {
       }
     };
     void load();
-  }, []);
+  }, [requestedSessionId]);
 
   const counted = useMemo(() => countedTotal(counts), [counts]);
   // Expected cash = starting cash + cash sales. `expected_cash` is only
@@ -296,7 +318,9 @@ export default function ClosePage() {
         <div>
           <h1 className="mm-page-title">Close</h1>
           <p className="mm-page-subtitle">
-            Count the drawer, review the shift, and close the session with a Z-report.
+            Count the drawer, review the shift, and close the session with a
+            Z-report. Closing is always manual — nothing closes a shift
+            automatically.
           </p>
         </div>
       </header>
@@ -307,6 +331,9 @@ export default function ClosePage() {
         <section className="mm-card mm-empty">
           <h2 className="mm-empty-title">Could not load the session</h2>
           <p className="mm-empty-text">{error}</p>
+          <Link className="mm-btn" to="/">
+            Back to dashboard
+          </Link>
         </section>
       )}
 
@@ -314,13 +341,50 @@ export default function ClosePage() {
         <section className="mm-card mm-empty">
           <h2 className="mm-empty-title">No session to close</h2>
           <p className="mm-empty-text">
-            There is no open session. Start one before closing out a shift.
+            There is no open session for today. If a shift from an earlier day
+            is still open, the dashboard lists it under “Unclosed shift from an
+            earlier day” with a Close &amp; reconcile link.
           </p>
+          <Link className="mm-btn" to="/">
+            Back to dashboard
+          </Link>
         </section>
       )}
 
-      {!loading && !error && session && (
+      {!loading && !error && session && session.status !== 'open' && (
+        <section className="mm-card mm-empty close-already-closed">
+          <h2 className="mm-empty-title">This session is already closed</h2>
+          <p className="mm-empty-text">
+            It was closed
+            {session.closed_at ? ` on ${formatDateTime(session.closed_at)}` : ''}.
+            No further action is needed.
+          </p>
+          <div className="close-already-closed-actions">
+            <button
+              type="button"
+              className="mm-btn"
+              onClick={() => {
+                window.open(`/api/sessions/${session.id}/zreport/`, '_blank');
+              }}
+            >
+              Print Z-report (PDF)
+            </button>
+            <Link className="mm-btn mm-btn--primary" to="/">
+              Back to dashboard
+            </Link>
+          </div>
+        </section>
+      )}
+
+      {!loading && !error && session && session.status === 'open' && (
         <div className="close-flow">
+          {session.business_day && (
+            <div className="mm-alert close-day-notice" role="note">
+              This shift belongs to business day {session.business_day}. Sessions
+              stay open across days until someone closes and reconciles them
+              here.
+            </div>
+          )}
           <div className="close-flow-head" role="list" aria-label="Close flow steps">
             {['Count cash', 'Summary', 'Close & backup'].map((label, index) => (
               <div

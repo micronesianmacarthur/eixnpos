@@ -411,58 +411,77 @@ def _session_dict(session) -> Dict[str, Any]:
     }
 
 
-def current_session_payload(user) -> Dict[str, Any]:
-    """All open shifts for the business day, scoped by the caller's tier.
+def _scoped_open_sessions(user):
+    """Open sessions the caller may see, before day filtering.
 
     Manager-admin callers (per :func:`accounts.roles.has_manager_role`) see
-    every open session for the business day, across all registers, regardless
-    of each register's ``cashiers`` assignment — a manager must never be told
-    "No open shift" because the open shift sits on a register that does not
-    list them as a cashier. Non-manager callers keep the register-resolution
-    rule shared with the sessions API: only registers with an empty ``cashiers``
-    M2M (accessible by everyone) or which list the caller are considered.
+    every open session, across all registers, regardless of each register's
+    ``cashiers`` assignment — a manager must never be told "No open shift"
+    because the open shift sits on a register that does not list them as a
+    cashier. Non-manager callers keep the register-resolution rule shared with
+    the sessions API: only registers with an empty ``cashiers`` M2M
+    (accessible by everyone) or which list the caller are considered.
 
-    Response envelope: ``open`` (bool), ``count`` (int), ``business_day`` and
-    a parallel ``sessions`` array (each a serialized open session). For
-    backward compatibility the first open session is ALSO emitted under the
-    historical ``session`` key (shape identical to the previous single-object
-    response), or ``{'open': False}`` when none is open.
+    Shared by the today and previous-day lists in :func:`current_session_payload`
+    so both surfaces apply the identical visibility rule.
     """
-    day = _business_day()
-    manager = has_manager_role(user)
-
     qs = Session.objects.filter(
-        business_day=day, status=Session.STATUS_OPEN,
+        status=Session.STATUS_OPEN,
     ).select_related(
         'register', 'cashier',
     ).prefetch_related(
         'register__cashiers',
-    ).order_by('register__id', 'opened_at')
-
-    if not manager:
+    )
+    if not has_manager_role(user):
         # Register-access rule shared with sessions/views.py: a register is
         # accessible when its cashiers M2M is empty (everyone) or lists the
         # caller. One query — a plain filter, no per-register lookups (S4).
         qs = qs.filter(
             Q(register__cashiers__isnull=True) | Q(register__cashiers=user),
         ).distinct()
+    return qs
 
-    sessions = [_session_dict(s) for s in qs]
-    if not sessions:
-        return {
-            'open': False,
-            'count': 0,
-            'business_day': day.isoformat(),
-            'sessions': [],
-            'session': {'open': False},
-        }
+
+def current_session_payload(user) -> Dict[str, Any]:
+    """All open shifts for the business day, scoped by the caller's tier.
+
+    ``sessions`` lists the open shifts whose ``business_day`` is today.
+    ``previous_day_sessions`` lists open shifts opened on an EARLIER business
+    day. Nothing closes a session automatically, so a shift left open at
+    midnight stays open on the day it started; this second list is what lets
+    staff see (and manually close) such a shift instead of the dashboard
+    falsely reporting "No open shift". Both lists use the same visibility rule
+    (:func:`_scoped_open_sessions`).
+
+    Response envelope: ``open`` (bool), ``count`` (int), ``business_day`` and
+    a parallel ``sessions`` array (each a serialized open session). For
+    backward compatibility the first open session is ALSO emitted under the
+    historical ``session`` key (shape identical to the previous single-object
+    response), or ``{'open': False}`` when none is open today.
+    ``previous_day_count`` mirrors the length of ``previous_day_sessions``.
+    """
+    day = _business_day()
+    # One query for every visible open shift on or before today; split in
+    # Python so the dashboard stays at a fixed two-query cost (open shifts +
+    # the caller's role lookup) as the cross-day backlog grows.
+    rows = list(
+        _scoped_open_sessions(user).filter(business_day__lte=day).order_by(
+            'business_day', 'register__id', 'opened_at',
+        )
+    )
+    sessions = [_session_dict(s) for s in rows if s.business_day == day]
+    previous_day_sessions = [
+        _session_dict(s) for s in rows if s.business_day < day
+    ]
     return {
-        'open': True,
+        'open': bool(sessions),
         'count': len(sessions),
         'business_day': day.isoformat(),
         'sessions': sessions,
         # Backward-compatible single-session accessor (first open session).
-        'session': sessions[0],
+        'session': sessions[0] if sessions else {'open': False},
+        'previous_day_sessions': previous_day_sessions,
+        'previous_day_count': len(previous_day_sessions),
     }
 
 

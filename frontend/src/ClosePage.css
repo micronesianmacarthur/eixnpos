@@ -300,3 +300,18 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* Manual-close messaging -------------------------------------------------- */
+
+.close-day-notice {
+  margin-bottom: 16px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.close-already-closed-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
