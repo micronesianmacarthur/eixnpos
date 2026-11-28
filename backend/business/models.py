@@ -1,6 +1,25 @@
 from django.db import models
 
 
+class AppSetting(models.Model):
+    """A persisted application setting, addressed by a stable string key.
+
+    Values are stored as text because settings have different types (numbers,
+    strings, flags). The service layer in ``business.services`` owns parsing and
+    validation for each known key; nothing should read ``value`` directly.
+    """
+
+    key = models.CharField(max_length=100, unique=True)
+    value = models.TextField(blank=True, default='')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['key']
+
+    def __str__(self):
+        return self.key
+
+
 class BusinessInfo(models.Model):
     # The live database table was renamed out-of-band from the Django default
     # ``business_businessinfo`` to ``business_info``. Map the model to the
