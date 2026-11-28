@@ -16,4 +16,4 @@ class SessionSerializer(serializers.ModelSerializer):
         # ``register``/``business_day`` are set server-side at creation (the
         # caller selects the register via the body; the business day is derived
         # from the open instant). ``cashier`` is audit-only, never client-set.
-        read_only_fields = ['id','cashier','status','opened_at','closed_at','expected_cash','counted_cash','variance','sales_total','register','business_day']
+        read_only_fields = ['id','cashier','status','opened_at','closed_at','closed_by','expected_cash','counted_cash','variance','sales_total','register','business_day']

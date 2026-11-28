@@ -110,6 +110,16 @@ class Session(models.Model):
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_OPEN)
     opened_at = models.DateTimeField(auto_now_add=True)
     closed_at = models.DateTimeField(null=True, blank=True)
+    # Who explicitly closed/reconciled the shift. ``cashier`` records the
+    # opener only, so the closer is kept separately for the audit trail.
+    # Nullable because sessions closed before this field existed have no
+    # recorded closer. There is no scheduled/automatic close: the sole
+    # open→closed transition is ``SessionViewSet.close``, a user-triggered
+    # endpoint that sets this field from the authenticated request user.
+    closed_by = models.ForeignKey(
+        User, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='closed_sessions',
+    )
     cash_counts = models.JSONField(default=dict, blank=True)
     cash_removed = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     expected_cash = models.DecimalField(max_digits=12, decimal_places=2, default=0)

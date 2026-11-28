@@ -1,6 +1,7 @@
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime, time as dtime
 from decimal import Decimal
 import time
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError
@@ -11,7 +12,7 @@ from rest_framework.test import APIClient
 from products.models import Product
 from sales.models import Payment, Sale, SaleLine
 from sales.summary import compute_session_summary
-from sessions.models import Register, Session, ZReportSnapshot
+from sessions.models import Register, Session, ZReportSnapshot, business_tzinfo, local_date_of
 from suppliers.models import Supplier
 
 User = get_user_model()
@@ -148,6 +149,97 @@ class SessionCloseTests(TestCase):
         self.assertEqual(response.status_code, 200)
         session.refresh_from_db()
         self.assertEqual(session.cash_counts, counts)
+
+    def test_close_records_the_closing_user_and_timestamp(self):
+        """An explicit close records who closed the shift, distinct from who
+        opened it, alongside the close instant."""
+        session = self.make_session(starting_cash=Decimal('50.00'))
+        before = timezone.now()
+
+        response = self.close(session, {'fifties': 1})
+
+        after = timezone.now()
+        self.assertEqual(response.status_code, 200)
+        session.refresh_from_db()
+        self.assertEqual(session.closed_by, self.manager)
+        self.assertEqual(session.cashier, self.manager)  # opener audit preserved
+        self.assertEqual(response.data['closed_by'], self.manager.id)
+        self.assertIsNotNone(session.closed_at)
+        self.assertGreaterEqual(session.closed_at, before)
+        self.assertLessEqual(session.closed_at, after)
+
+    def test_cashier_close_records_that_cashier_and_keeps_the_opener(self):
+        """A cashier who reconciles a shift opened by someone else is recorded
+        as the closer, while ``cashier`` still reports who opened it."""
+        session = self.make_session(starting_cash=Decimal('50.00'))
+        cashier = User.objects.create_user(
+            username='closing_cashier', password='pw', role='cashier'
+        )
+        self.register.cashiers.add(cashier)
+        client = APIClient()
+        client.force_authenticate(cashier)
+
+        response = client.post(
+            f'/api/sessions/{session.id}/close/',
+            {'counts': {'fifties': 1}},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        session.refresh_from_db()
+        self.assertEqual(session.closed_by, cashier)
+        self.assertEqual(session.cashier, self.manager)
+
+    def test_session_opened_before_midnight_stays_open_until_explicitly_closed(self):
+        """A shift started before local midnight is still open after it.
+
+        Nothing in the system closes a session at day-end: crossing midnight
+        leaves the row ``status='open'`` with no ``closed_at``, and it can only
+        be closed by an explicit, authenticated close request — which then
+        records the closing user, the close instant and the original
+        business day.
+        """
+        business_tz = business_tzinfo()
+        business_day = local_date_of(timezone.now()) - timedelta(days=1)
+        before_midnight = datetime.combine(business_day, dtime(23, 55), tzinfo=business_tz)
+        after_midnight = before_midnight + timedelta(minutes=10)
+
+        with patch('django.utils.timezone.now', return_value=before_midnight):
+            started = self.client.post(
+                '/api/sessions/',
+                {'register': self.register.id, 'starting_cash': '100.00'},
+                format='json',
+            )
+        self.assertEqual(started.status_code, 201)
+        session = Session.objects.get(pk=started.data['id'])
+        self.assertEqual(session.business_day, business_day)
+        self.assertEqual(session.status, Session.STATUS_OPEN)
+        self.assertIsNone(session.closed_by)
+
+        with patch('django.utils.timezone.now', return_value=after_midnight):
+            # Read-side traffic across the boundary (list + current) closes
+            # nothing: the shift is still open and still reports the day it
+            # started on.
+            self.client.get('/api/sessions/')
+            current = self.client.get(
+                f'/api/sessions/current/?register={self.register.id}'
+                f'&day={business_day.isoformat()}'
+            )
+            self.assertTrue(current.data['open'])
+            self.assertFalse(
+                Session.objects.filter(
+                    pk=session.pk, status=Session.STATUS_CLOSED
+                ).exists()
+            )
+
+            response = self.close(session, {'hundreds': 1})
+
+        self.assertEqual(response.status_code, 200)
+        session.refresh_from_db()
+        self.assertEqual(session.status, Session.STATUS_CLOSED)
+        self.assertEqual(session.closed_by, self.manager)
+        self.assertEqual(session.closed_at, after_midnight)
+        self.assertEqual(session.business_day, business_day)  # day never rewritten
 
 
 class SessionSummaryEndpointTests(TestCase):

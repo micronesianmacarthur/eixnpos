@@ -221,6 +221,7 @@ class SessionViewSet(viewsets.ModelViewSet):
             session.sales_total = figures['gross']
             session.status = Session.STATUS_CLOSED
             session.closed_at = timezone.now()
+            session.closed_by = request.user
             if 'cash_removed' in request.data:
                 session.cash_removed = request.data['cash_removed']
 
