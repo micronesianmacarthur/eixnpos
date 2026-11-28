@@ -26,7 +26,11 @@ For the release note, see [CHANGELOG.md](../CHANGELOG.md).
 
 The input accepts a number from **0** to **100** inclusive, with at most **two
 decimal places**. `15`, `18.5`, `0`, and `100` are valid. `15.500` is accepted
-as `15.5` because trailing zeros are not extra precision. **Cancel** discards
+as `15.5` because trailing zeros are not extra precision. A saved `100` is
+valid, but the product form cannot derive a price from a 100% gross margin — it
+would divide by zero — so the suggestion falls back to 15% instead (see
+[How is the suggested price calculated?](#how-is-the-suggested-price-calculated)).
+**Cancel** discards
 an edit and restores the last saved value. An unsaved margin edit raises the
 same leave-page warning as the Store and Backup tabs.
 
@@ -64,7 +68,7 @@ there keeps the `15%` fallback and leaves the form usable.
 
 Open a product (**Products → New product** or **Edit product**) and look in the
 **Pricing & stock** section. **Suggested price** is a read-only field beside
-**Cost**, with the hint "Unit cost + 15% default target margin" (or the current
+**Cost**, with the hint "Price for a 15% gross margin" (or the current
 configured percentage). It is recalculated as you type, so changing the cost
 updates the suggestion immediately; reloading the form picks up a changed
 margin.
@@ -72,14 +76,16 @@ margin.
 For a unit cost `C` and the configured margin `m` in percent:
 
 ```text
-suggested_price = C * (1 + m / 100)
+suggested_price = C / (1 - m / 100)
 ```
 
-The margin is a **markup on unit cost**: at 15%, a cost of `100.00` suggests
-`115.00`. The result is rounded to two decimal places (the currency minor
-unit), half away from zero, and always displayed with two decimals — `115.00`,
-not `115`. A small float tolerance keeps a value such as `1.10 × 1.15` (binary
-`1.265` internally) rounding up to `1.27` rather than down to `1.26`.
+The margin is a **gross margin on the selling price**, not a markup on cost:
+at 15%, a cost of `100.00` suggests `117.65`, because 15% of `117.65` is the
+`17.65` gross profit. The result is rounded to two decimal places (the currency
+minor unit), half away from zero, and always displayed with two decimals —
+`100.00`, not `100`. A small float tolerance keeps a value such as
+`2.53 ÷ 0.88` (binary `2.8749999…`) rounding up to `2.88` rather than down to
+`2.87`.
 
 If the cost is blank, non-numeric, or negative, the suggestion is **empty**,
 not `0.00`. A cost of `0` is a real value and suggests `0.00`.
@@ -92,22 +98,25 @@ The suggestion is a hint, not a stored price:
   but it no longer drives the suggestion. The suggestion always uses the
   store-wide default from Settings → Pricing.
 - If the settings request fails or returns an unusable margin — missing,
-  non-numeric, negative, or above 100 — the suggestion falls back to **15%**.
+  non-numeric, negative, or 100 and above — the suggestion falls back to
+  **15%**. A margin of `100` is storable in Settings (the API allows 0–100),
+  but a 100% gross margin would divide by zero, so the form treats it as
+  unusable and shows the 15% suggestion instead of `Infinity`.
 
 ## Worked examples
 
 | Unit cost | Margin | Calculation | Suggested price |
 |---|---|---|---|
-| 100.00 | 15% (default) | 100 × 1.15 = 115 | `115.00` |
-| 100.00 | 10% | 100 × 1.10 = 110 | `110.00` |
-| 100.00 | 25% | 100 × 1.25 = 125 | `125.00` |
-| 100.00 | 0% | 100 × 1.00 = 100 | `100.00` |
-| 8.00 | 18.5% (configured) | 8 × 1.185 = 9.48 | `9.48` |
-| 9.25 | 15% | 9.25 × 1.15 = 10.6375 | `10.64` |
-| 12.34 | 15% | 12.34 × 1.15 = 14.191 | `14.19` |
-| 1.10 | 15% | 1.1 × 1.15 = 1.265 | `1.27` |
-| 0.05 | 15% | 0.05 × 1.15 = 0.0575 | `0.06` |
-| 0.00 | 15% | 0 × 1.15 = 0 | `0.00` |
+| 100.00 | 15% (default) | 100 ÷ 0.85 = 117.647… | `117.65` |
+| 100.00 | 10% | 100 ÷ 0.90 = 111.111… | `111.11` |
+| 100.00 | 25% | 100 ÷ 0.75 = 133.333… | `133.33` |
+| 100.00 | 0% | 100 ÷ 1.00 = 100 | `100.00` |
+| 8.00 | 18.5% (configured) | 8 ÷ 0.815 = 9.816… | `9.82` |
+| 9.25 | 15% | 9.25 ÷ 0.85 = 10.882… | `10.88` |
+| 12.34 | 15% | 12.34 ÷ 0.85 = 14.518… | `14.52` |
+| 1.10 | 15% | 1.1 ÷ 0.85 = 1.2941… | `1.29` |
+| 0.05 | 15% | 0.05 ÷ 0.85 = 0.0588… | `0.06` |
+| 0.00 | 15% | 0 ÷ 0.85 = 0 | `0.00` |
 | *(blank)* | 15% | no cost to calculate | *(empty)* |
 
 ## Troubleshooting
@@ -118,7 +127,8 @@ The suggestion is a hint, not a stored price:
 | "Enter a percentage with at most 2 decimal places." | More than two fraction digits; trailing zeros do not count. | Enter `15.5`, not `15.555`. |
 | "Failed to load pricing settings. The default of 15% is used until they load." plus **Try again** | The initial `GET` failed, so the form is hidden to protect an unknown saved value. | Select **Try again**. If it keeps failing, check the API service. |
 | Save shows an error instead of "Pricing settings saved." | Validation blocked the request, you lack manager/admin authority, or the `PATCH` failed. | Correct the value or ask a manager/admin to save it. |
-| Suggested price still shows `115.00` after a margin change | The product form could not read the settings and fell back to 15%. | Reload the form and check `GET /api/settings/pricing/`. |
+| Suggested price still shows `117.65` after a margin change | The product form could not read the settings and fell back to 15%. | Reload the form and check `GET /api/settings/pricing/`. |
+| Suggested price shows the 15% value even though Settings holds `100` | A 100% gross margin divides by zero, so the form treats it as unusable and falls back to 15%. | Set a margin below 100 if you want the suggestion to use it. |
 | Suggested price is empty | Cost is blank, non-numeric, or negative. | Enter a non-negative cost. |
 | Suggested price differs from Retail price | The suggestion is a hint; Retail price is entered independently. | Set Retail price yourself. |
 
@@ -155,8 +165,10 @@ it and falls back to `Decimal('15')` when the row is missing or corrupt;
 
 - `frontend/src/pricingSettings.ts` — parsing, validation messages, and the
   `15` fallback for the Settings tab.
-- `frontend/src/suggestedPrice.ts` — `computeSuggestedPrice` (markup formula,
-  half-up rounding to cents, fixed two-decimal string, empty for no cost) and
-  `resolveTargetMarginPercent` (the `15` fallback).
+- `frontend/src/suggestedPrice.ts` — `computeSuggestedPrice` (gross-margin
+  formula `cost / (1 - margin / 100)`, half-up rounding to cents, fixed
+  two-decimal string, empty for no cost) and `resolveTargetMarginPercent` (the
+  `15` fallback; a margin of `100` or more is unusable because it divides by
+  zero).
 - `frontend/src/ProductPage.tsx` — loads the setting on mount and renders the
   read-only **Suggested price** field.

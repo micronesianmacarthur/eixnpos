@@ -10,8 +10,10 @@ Changes are listed under `Unreleased` until a release is cut.
   store-wide **Default target margin (%)** in the new **Pricing** tab of
   Settings; fresh installs start at 15 and valid values are 0–100 with up to 2
   decimal places. The product form reads that setting and shows a read-only
-  **Suggested price** of `unit_cost * (1 + margin / 100)` rounded to cents,
-  falling back to 15 when the setting is unavailable. The suggestion is
+  **Suggested price** of `unit_cost / (1 - margin / 100)` — a gross margin on
+  the selling price, not a markup on cost — rounded to cents, falling back to
+  15 when the setting is unavailable or would divide by zero (a saved margin of
+  100). The suggestion is
   advisory and does not change the retail price. Applying the update adds
   migration `business.0004`. See [the guide](docs/pricing-settings.md).
 - **Inventory repack.** Cashiers, managers, and admins can convert stock
