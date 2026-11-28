@@ -72,6 +72,10 @@
   padding-top: 4px;
 }
 
+.settings-margin-input {
+  max-width: 220px;
+}
+
 .settings-notice {
   margin: 0;
 }

@@ -10,15 +10,27 @@ import {
 import { apiFetch, ApiError } from './api';
 import { useTheme } from './themeContext';
 import { useBlocker } from 'react-router-dom';
+import {
+  DEFAULT_TARGET_MARGIN_PERCENT,
+  MAX_TARGET_MARGIN_PERCENT,
+  MIN_TARGET_MARGIN_PERCENT,
+  formatTargetMarginPercent,
+  parseTargetMarginPercent,
+  targetMarginFromSettings,
+  type PricingSettings,
+} from './pricingSettings';
 import './SettingsPage.css';
 
-type TabId = 'store' | 'backup' | 'appearance';
+type TabId = 'store' | 'pricing' | 'backup' | 'appearance';
 
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: 'store', label: 'Store' },
+  { id: 'pricing', label: 'Pricing' },
   { id: 'backup', label: 'Backup' },
   { id: 'appearance', label: 'Appearance' },
 ];
+
+const DEFAULT_MARGIN_TEXT = formatTargetMarginPercent(DEFAULT_TARGET_MARGIN_PERCENT);
 
 interface BusinessInfo {
   company_name: string;
@@ -216,9 +228,101 @@ export default function SettingsPage() {
 
   const isBackupDirty = store.backup_path !== savedStore.backup_path;
 
-  // Dirty-state guard: warn on browser-level close/reload when either Store or
-  // Backup has unsaved edits.
-  const dirty = isStoreDirty || isBackupDirty;
+  // Pricing ---------------------------------------------------------------
+  /** The margin input as typed; starts at the fresh-install default so the tab
+   *  shows 15 even before the settings request resolves. */
+  const [marginInput, setMarginInput] = useState(DEFAULT_MARGIN_TEXT);
+  /** The margin as last confirmed by the server, used for dirty detection. */
+  const [savedMargin, setSavedMargin] = useState(DEFAULT_TARGET_MARGIN_PERCENT);
+  const [pricingLoading, setPricingLoading] = useState(true);
+  const [pricingLoadFailed, setPricingLoadFailed] = useState(false);
+  const [pricingSaving, setPricingSaving] = useState(false);
+  const [pricingError, setPricingError] = useState('');
+  const [pricingSaved, setPricingSaved] = useState('');
+
+  const loadPricing = useCallback(async () => {
+    try {
+      const data = await apiFetch<PricingSettings>('/api/settings/pricing/');
+      const margin = targetMarginFromSettings(data);
+      setMarginInput(formatTargetMarginPercent(margin));
+      setSavedMargin(margin);
+      setPricingLoadFailed(false);
+      setPricingError('');
+      setPricingSaved('');
+    } catch {
+      // The saved value is unknown, so do not show an editable form: the user
+      // could otherwise overwrite a margin they never saw.
+      setPricingLoadFailed(true);
+      setMarginInput(DEFAULT_MARGIN_TEXT);
+      setSavedMargin(DEFAULT_TARGET_MARGIN_PERCENT);
+      setPricingError(
+        `Failed to load pricing settings. The default of ${DEFAULT_TARGET_MARGIN_PERCENT}% is used until they load.`,
+      );
+    } finally {
+      setPricingLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadPricing();
+  }, [loadPricing]);
+
+  /** Re-run the load after a failure, showing the spinner meanwhile. */
+  const handlePricingRetry = () => {
+    setPricingLoading(true);
+    setPricingError('');
+    setPricingSaved('');
+    void loadPricing();
+  };
+
+  const handleMarginField = (value: string) => {
+    setMarginInput(value);
+    setPricingError('');
+    setPricingSaved('');
+  };
+
+  const handlePricingSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const parsed = parseTargetMarginPercent(marginInput);
+    if (!parsed.ok) {
+      setPricingError(parsed.error);
+      setPricingSaved('');
+      return;
+    }
+    setPricingSaving(true);
+    setPricingError('');
+    setPricingSaved('');
+    try {
+      const data = await apiFetch<PricingSettings>('/api/settings/pricing/', {
+        method: 'PATCH',
+        body: JSON.stringify({ default_target_margin_percent: parsed.value }),
+      });
+      // Trust the server's echo: it is the value that will be used next load.
+      const margin = targetMarginFromSettings(data);
+      setMarginInput(formatTargetMarginPercent(margin));
+      setSavedMargin(margin);
+      setPricingSaved('Pricing settings saved.');
+    } catch (err) {
+      setPricingError(err instanceof ApiError ? err.message : 'Failed to save pricing settings');
+    } finally {
+      setPricingSaving(false);
+    }
+  };
+
+  /** Discard an unsaved margin edit by restoring the last server-confirmed value. */
+  const handlePricingCancel = () => {
+    setMarginInput(formatTargetMarginPercent(savedMargin));
+    setPricingError('');
+    setPricingSaved('');
+  };
+
+  const parsedMarginInput = parseTargetMarginPercent(marginInput);
+  const isPricingDirty =
+    !parsedMarginInput.ok || parsedMarginInput.value !== savedMargin;
+
+  // Dirty-state guard: warn on browser-level close/reload when the Store,
+  // Pricing, or Backup section has unsaved edits.
+  const dirty = isStoreDirty || isBackupDirty || isPricingDirty;
   useEffect(() => {
     if (!dirty) return;
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -387,7 +491,7 @@ export default function SettingsPage() {
         <div>
           <h1 className="mm-page-title">Settings</h1>
           <p className="mm-page-subtitle">
-            Configure store details, backup path, and preferences.
+            Configure store details, pricing, backup path, and preferences.
           </p>
         </div>
       </header>
@@ -438,6 +542,99 @@ export default function SettingsPage() {
             </p>
           ) : (
             storeForm()
+          )}
+        </div>
+      </div>
+
+      <div
+        className="settings-panel"
+        role="tabpanel"
+        id="settings-panel-pricing"
+        aria-labelledby="settings-tab-pricing"
+        hidden={activeTab !== 'pricing'}
+      >
+        <div className="mm-card">
+          <div className="mm-card-header">
+            <div>
+              <h2 className="mm-card-title">Pricing</h2>
+              <p className="mm-card-subtitle">
+                Default target margin used to suggest selling prices.
+              </p>
+            </div>
+          </div>
+          {pricingLoading ? (
+            <p className="mm-loading">
+              <span className="mm-spinner" aria-hidden="true" />
+              Loading pricing settings...
+            </p>
+          ) : pricingLoadFailed ? (
+            <div className="settings-form">
+              <p className="mm-alert mm-alert--danger settings-notice" role="alert">
+                {pricingError}
+              </p>
+              <div className="settings-row">
+                <button
+                  type="button"
+                  className="mm-btn mm-btn--outline"
+                  onClick={handlePricingRetry}
+                >
+                  Try again
+                </button>
+              </div>
+            </div>
+          ) : (
+            <form className="settings-form" onSubmit={handlePricingSubmit} noValidate>
+              <div className="mm-field">
+                <label className="mm-label" htmlFor="settings-default-margin">
+                  Default target margin (%)
+                </label>
+                <input
+                  id="settings-default-margin"
+                  className="mm-input settings-margin-input"
+                  type="number"
+                  name="default_target_margin_percent"
+                  value={marginInput}
+                  onChange={(event) => handleMarginField(event.target.value)}
+                  min={MIN_TARGET_MARGIN_PERCENT}
+                  max={MAX_TARGET_MARGIN_PERCENT}
+                  step="0.01"
+                  inputMode="decimal"
+                  autoComplete="off"
+                  aria-describedby="settings-default-margin-hint"
+                  aria-invalid={pricingError ? true : undefined}
+                  required
+                  aria-required="true"
+                />
+              </div>
+              <p className="mm-hint settings-hint" id="settings-default-margin-hint">
+                Percentage used to suggest a selling price from a product&apos;s unit cost.
+                Enter a value between {MIN_TARGET_MARGIN_PERCENT} and {MAX_TARGET_MARGIN_PERCENT}, with up to 2
+                decimal places.
+              </p>
+              {pricingError && (
+                <p className="mm-alert mm-alert--danger settings-notice" role="alert">
+                  {pricingError}
+                </p>
+              )}
+              {pricingSaved && (
+                <p className="mm-alert mm-alert--success settings-notice" role="status">
+                  {pricingSaved}
+                </p>
+              )}
+              <footer className="mm-card-footer">
+                <button
+                  type="button"
+                  className="mm-btn mm-btn--ghost"
+                  onClick={handlePricingCancel}
+                  disabled={pricingSaving}
+                >
+                  Cancel
+                </button>
+                <button type="submit" className="mm-btn mm-btn--primary" disabled={pricingSaving}>
+                  {pricingSaving ? 'Saving...' : 'Save'}
+                </button>
+              </footer>
+            </form>
           )}
         </div>
       </div>

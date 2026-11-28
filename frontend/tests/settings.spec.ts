@@ -36,6 +36,7 @@ function json(data: unknown, status = 200) {
 
 async function installApiMocks(page: Page): Promise<NetworkMonitor> {
   const monitor: NetworkMonitor = { external: [], failed: [], requests: [] };
+  const pricing = { margin: 15 };
 
   page.on('requestfailed', (request) => {
     const url = new URL(request.url());
@@ -84,6 +85,14 @@ async function installApiMocks(page: Page): Promise<NetworkMonitor> {
       await route.fulfill(json({ path: '/backup/eixnpos-20260101.sqlite3' }));
       return;
     }
+    if (path === '/api/settings/pricing/') {
+      if (method === 'PATCH') {
+        const body = JSON.parse(request.postData() || '{}');
+        pricing.margin = body.default_target_margin_percent;
+      }
+      await route.fulfill(json({ default_target_margin_percent: pricing.margin }));
+      return;
+    }
 
     await route.fulfill(json({ detail: `No mock for ${method} ${path}` }, 404));
   });
@@ -111,10 +120,11 @@ test('renders Settings on desktop with Store tab active', async ({ page }) => {
   const monitor = await openSettings(page);
 
   const tabs = page.getByRole('tab');
-  await expect(tabs).toHaveCount(3);
+  await expect(tabs).toHaveCount(4);
   await expect(tabs.nth(0)).toHaveText('Store');
-  await expect(tabs.nth(1)).toHaveText('Backup');
-  await expect(tabs.nth(2)).toHaveText('Appearance');
+  await expect(tabs.nth(1)).toHaveText('Pricing');
+  await expect(tabs.nth(2)).toHaveText('Backup');
+  await expect(tabs.nth(3)).toHaveText('Appearance');
 
   // The Users tab was removed from Settings; user management lives on /users.
   await expect(page.getByRole('tab', { name: 'Users' })).toHaveCount(0);
@@ -279,7 +289,11 @@ test('navigates tabs with the arrow keys', async ({ page }) => {
   await page.getByRole('tab', { name: 'Store' }).focus();
   await expect(page.getByRole('tab', { name: 'Store' })).toBeFocused();
   await page.keyboard.press('ArrowRight');
-  await expect(page.getByRole('tab', { name: 'Backup' })).toBeFocused();
+  await expect(page.getByRole('tab', { name: 'Pricing' })).toBeFocused();
+  await expect(page.getByRole('tab', { name: 'Pricing' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('heading', { name: 'Pricing' })).toBeVisible();
+
+  await page.keyboard.press('ArrowRight');
   await expect(page.getByRole('tab', { name: 'Backup' })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByRole('heading', { name: 'Backup' })).toBeVisible();
 

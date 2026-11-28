@@ -80,6 +80,11 @@ async function installApiMocks(page: Page): Promise<NetworkMonitor> {
       return;
     }
 
+    if (path === '/api/settings/pricing/') {
+      await route.fulfill(json({ default_target_margin_percent: 15 }));
+      return;
+    }
+
     await route.fulfill(json({ detail: `No mock for ${method} ${path}` }, 404));
   });
 
@@ -118,7 +123,7 @@ for (const [name, width, height] of SIZES) {
       await page.setViewportSize({ width, height });
       await page.goto(`${BASE_URL}/settings`);
       await expect(page.getByRole('heading', { level: 1, name: 'Settings' })).toBeVisible();
-      for (const tab of ['Store', 'Backup', 'Appearance']) {
+      for (const tab of ['Store', 'Pricing', 'Backup', 'Appearance']) {
         await page.getByRole('tab', { name: tab }).click();
         const overflow = await page.evaluate(
           () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
