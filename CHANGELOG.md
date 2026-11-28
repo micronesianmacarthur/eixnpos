@@ -18,6 +18,14 @@ Changes are listed under `Unreleased` until a release is cut.
 
 ### Changed
 
+- **Register sessions are manual-close only.** No automatic or scheduled close
+  runs at day-end, midnight, or on a timer, and there is no feature flag to
+  enable one. A shift opened before midnight stays open across days until a
+  cashier, manager, or admin with access to the register closes it from the
+  **Close** screen. The business day is fixed when the session opens, so an
+  older open session does not block a new one on the same register the next day.
+  See [the lifecycle guide](docs/register-session-lifecycle.md) and
+  [the API reference](docs/api/sessions-api.md).
 - **Pack mapping is optional when you add a product.** The **New product** form
   saves a standard product with both pack-mapping fields left blank; you only
   set a unit product and units per pack for a pack SKU you intend to repack. A

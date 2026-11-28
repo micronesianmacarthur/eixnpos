@@ -1,5 +1,15 @@
 # API Reference — Session Scoping
 
+## Manual close only — no automatic closing
+
+Sessions are never closed on a schedule. No cron job, scheduled task, or
+day-end/midnight rollover changes a session to `closed`; the only status change
+is an explicit `POST /api/sessions/{id}/close/` (the **Close Session & Print
+Z-Report** button). An open session therefore stays open across days until a
+cashier, manager, or admin with access to the register closes it. There is no
+feature flag or configuration setting for auto-close. See
+[Register session lifecycle: manual close only](../register-session-lifecycle.md).
+
 ## `GET /api/sessions/current/`
 
 **Returns the open session for the caller's current register and business day.**
@@ -83,11 +93,11 @@ Determine whether a cashier has an open shift session and, if so, which one. The
 
 The `RequireOpenSession` frontend guard (used on `/sales`, `/sales-manager`, and `/close` pages) operates as follows:
 
-1. On mount (and on tab-focus/visibility revalidation), it calls `GET /api/sessions/current/?day=<date>`, where the register is derived from the route context (the lowest-pk accessible register the cashier can use). On `open:false` → `navigate('/', { replace: true })`; revalidates on focus/visibility as today. If the route has no register context, the guard defaults to the cashier's lowest-pk accessible register.
-2. If the response is `{open: false}`, the guard navigates away to `/` (replacing the URL) so the cashier does not land on a transaction screen without an open shift.
-3. If the response is `{open: true}`, the guard permits the page to render normally.
-4. The guard **revalidates on focus/visibility** as "today", meaning a session opened yesterday will not be considered "current" unless the `day` query param is explicitly set.
-5. The guard does **not** require the session to have been opened by the current cashier — only that an open session exists for the selected register/day.
+1. On mount (and on tab-focus/visibility revalidation), it calls `GET /api/sessions/current/` with **no** query parameters. The backend therefore resolves the caller's lowest-pk accessible register and the business-local date of the request instant.
+2. `{open: false}` on first arrival shows a "start your shift" modal that collects starting cash and POSTs to `/api/sessions/`; dismissing it redirects to `/`. A revalidation that finds a previously open session now closed evicts the user to `/` (for example, the shift was closed in another tab).
+3. `{open: true}` renders the guarded screen normally. A request failure fails open with a warning banner, so the screen stays reachable.
+4. A session opened on an earlier business day is **not** current by default. Ask for its day explicitly with `?day=YYYY-MM-DD`; see [the lifecycle guide](../register-session-lifecycle.md). The still-open session is not closed by the day change.
+5. The guard **does not require the session to have been opened by the current cashier** — only that an open session exists for the resolved register/day.
 
 ---
 

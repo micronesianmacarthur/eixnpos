@@ -66,5 +66,8 @@ especially §7.
 - [Store-staff runbook: repack stock](docs/runbooks/inventory-repack-runbook.md)
   — worked split and merge examples, plus error messages for the inventory
   screen.
+- [Register session lifecycle: manual close only](docs/register-session-lifecycle.md)
+  — no automatic close at midnight; open shifts carry over across days until
+  someone closes them, who can close, and what to do when a shift does not show.
 - [Changelog](CHANGELOG.md) — release notes, including the cashier invoicing
   permission change and the inventory repack feature.
