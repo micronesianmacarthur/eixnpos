@@ -58,17 +58,24 @@ with its own sales and its own close.
 One important consequence: the app's "current session" lookup and the
 dashboard's **Open shifts** card default to **today's** business day. A session
 left open from an earlier day is still open in the database, but it will not be
-returned as current for today. To find it, ask for its day explicitly:
+returned as current for today. You do not need the API to find it: the dashboard
+lists any still-open older shift under **Unclosed shift from an earlier day**
+with its business day and age, plus a **Close & reconcile** link that takes you
+straight to `/close?session=<id>` to count and close that shift. The Close screen
+states that closing is always manual — nothing closes a shift automatically.
+
+If you call the API directly, ask for the earlier day explicitly, then close the
+returned session by ID:
 
 ```text
 GET /api/sessions/current/?register=<register-id>&day=YYYY-MM-DD
+POST /api/sessions/{id}/close/
 ```
 
-If the Close screen says **No session to close** while you know a shift is
-still open, you are most likely looking at today's day scope rather than the
-day the shift was opened. Resolve the session with the `day` parameter above,
-then close it by ID with `POST /api/sessions/{id}/close/`. Do not assume the
-system closed it for you.
+If the Close screen says **No session to close** while you know a shift is still
+open, you are most likely looking at today's day scope; use the dashboard's
+**Close & reconcile** link (or the `day` parameter above for API callers). Do not
+assume the system closed it for you.
 
 ## Who can close a session
 
@@ -105,7 +112,7 @@ system closed it for you.
 
 | What you see | Likely cause | What to do |
 |---|---|---|
-| **No session to close** on the Close screen | No open session in today's day scope, or the shift belongs to an earlier day | Query `/api/sessions/current/?register=<id>&day=YYYY-MM-DD` with the shift's business day and close that session by ID |
+| **No session to close** on the Close screen | No open session in today's day scope, or the shift belongs to an earlier day | On the dashboard, open **Unclosed shift from an earlier day** and use its **Close & reconcile** link; API callers can query `/api/sessions/current/?register=<id>&day=YYYY-MM-DD` with the shift's business day and close that session by ID |
 | `409 A session is already open on this register for this business day` | A start was attempted on a register/day that already has an open session | Close that session first, or start on a different register |
 | `403 You do not have access to this register` | Your account is not in the register's `cashiers` list | Ask an admin to add you to that register |
 | `400 already closed` | Another user closed the session at the same time | Reload; do not retry the close |
