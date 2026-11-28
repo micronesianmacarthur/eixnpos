@@ -124,7 +124,7 @@ test('a margin saved in Settings drives the product form suggestion', async ({ p
 
   await page.goto(`${BASE_URL}/inventory/new`);
   await costField(page).fill('100');
-  await expect(suggestedField(page)).toHaveValue('125.00');
+  await expect(suggestedField(page)).toHaveValue('133.33');
 });
 
 test('a saved margin of 0 is used, not mistaken for the fallback', async ({ page }) => {
@@ -146,7 +146,7 @@ test('an unavailable settings endpoint falls back to 15% in the product form', a
 
   await page.goto(`${BASE_URL}/inventory/new`);
   await costField(page).fill('100');
-  await expect(suggestedField(page)).toHaveValue('115.00');
+  await expect(suggestedField(page)).toHaveValue('117.65');
 });
 
 test('an empty unit cost leaves the suggestion empty', async ({ page }) => {
@@ -159,7 +159,7 @@ test('an empty unit cost leaves the suggestion empty', async ({ page }) => {
   await costField(page).fill('');
   await expect(suggestedField(page)).toHaveValue('');
   await costField(page).fill('40');
-  await expect(suggestedField(page)).toHaveValue('50.00');
+  await expect(suggestedField(page)).toHaveValue('53.33');
   await costField(page).fill('');
   await expect(suggestedField(page)).toHaveValue('');
   expect(store.margin).toBe(25);

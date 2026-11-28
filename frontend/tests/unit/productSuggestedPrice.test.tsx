@@ -5,7 +5,7 @@
  * The pure formula is covered in `suggestedPrice.test.ts`; these tests pin the
  * page-level contract:
  *  - the configured margin is fetched from `/api/settings/pricing/` and used
- *    for the calculation (margin 15 + cost 100 => 115.00);
+ *    for the calculation (gross margin 15 on a cost of 100 => 117.65);
  *  - a changed saved margin is picked up by the next form load;
  *  - an unavailable or malformed setting falls back to 15%;
  *  - clearing the cost leaves the suggestion empty.
@@ -88,18 +88,18 @@ describe('ProductPage suggested price', () => {
     cleanup()
   })
 
-  it('uses the configured margin: 15% on a cost of 100 gives 115.00', async () => {
+  it('uses the configured margin: 15% on a cost of 100 gives 117.65', async () => {
     routeApi(baseHandlers(() => ({ default_target_margin_percent: 15 })))
     renderCreateForm()
 
     await waitFor(() =>
-      expect(screen.getByText(/Unit cost \+ 15%/)).toBeInTheDocument(),
+      expect(screen.getByText(/Price for a 15% gross margin/)).toBeInTheDocument(),
     )
 
     await userEvent.clear(costField())
     await userEvent.type(costField(), '100')
 
-    expect(suggestedPriceField()).toHaveValue('115.00')
+    expect(suggestedPriceField()).toHaveValue('117.65')
   })
 
   it('applies a changed saved margin on the next form load', async () => {
@@ -110,21 +110,21 @@ describe('ProductPage suggested price', () => {
 
     const first = renderCreateForm()
     await waitFor(() =>
-      expect(screen.getByText(/Unit cost \+ 15%/)).toBeInTheDocument(),
+      expect(screen.getByText(/Price for a 15% gross margin/)).toBeInTheDocument(),
     )
     await userEvent.clear(costField())
     await userEvent.type(costField(), '100')
-    expect(suggestedPriceField()).toHaveValue('115.00')
+    expect(suggestedPriceField()).toHaveValue('117.65')
     first.unmount()
 
     margin = 25
     renderCreateForm()
     await waitFor(() =>
-      expect(screen.getByText(/Unit cost \+ 25%/)).toBeInTheDocument(),
+      expect(screen.getByText(/Price for a 25% gross margin/)).toBeInTheDocument(),
     )
     await userEvent.clear(costField())
     await userEvent.type(costField(), '100')
-    expect(suggestedPriceField()).toHaveValue('125.00')
+    expect(suggestedPriceField()).toHaveValue('133.33')
   })
 
   it('falls back to 15% when the settings request fails', async () => {
@@ -136,12 +136,12 @@ describe('ProductPage suggested price', () => {
     renderCreateForm()
 
     await waitFor(() =>
-      expect(screen.getByText(/Unit cost \+ 15%/)).toBeInTheDocument(),
+      expect(screen.getByText(/Price for a 15% gross margin/)).toBeInTheDocument(),
     )
 
     await userEvent.clear(costField())
     await userEvent.type(costField(), '100')
-    expect(suggestedPriceField()).toHaveValue('115.00')
+    expect(suggestedPriceField()).toHaveValue('117.65')
   })
 
   it('falls back to 15% when the configured margin is invalid', async () => {
@@ -149,12 +149,28 @@ describe('ProductPage suggested price', () => {
     renderCreateForm()
 
     await waitFor(() =>
-      expect(screen.getByText(/Unit cost \+ 15%/)).toBeInTheDocument(),
+      expect(screen.getByText(/Price for a 15% gross margin/)).toBeInTheDocument(),
     )
 
     await userEvent.clear(costField())
     await userEvent.type(costField(), '100')
-    expect(suggestedPriceField()).toHaveValue('115.00')
+    expect(suggestedPriceField()).toHaveValue('117.65')
+  })
+
+  it('falls back to 15% instead of showing Infinity for a saved 100% margin', async () => {
+    // 100 is a storable Settings value, but a 100% gross margin divides by
+    // zero. The read-only field must show a price or nothing, never Infinity.
+    routeApi(baseHandlers(() => ({ default_target_margin_percent: 100 })))
+    renderCreateForm()
+
+    await waitFor(() =>
+      expect(screen.getByText(/Price for a 15% gross margin/)).toBeInTheDocument(),
+    )
+
+    await userEvent.clear(costField())
+    await userEvent.type(costField(), '100')
+    expect(suggestedPriceField()).toHaveValue('117.65')
+    expect(suggestedPriceField()).not.toHaveValue('Infinity')
   })
 
   it('leaves the suggestion empty when the cost is cleared', async () => {
@@ -162,7 +178,7 @@ describe('ProductPage suggested price', () => {
     renderCreateForm()
 
     await waitFor(() =>
-      expect(screen.getByText(/Unit cost \+ 15%/)).toBeInTheDocument(),
+      expect(screen.getByText(/Price for a 15% gross margin/)).toBeInTheDocument(),
     )
 
     await userEvent.clear(costField())

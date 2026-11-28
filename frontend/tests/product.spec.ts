@@ -615,11 +615,11 @@ test('calculates the suggested price from the configured target margin', async (
   await expect(suggested).toHaveValue('0.00');
 
   await cost.fill('100');
-  await expect(suggested).toHaveValue('120.00');
+  await expect(suggested).toHaveValue('125.00');
 
   // Changing the cost recalculates immediately.
   await cost.fill('9.25');
-  await expect(suggested).toHaveValue('11.10');
+  await expect(suggested).toHaveValue('11.56');
 
   // No cost means no suggestion.
   await cost.fill('');
@@ -641,7 +641,7 @@ test('falls back to a 15% margin when pricing settings are unavailable', async (
 
   await expect(
     page.getByRole('textbox', { name: 'Suggested price' }),
-  ).toHaveValue('115.00');
+  ).toHaveValue('117.65');
 
   expectNoNetworkIssues(monitor);
 });

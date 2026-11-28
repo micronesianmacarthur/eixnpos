@@ -20,16 +20,17 @@ import {
 } from '../../src/suggestedPrice'
 
 describe('pricing QE: representative suggested prices', () => {
-  // (unit cost, margin) -> expected suggestion, verified by hand.
+  // (unit cost, margin) -> expected suggestion, computed from
+  // cost / (1 - margin / 100) and rounded half up to cents.
   const matrix: Array<[string, number, string]> = [
-    ['100', 15, '115.00'],
-    ['100', 25, '125.00'],
+    ['100', 15, '117.65'], // 117.647058...
+    ['100', 25, '133.33'], // 133.333333...
     ['100', 0, '100.00'],
-    ['100', 100, '200.00'],
-    ['12.5', 18.5, '14.81'], // 12.5 * 1.185 = 14.8125 -> 14.81
-    ['0.03', 50, '0.05'], // exact half-cent 0.045 must round up
-    ['1.265', 15, '1.45'], // 1.45475 through binary float noise
-    ['19.99', 7.5, '21.49'], // 19.99 * 1.075 = 21.489250 -> 21.49
+    ['100', 50, '200.00'],
+    ['12.5', 18.5, '15.34'], // 12.5 / 0.815 = 15.337423...
+    ['0.03', 50, '0.06'], // 0.03 / 0.5 = 0.06
+    ['1.265', 15, '1.49'], // 1.488235... through binary float noise
+    ['19.99', 7.5, '21.61'], // 19.99 / 0.925 = 21.610810...
     ['0.01', 15, '0.01'], // sub-cent result still two decimals
   ]
 
@@ -37,11 +38,12 @@ describe('pricing QE: representative suggested prices', () => {
     expect(computeSuggestedPrice(cost, margin)).toBe(expected)
   })
 
-  it('rounds 0.045 half-up, never half-down, regardless of float noise', () => {
-    // The epsilon exists precisely for this class of case; break it and the
-    // suggestion silently drops to 0.04.
-    expect(computeSuggestedPrice('0.03', 50)).toBe('0.05')
-    expect(computeSuggestedPrice('0.09', 50)).toBe('0.14') // 0.135 -> 0.14? no: 0.135 -> half-up 0.14
+  it('rounds a half cent half-up, never half-down, regardless of float noise', () => {
+    // The epsilon exists precisely for this class of case; break it and these
+    // suggestions silently drop a cent.
+    expect(computeSuggestedPrice('0.12', 4)).toBe('0.13') // exactly 0.125
+    expect(computeSuggestedPrice('2.53', 12)).toBe('2.88') // binary 2.874999...
+    expect(computeSuggestedPrice('0.09', 50)).toBe('0.18') // exact 0.18
   })
 
   it('treats unusable costs as no suggestion', () => {
@@ -56,7 +58,7 @@ describe('pricing QE: representative suggested prices', () => {
 
   it('keeps a formatted two-decimal string, never a bare number', () => {
     const result = computeSuggestedPrice('100', 15)
-    expect(result).toBe('115.00')
+    expect(result).toBe('117.65')
     expect(result).toMatch(/^\d+\.\d{2}$/)
   })
 })
@@ -91,15 +93,26 @@ describe('pricing QE: both consumers agree on the fallback', () => {
   })
 
   it('a saved margin is read identically by the page and the form', () => {
-    for (const margin of [0, 15, 18.5, 100, '25', '7.5']) {
+    for (const margin of [0, 15, 18.5, 99.99, '25', '7.5']) {
       expect(targetMarginFromSettings({ default_target_margin_percent: margin })).toBe(
         resolveTargetMarginPercent(margin),
       )
     }
   })
 
-  it('fallback fallback: a number is never returned as-is when out of range', () => {
-    expect(computeSuggestedPrice('100', 150)).toBe('115.00') // 15 fallback, not 250
-    expect(computeSuggestedPrice('100', -20)).toBe('115.00')
+  it('a saved 100% margin is storable in Settings but unusable in the form', () => {
+    // Settings validates 0-100 inclusive and keeps echoing the stored value;
+    // the gross-margin formula divides by zero at 100, so the form falls back
+    // to 15% rather than rendering Infinity. This is a deliberate divergence,
+    // not a missed consumer: the backend still stores 100.
+    expect(targetMarginFromSettings({ default_target_margin_percent: 100 })).toBe(100)
+    expect(resolveTargetMarginPercent(100)).toBe(15)
+    expect(computeSuggestedPrice('100', 100)).toBe('117.65')
+  })
+
+  it('fallback: an out-of-range margin never reaches the formula', () => {
+    expect(computeSuggestedPrice('100', 150)).toBe('117.65') // 15 fallback, not 250
+    expect(computeSuggestedPrice('100', -20)).toBe('117.65')
+    expect(computeSuggestedPrice('100', 100)).toBe('117.65')
   })
 })
